@@ -1,3 +1,21 @@
+# Shard reading — Colab / Linux only.
+# The Waymo package ships manylinux wheels only and pins an old TensorFlow, which
+# is why the shard-reading path lives in Colab and in the Dockerfile (still Python
+# 3.8). Nothing in src/ actually imports tensorflow: loader.py parses the tfrecord
+# format with struct, and only parser.py needs the waymo protobufs.
 tensorflow
+waymo-open-dataset-tf-2-11-0
+
+# Compute — Phases 2-4
 numpy
-waymo-open-dataset-tf-2-11-0psycopg2-binary
+scipy
+shapely
+torch
+
+# Persistence — Phase 5
+psycopg2-binary
+
+# API — Phase 6 (local dev and the API run Python 3.11; see .python-version)
+fastapi
+uvicorn[standard]
+httpx
