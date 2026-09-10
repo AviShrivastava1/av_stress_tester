@@ -155,3 +155,44 @@ def compute_min_ttc_scenario(
         min_ttc = min(min_ttc, ttc_matrix.min())
 
     return float(min_ttc)
+
+def compute_min_ttc_sdc(
+    states: np.ndarray,
+    validity: np.ndarray,
+    sdc_index: int
+) -> float:
+    """
+    Minimum TTC across timesteps, restricted to pairs that involve the SDC.
+
+    This is the signal Phase 5 ranks on. compute_min_ttc_scenario (all pairs)
+    saturates on real WOMD data — a dense urban scene has ~57 agents and any two
+    passing within a few metres drives its scene-wide min TTC to zero, telling us
+    nothing about whether the *self-driving car* was ever in danger. On the
+    validation shard that was 100/100 scenarios. Phase 4 optimises SDC-vs-challenger
+    collisions, so the filter feeding it must measure the same thing.
+
+    Reuses compute_ttc_all_pairs so the pair math is defined once. The TTC matrix
+    is symmetric, but both the SDC row and the SDC column are minimised over as a
+    defensive measure (matching the validation notebook's SDC-only experiment).
+
+    Args:
+        states:     shape (N, T, 7)
+        validity:   shape (N, T)
+        sdc_index:  index of the self-driving car
+
+    Returns:
+        min_ttc: minimum SDC-involving TTC in seconds, or TTC_INFINITY if the
+                 SDC is never in a closing pair (or sdc_index is out of range).
+    """
+    N, T = states.shape[0], states.shape[1]
+    if not (0 <= sdc_index < N):
+        return TTC_INFINITY
+
+    min_ttc = TTC_INFINITY
+    for t in range(T):
+        ttc_matrix = compute_ttc_all_pairs(states, validity, t)
+        row_min = ttc_matrix[sdc_index, :].min()
+        col_min = ttc_matrix[:, sdc_index].min()
+        min_ttc = min(min_ttc, row_min, col_min)
+
+    return float(min_ttc)

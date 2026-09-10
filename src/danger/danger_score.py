@@ -1,6 +1,10 @@
 import numpy as np
-from src.danger.ttc_engine import compute_min_ttc_scenario, TTC_INFINITY
-from src.danger.pet_engine import compute_min_pet_scenario, PET_INFINITY
+from src.danger.ttc_engine import (
+    compute_min_ttc_scenario, compute_min_ttc_sdc, TTC_INFINITY,
+)
+from src.danger.pet_engine import (
+    compute_min_pet_scenario, compute_min_pet_sdc, PET_INFINITY,
+)
 
 
 TTC_FLOOR = 0.01    # minimum TTC to avoid division by zero
@@ -57,30 +61,52 @@ def score_scenario(
     states: np.ndarray,
     validity: np.ndarray,
     scenario_id: str,
+    sdc_index: int,
     min_perturbation: float = None,
     pet_max_pairs: int = 50
 ) -> dict:
     """
     Compute the full danger profile for one scenario.
 
+    `sdc_index` is required — no default. The fragility score is now computed from
+    TTC/PET restricted to pairs involving the self-driving car, because the
+    all-pairs versions saturate on real WOMD data (a dense scene's scene-wide
+    minimum TTC is driven to zero by any two agents passing close, regardless of
+    whether the SDC was ever at risk — 100/100 scenarios on the validation shard).
+    A forgotten `sdc_index` must be a loud TypeError, not a silent fall back to
+    the all-pairs behaviour that this rework exists to stop ranking on.
+
+    The all-pairs values are still computed and returned as `min_ttc_all_pairs` /
+    `min_pet_all_pairs` — a cheap "how crowded was this scene" diagnostic — but
+    they never feed `compute_danger_score`.
+
     Args:
         states:           shape (N, T, 7)
         validity:         shape (N, T)
         scenario_id:      string ID from ScenarioParser
+        sdc_index:        index of the self-driving car (from get_sdc_index())
         min_perturbation: from Phase 4 optimizer (optional)
-        pet_max_pairs:    max agent pairs to check for PET
+        pet_max_pairs:    max agent pairs to check for the all-pairs PET diagnostic
 
     Returns:
-        dict with scenario_id, min_ttc, min_pet, fragility_score
+        dict with scenario_id, min_ttc, min_pet (both SDC-restricted),
+        fragility_score, min_perturbation, and the min_ttc_all_pairs /
+        min_pet_all_pairs diagnostics.
     """
-    min_ttc = compute_min_ttc_scenario(states, validity)
-    min_pet = compute_min_pet_scenario(states, validity, max_pairs=pet_max_pairs)
-    fragility = compute_danger_score(min_ttc, min_pet, min_perturbation)
+    min_ttc_sdc = compute_min_ttc_sdc(states, validity, sdc_index)
+    min_pet_sdc = compute_min_pet_sdc(states, validity, sdc_index)
+
+    min_ttc_all = compute_min_ttc_scenario(states, validity)
+    min_pet_all = compute_min_pet_scenario(states, validity, max_pairs=pet_max_pairs)
+
+    fragility = compute_danger_score(min_ttc_sdc, min_pet_sdc, min_perturbation)
 
     return {
-        'scenario_id':    scenario_id,
-        'min_ttc':        min_ttc,
-        'min_pet':        min_pet,
-        'fragility_score': fragility,
+        'scenario_id':      scenario_id,
+        'min_ttc':          min_ttc_sdc,
+        'min_pet':          min_pet_sdc,
+        'min_ttc_all_pairs': min_ttc_all,
+        'min_pet_all_pairs': min_pet_all,
+        'fragility_score':  fragility,
         'min_perturbation': min_perturbation
     }

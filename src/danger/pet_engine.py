@@ -69,7 +69,9 @@ def compute_pet_pair(
     states: np.ndarray,
     validity: np.ndarray,
     agent_a: int,
-    agent_b: int
+    agent_b: int,
+    path_a=None,
+    path_b=None,
 ) -> float:
     """
     Compute Post-Encroachment Time between two agents.
@@ -99,14 +101,21 @@ def compute_pet_pair(
         validity: shape (N, T)
         agent_a:  index of one agent
         agent_b:  index of the other agent
+        path_a:   optional pre-built swept polygon for agent_a. When a caller
+                  compares one agent against many others (compute_min_pet_sdc),
+                  passing that agent's polygon in avoids rebuilding it — a
+                  unary_union of up to 91 boxes — once per pair.
+        path_b:   optional pre-built swept polygon for agent_b.
 
     Returns:
         PET in seconds. PET_INFINITY if the agents' swept paths never overlap or
         if either agent never actually enters the spatial conflict zone.
     """
     # spatial conflict zone — where both agents' swept paths overlap
-    path_a = get_path_polygon(states, agent_a, validity)
-    path_b = get_path_polygon(states, agent_b, validity)
+    if path_a is None:
+        path_a = get_path_polygon(states, agent_a, validity)
+    if path_b is None:
+        path_b = get_path_polygon(states, agent_b, validity)
 
     if path_a is None or path_b is None:
         return PET_INFINITY
@@ -157,5 +166,63 @@ def compute_min_pet_scenario(
             pet = compute_pet_pair(states, validity, i, j)
             min_pet = min(min_pet, pet)
             pairs_checked += 1
+
+    return float(min_pet)
+
+
+def compute_min_pet_sdc(
+    states: np.ndarray,
+    validity: np.ndarray,
+    sdc_index: int,
+    max_pairs: int = None
+) -> float:
+    """
+    Minimum PET across pairs that involve the SDC.
+
+    This is the signal Phase 5 ranks on. compute_min_pet_scenario (all pairs,
+    capped at 50) has two problems on real data that this avoids:
+
+      * the cap is spent walking agent 0's pairs first, so in a scene with 51+
+        agents it never looks at any pair not involving agent 0 — which is
+        rarely the SDC.
+      * like TTC, an all-pairs minimum answers "did any two agents nearly
+        collide", not "was the SDC in danger".
+
+    No pair cap by default: there are only N-1 SDC pairs and N is at most a few
+    hundred, versus the combinatorial blow-up the all-pairs cap defends against.
+    An explicit max_pairs is honoured if a caller wants one.
+
+    The SDC's swept polygon is built once and passed into every compute_pet_pair
+    call rather than rebuilt per pair.
+
+    Args:
+        states:     shape (N, T, 7)
+        validity:   shape (N, T)
+        sdc_index:  index of the self-driving car
+        max_pairs:  optional cap on SDC pairs checked (default: no cap)
+
+    Returns:
+        min_pet: minimum SDC-involving PET in seconds, or PET_INFINITY if the
+                 SDC never shares a conflict zone with another agent (or
+                 sdc_index is out of range, or the SDC has no valid timesteps).
+    """
+    N = states.shape[0]
+    if not (0 <= sdc_index < N):
+        return PET_INFINITY
+
+    sdc_path = get_path_polygon(states, sdc_index, validity)
+    if sdc_path is None:
+        return PET_INFINITY
+
+    min_pet = PET_INFINITY
+    pairs_checked = 0
+    for j in range(N):
+        if j == sdc_index:
+            continue
+        if max_pairs is not None and pairs_checked >= max_pairs:
+            break
+        pet = compute_pet_pair(states, validity, sdc_index, j, path_a=sdc_path)
+        min_pet = min(min_pet, pet)
+        pairs_checked += 1
 
     return float(min_pet)

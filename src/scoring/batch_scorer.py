@@ -31,13 +31,18 @@ import numpy as np
 from src.danger.danger_score import score_scenario
 
 
-def _score_one(states, validity, scenario_id, shard_name=None, pet_max_pairs=50):
+def _score_one(states, validity, scenario_id, sdc_index,
+               shard_name=None, pet_max_pairs=50):
     """
     Score a single parsed scenario. Pure function of arrays -> record dict.
     Split out from score_shard so it is testable without the Waymo package.
+
+    sdc_index is required — score_scenario now ranks on SDC-restricted TTC/PET
+    (see its docstring), and a missing sdc_index should fail loudly here rather
+    than silently reverting to the all-pairs behaviour.
     """
     t0 = time.time()
-    record = score_scenario(states, validity, scenario_id,
+    record = score_scenario(states, validity, scenario_id, sdc_index,
                             min_perturbation=None, pet_max_pairs=pet_max_pairs)
     record['n_agents'] = int(states.shape[0])
     record['shard'] = shard_name
@@ -87,7 +92,8 @@ def score_shard(
             scenario_id = parser.get_scenario_id()
             states = parser.get_agent_states()
             validity = parser.get_agent_validity()
-            records.append(_score_one(states, validity, scenario_id,
+            sdc_index = parser.get_sdc_index()
+            records.append(_score_one(states, validity, scenario_id, sdc_index,
                                       shard_name, pet_max_pairs))
         except Exception as e:  # noqa: BLE001 — deliberate: isolate per scenario
             errors.append({'index': i, 'scenario_id': scenario_id,

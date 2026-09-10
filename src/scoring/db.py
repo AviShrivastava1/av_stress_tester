@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS scenario_scores (
 
 CREATE INDEX IF NOT EXISTS idx_scenario_scores_fragility
     ON scenario_scores (fragility_score DESC);
+
+-- Phase 3 rework: min_ttc / min_pet now hold SDC-restricted values and
+-- fragility_score is computed from them. These carry the old all-pairs
+-- "scene density" numbers as a diagnostic. Additive so a database already
+-- populated by an earlier run (e.g. the Colab validation shard) upgrades
+-- in place — the CREATE TABLE above has already ensured the table exists.
+ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS min_ttc_all_pairs DOUBLE PRECISION;
+ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS min_pet_all_pairs DOUBLE PRECISION;
 """
 
 
@@ -85,20 +93,24 @@ def upsert_scores(conn, records):
     if not records:
         return 0
     rows = [(r['scenario_id'], r.get('shard'), r.get('n_agents'),
-             r['min_ttc'], r['min_pet'], r['fragility_score'])
+             r['min_ttc'], r['min_pet'], r['fragility_score'],
+             r.get('min_ttc_all_pairs'), r.get('min_pet_all_pairs'))
             for r in records]
     with conn.cursor() as cur:
         execute_values(cur, """
             INSERT INTO scenario_scores
-                (scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score)
+                (scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score,
+                 min_ttc_all_pairs, min_pet_all_pairs)
             VALUES %s
             ON CONFLICT (scenario_id) DO UPDATE SET
-                shard           = EXCLUDED.shard,
-                n_agents        = EXCLUDED.n_agents,
-                min_ttc         = EXCLUDED.min_ttc,
-                min_pet         = EXCLUDED.min_pet,
-                fragility_score = EXCLUDED.fragility_score,
-                scored_at       = now()
+                shard             = EXCLUDED.shard,
+                n_agents          = EXCLUDED.n_agents,
+                min_ttc           = EXCLUDED.min_ttc,
+                min_pet           = EXCLUDED.min_pet,
+                fragility_score   = EXCLUDED.fragility_score,
+                min_ttc_all_pairs = EXCLUDED.min_ttc_all_pairs,
+                min_pet_all_pairs = EXCLUDED.min_pet_all_pairs,
+                scored_at         = now()
         """, rows)
     conn.commit()
     return len(rows)

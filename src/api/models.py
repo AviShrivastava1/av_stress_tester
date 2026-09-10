@@ -38,9 +38,20 @@ results whose status is 'ok'. A scenario whose Phase 4 pass ended in
 this API as not-yet-tested. That is the truthful answer — we have no stress-test
 result for it — but it does mean `stress_tested=False` covers both "not attempted"
 and "attempted and could not run".
+
+MIN_TTC / MIN_PET ARE SDC-RESTRICTED (Phase 3 rework)
+----------------------------------------------------
+`min_ttc` and `min_pet` are the minimum over pairs that involve the self-driving
+car — not the whole scene. `fragility_score` is computed from those. The
+scene-wide "how crowded was this" values still exist in `scenario_scores` as
+`min_ttc_all_pairs` / `min_pet_all_pairs` but are not exposed here yet; add them to
+`ScenarioSummary` and `_SCORE_COLUMNS` when the dashboard needs a density view.
+This distinction is load-bearing: on real WOMD data the all-pairs minimum TTC was
+0.0 for 100/100 scenarios (any two of ~57 agents passing close saturates it),
+which is why ranking moved to the SDC-restricted signal.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # The 4-D perturbation vector from src/optimization/perturbation_space.py, in order.
@@ -61,8 +72,17 @@ class ScenarioSummary(BaseModel):
     scenario_id: str
     shard: str | None = None
     n_agents: int | None = None
-    min_ttc: float | None = None
-    min_pet: float | None = None
+    min_ttc: float | None = Field(
+        default=None,
+        description="Minimum time-to-collision (s) over pairs involving the SDC. "
+                    "999.0 sentinel = the SDC is never in a closing pair.",
+    )
+    min_pet: float | None = Field(
+        default=None,
+        description="Minimum post-encroachment time (s) over pairs involving the "
+                    "SDC. Negative = the SDC and another agent genuinely occupied "
+                    "a conflict zone simultaneously. 999.0 = no shared conflict zone.",
+    )
     fragility_score: float
     min_perturbation: float | None = None
     collision_timestep: int | None = None

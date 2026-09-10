@@ -122,7 +122,9 @@ def main():
     for sid, y0 in SCENARIOS:
         states, validity, types = build_scenario(y0)
         built[sid] = (states, validity, types)
-        rec = _score_one(states, validity, sid, shard_name='synthetic')
+        # sdc_idx=0 — these 2-agent fixtures have the SDC as agent 0, so the only
+        # pair is an SDC pair and SDC-restricted TTC/PET equal the all-pairs values.
+        rec = _score_one(states, validity, sid, 0, shard_name='synthetic')
         records.append(rec)
         print(f"  scored {sid}: ttc={rec['min_ttc']:.2f} pet={rec['min_pet']:.2f} "
               f"fragility={rec['fragility_score']:.4f}")
