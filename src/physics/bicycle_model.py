@@ -43,15 +43,38 @@ def bicycle_step(
     delta = np.clip(delta, -DELTA_MAX, DELTA_MAX)
     a     = np.clip(a, -A_MAX, A_MAX)
 
-    # position update — car moves in the direction it is heading
-    x_next = x + v * np.cos(theta) * dt
-    y_next = y + v * np.sin(theta) * dt
-
-    # heading update — turning rate = (v / L) * tan(delta)
+    # heading update — turning rate = (v / L) * tan(delta).
+    # Uses the PRE-step speed, which is what invert_bicycle assumes when it recovers
+    # delta from a heading change. Forward and inverse must agree here or a replayed
+    # heading drifts from the logged one; do not "improve" this without changing
+    # invert_bicycle in the same edit.
     theta_next = theta + (v / wheelbase) * np.tan(delta) * dt
 
     # speed update — clamp to [0, V_MAX], cars don't go backwards
     v_next = np.clip(v + a * dt, 0.0, V_MAX)
+
+    # position update — trapezoidal, from the MIDPOINT of the step (audit B03).
+    #
+    # This used to integrate with the pre-step speed and pre-step heading:
+    #     x_next = x + v * cos(theta) * dt
+    # which is wrong in two independent ways, and both matter. An accelerating car
+    # really covers v*dt + 0.5*a*dt^2 in one step, so the old form lagged a logged
+    # 1 m/s^2 track by 0.45 m over 9 s. A turning car really moves along the chord,
+    # whose direction is the mid-step heading, so the old form drifted 0.78 m over
+    # 9 s on a 50 m-radius turn at 10 m/s.
+    #
+    # Neither error cancels against the SDC, because apply() replaces only the
+    # challenger and leaves the SDC's logged positions untouched — so this drift was
+    # enough to make the exact SAT check report a collision at ZERO perturbation.
+    #
+    # The midpoints are taken from the CLAMPED next state, not from `a` and `delta`
+    # directly, so a step that saturates V_MAX (or floors at 0) integrates the speed
+    # the car actually reached rather than the one it was commanded toward.
+    v_mid     = 0.5 * (v + v_next)
+    theta_mid = 0.5 * (theta + theta_next)
+
+    x_next = x + v_mid * np.cos(theta_mid) * dt
+    y_next = y + v_mid * np.sin(theta_mid) * dt
 
     return np.array([x_next, y_next, theta_next, v_next], dtype=np.float32)
 

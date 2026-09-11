@@ -61,17 +61,26 @@ class _DiffBicycleRollout:
             )
         self.space = space
         self.dt = float(space.dt)
+        # space.target_len is read at the challenger's first VALID frame, so this can
+        # no longer pick up a zero-filled frame 0 and produce a zero wheelbase.
         self.L = float(get_wheelbase(space.target_len))
+        if not self.L > 0:
+            raise ValueError(f"non-positive wheelbase {self.L} for the challenger")
         self.dtype = dtype
+        self.t0 = int(space.t0)
 
-        # baseline controls and initial state as fixed tensors
-        self.base_controls = torch.tensor(space.base_controls, dtype=dtype)  # (T-1,2)
+        # Baseline controls sliced to start at the challenger's first valid frame, so
+        # rollout row k corresponds to GLOBAL frame t0 + k (audit B01). The numpy
+        # path slices identically; if these two ever disagree, DE and the refiner are
+        # silently optimizing different problems.
+        self.base_controls = torch.tensor(space.base_controls[self.t0:], dtype=dtype)
         self.base_init     = torch.tensor(space.base_init, dtype=dtype)       # (4,)
 
     def rollout(self, delta: torch.Tensor) -> torch.Tensor:
         """
         delta = [dv0, dtheta0, da_bias, ddelta_bias].
-        Returns trajectory (T, 4) = [x, y, theta, v], differentiable in delta.
+        Returns trajectory (T - t0, 4) = [x, y, theta, v], differentiable in delta.
+        Row k is global frame t0 + k.
         """
         dv0, dtheta0, da_bias, ddelta_bias = delta[0], delta[1], delta[2], delta[3]
 
@@ -81,18 +90,26 @@ class _DiffBicycleRollout:
         x = self.base_init[0]
         y = self.base_init[1]
         theta = self.base_init[2] + dtheta0
-        v = self.base_init[3] + dv0
+        # clamp the initial speed exactly as PerturbationSpace.apply does (audit B08)
+        v = torch.clamp(self.base_init[3] + dv0, 0.0, V_MAX)
 
         traj = [torch.stack([x, y, theta, v])]
         for t in range(steer.shape[0]):
             d = torch.clamp(steer[t], -DELTA_MAX, DELTA_MAX)
             a = torch.clamp(accel[t], -A_MAX, A_MAX)
-            x = x + v * torch.cos(theta) * self.dt
-            y = y + v * torch.sin(theta) * self.dt
-            theta = theta + (v / self.L) * torch.tan(d) * self.dt
-            v = torch.clamp(v + a * self.dt, 0.0, V_MAX)
+            # Mirrors bicycle_step exactly, including the trapezoidal position update
+            # (audit B03): heading and speed first, then position from the midpoints.
+            # This ordering is load-bearing — the numpy and torch rollouts must agree
+            # step for step, not merely approximately.
+            theta_next = theta + (v / self.L) * torch.tan(d) * self.dt
+            v_next = torch.clamp(v + a * self.dt, 0.0, V_MAX)
+            v_mid = 0.5 * (v + v_next)
+            theta_mid = 0.5 * (theta + theta_next)
+            x = x + v_mid * torch.cos(theta_mid) * self.dt
+            y = y + v_mid * torch.sin(theta_mid) * self.dt
+            theta, v = theta_next, v_next
             traj.append(torch.stack([x, y, theta, v]))
-        return torch.stack(traj)  # (T,4)
+        return torch.stack(traj)  # (T - t0, 4)
 
 
 def _smooth_margin(space, traj, beta, n_circles, dtype):
@@ -103,15 +120,24 @@ def _smooth_margin(space, traj, beta, n_circles, dtype):
     """
     states, validity = space.states0, space.validity
     sdc, tgt = space.sdc_idx, space.target_idx
-    T = traj.shape[0]
+    t0 = int(space.t0)
 
-    sdc_len = float(states[sdc, 0, 5]); sdc_wid = float(states[sdc, 0, 6])
-    tgt_len = float(space.target_len);  tgt_wid = float(states[tgt, 0, 6])
+    # Dimensions come from each agent's own first valid frame, via the space, rather
+    # than from frame 0 — which for a late-appearing agent is zero-fill (audit B02).
+    sdc_len = float(space.sdc_len); sdc_wid = float(space.sdc_wid)
+    tgt_len = float(space.target_len);  tgt_wid = float(space.target_wid)
     tgt_len_t = torch.tensor(tgt_len, dtype=dtype)
     tgt_wid_t = torch.tensor(tgt_wid, dtype=dtype)
 
     per_t_min = []
-    for t in range(T):
+    # traj row k is GLOBAL frame t0 + k (audit B01). This loop used to index the
+    # logged SDC state with the rollout row index, which is only the same thing when
+    # t0 == 0 — once the rollout starts at t0 the two diverge and the margin would be
+    # compared against the wrong SDC frame entirely.
+    for k in range(traj.shape[0]):
+        t = t0 + k
+        if t >= states.shape[1]:
+            break
         if not (validity[sdc, t] and validity[tgt, t]):
             continue
         # SDC circles (fixed, no grad)
@@ -122,7 +148,7 @@ def _smooth_margin(space, traj, beta, n_circles, dtype):
                                  torch.tensor(sdc_len, dtype=dtype),
                                  torch.tensor(sdc_wid, dtype=dtype), n_circles)
         # challenger circles (differentiable)
-        tx, ty, tth = traj[t, 0], traj[t, 1], traj[t, 2]
+        tx, ty, tth = traj[k, 0], traj[k, 1], traj[k, 2]
         tc, tr = _circle_centers(tx, ty, tth, tgt_len_t, tgt_wid_t, n_circles)
 
         # pairwise center distances minus radius sums -> (k*k,)

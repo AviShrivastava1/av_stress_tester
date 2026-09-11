@@ -6,6 +6,21 @@ V_MAX = 40.0   # max speed (m/s)
 DT    = 0.1    # timestep duration (seconds)
 
 
+def project_to_magnitude(u: float, v: float, limit: float):
+    """
+    Scale the vector (u, v) back onto the disc of radius `limit`, preserving its
+    direction. Vectors already inside the disc are returned untouched.
+
+    Shared by linear_step and invert_linear so the forward and inverse models can
+    never disagree about whether a bound is on the magnitude or on the components.
+    """
+    magnitude = np.sqrt(u * u + v * v)
+    if magnitude > limit:
+        scale = limit / magnitude
+        return u * scale, v * scale
+    return u, v
+
+
 def linear_step(
     state: np.ndarray,
     control: np.ndarray,
@@ -26,24 +41,34 @@ def linear_step(
     x, y, vx, vy = state
     ax, ay = control
 
-    # enforce acceleration constraints
-    ax = np.clip(ax, -A_MAX, A_MAX)
-    ay = np.clip(ay, -A_MAX, A_MAX)
+    # enforce the acceleration constraint as a MAGNITUDE bound (audit B08).
+    # A_MAX is documented as "max acceleration magnitude", but this used to clip the
+    # two components independently, which bounds a SQUARE and not a disc: control
+    # [5, 5] against a declared 5.0 limit produced |a| = 7.07 m/s^2. Projecting the
+    # vector back onto the disc enforces the limit that is actually written down,
+    # and preserves the commanded direction while doing it.
+    ax, ay = project_to_magnitude(ax, ay, A_MAX)
 
-    # position update — includes acceleration term for accuracy
-    x_next = x + vx * dt + 0.5 * ax * dt**2
-    y_next = y + vy * dt + 0.5 * ay * dt**2
-
-    # velocity update
+    # velocity update, including the speed constraint, BEFORE position — the
+    # position update below integrates the velocity the agent actually ends at.
     vx_next = vx + ax * dt
     vy_next = vy + ay * dt
+    vx_next, vy_next = project_to_magnitude(vx_next, vy_next, V_MAX)
 
-    # enforce speed constraint
-    speed = np.sqrt(vx_next**2 + vy_next**2)
-    if speed > V_MAX:
-        scale = V_MAX / speed
-        vx_next *= scale
-        vy_next *= scale
+    # position update — trapezoidal, from the midpoint of the clamped velocities.
+    #
+    # Unsaturated this is algebraically identical to the previous
+    # `x + vx*dt + 0.5*ax*dt**2`, so for essentially every real pedestrian and
+    # cyclist nothing changes. It differs only when A_MAX or V_MAX actually binds,
+    # which is exactly where the old form silently stopped being trapezoidal: it
+    # integrated the PRE-scaling velocity, so a saturated step moved the agent
+    # further than its own clamped velocity allowed.
+    #
+    # Matching bicycle_step's rule here is the point. "The two kinematic models
+    # integrate position differently" is the asymmetry that became audit B03; a
+    # second instance of it is not worth keeping.
+    x_next = x + 0.5 * (vx + vx_next) * dt
+    y_next = y + 0.5 * (vy + vy_next) * dt
 
     return np.array([x_next, y_next, vx_next, vy_next], dtype=np.float32)
 
@@ -70,8 +95,13 @@ def invert_linear(
     ax = (vx_next - vx) / dt
     ay = (vy_next - vy) / dt
 
-    ax = np.clip(ax, -A_MAX, A_MAX)
-    ay = np.clip(ay, -A_MAX, A_MAX)
+    # Same magnitude projection linear_step applies (audit B08). Inversion and the
+    # forward step MUST clamp by the same rule: if invert clipped per-component and
+    # the step projected by magnitude, a recovered control would be re-clamped on
+    # replay and the pedestrian/cyclist path would acquire drift that the replay
+    # fidelity gate then refuses — a bug manufactured purely by the two functions
+    # disagreeing about what A_MAX means.
+    ax, ay = project_to_magnitude(ax, ay, A_MAX)
 
     return np.array([ax, ay], dtype=np.float32)
 

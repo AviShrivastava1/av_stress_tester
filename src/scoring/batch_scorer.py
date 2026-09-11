@@ -124,7 +124,7 @@ def _stress_one(states, validity, types, sdc_idx,
     Testable without the Waymo package.
     """
     from src.optimization.perturbation_space import (
-        PerturbationSpace, pick_nearest_challenger,
+        PerturbationSpace, ReplayFidelityError, pick_nearest_challenger,
     )
     from src.optimization.scipy_optimizer import optimize_scenario
 
@@ -132,7 +132,21 @@ def _stress_one(states, validity, types, sdc_idx,
     if tgt < 0:
         return {'status': 'no_challenger'}
 
-    space = PerturbationSpace(states, validity, types, sdc_idx, tgt)
+    # Wrapped narrowly, around this one call and nothing else. A refused replay is a
+    # known, expected, measurable outcome of a working pipeline, so it gets its own
+    # status — the same reason 'no_challenger' is a status rather than an exception.
+    # Left unwrapped it would fall through to stress_test_scenarios' generic handler
+    # and arrive as status='error' with a stringified message, throwing away the
+    # structured reason/error that the real-shard run needs to break the refusals
+    # down. Genuine failures elsewhere in this function still reach that handler.
+    try:
+        space = PerturbationSpace(states, validity, types, sdc_idx, tgt)
+    except ReplayFidelityError as e:
+        return {'status': 'replay_infeasible',
+                'target_idx': int(tgt),
+                'baseline_replay_error': e.baseline_replay_error,
+                'reason': e.reason}
+
     result = optimize_scenario(space, **(de_kwargs or {}))
     result['target_idx'] = int(tgt)
     result['method'] = 'de'
