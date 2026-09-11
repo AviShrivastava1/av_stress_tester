@@ -92,6 +92,7 @@ class ReplayFidelityError(ValueError):
             f"baseline_replay_collides={self.baseline_replay_collides}"
         )
 
+
 class PerturbationSpace:
     """
     Owns the perturbation parameterization for one (scenario, challenger) pair.

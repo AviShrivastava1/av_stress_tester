@@ -62,6 +62,11 @@ import time
 
 import numpy as np
 
+# One shared definition of "where was this agent observed?". PerturbationSpace and
+# the torch margin use the same helper; three modules quietly disagreeing about that
+# was audit findings B01 and B02.
+from src.data.validity import valid_timesteps as _valid_timesteps
+
 
 # The composite index is additive — it does not redefine anything db.py created.
 # It exists to serve the API's ranked ORDER BY (fragility_score DESC, scenario_id),
@@ -99,6 +104,11 @@ CREATE TABLE IF NOT EXISTS perturbed_paths (
 
 CREATE INDEX IF NOT EXISTS idx_scenario_scores_fragility_id
     ON scenario_scores (fragility_score DESC, scenario_id);
+
+-- Audit B14: which stress run this geometry was replayed from. Compared against
+-- scenario_scores.stress_run_id on read, so a path exported from an older delta can
+-- be DETECTED rather than served as evidence for a newer one.
+ALTER TABLE perturbed_paths ADD COLUMN IF NOT EXISTS stress_run_id TEXT;
 """
 
 
@@ -127,12 +137,6 @@ def _linestring_m_wkt(xs, ys, ms) -> str:
     return f'LINESTRING M({pts})'
 
 
-# Re-exported rather than reimplemented: PerturbationSpace and the torch margin
-# answer "where does this agent start?" with the same helper, and three modules
-# quietly disagreeing about that was audit findings B01 and B02.
-from src.data.validity import valid_timesteps as _valid_timesteps
-
-
 # ── per-scenario exports ────────────────────────────────────────────────────────
 
 def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
@@ -155,6 +159,7 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
     """
     n_agents = states.shape[0]
     written = skipped = 0
+    exportable = []
 
     with conn.cursor() as cur:
         for i in range(n_agents):
@@ -162,6 +167,7 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
             if len(ts) < 2:
                 skipped += 1
                 continue
+            exportable.append(int(i))
 
             xs = states[i, ts, 0]
             ys = states[i, ts, 1]
@@ -194,11 +200,30 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
             ))
             written += 1
 
+        # Audit B15: a re-export REPLACES this scenario's agent set, it does not add
+        # to it. Upserting alone leaves a stale row behind whenever an agent that was
+        # exportable last time is not this time — corrected input, a parser change, or
+        # an agent that dropped out of the array entirely. The export then truthfully
+        # reports "2 written, 1 skipped" while the API keeps serving all three.
+        cur.execute("""
+            DELETE FROM scenario_agents
+             WHERE scenario_id = %s AND NOT (agent_idx = ANY(%s))
+        """, (scenario_id, exportable))
+
+        # A perturbed path pointing at an agent that no longer exists is the same
+        # defect one table over: /perturbed would look up a baseline that is gone and
+        # quietly return a perturbed path with baseline=None.
+        cur.execute("""
+            DELETE FROM perturbed_paths
+             WHERE scenario_id = %s AND NOT (target_idx = ANY(%s))
+        """, (scenario_id, exportable))
+
     conn.commit()
     return written, skipped
 
 
-def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_idx):
+def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_idx,
+                          stress_run_id=None):
     """
     Write the challenger's PERTURBED trajectory — the Phase 4 answer, made visible.
 
@@ -215,6 +240,20 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     if len(ts) < 2:
         return False
 
+    # Default to the run id currently recorded on the score row (audit B14).
+    #
+    # An optional parameter rather than a required one, and defaulted from the
+    # database rather than from the caller: an exporter is always replaying the delta
+    # that was just persisted, so reading the id back from the row is both the
+    # correct answer and the one that cannot be passed inconsistently. Callers that
+    # genuinely know better may still override it.
+    if stress_run_id is None:
+        with conn.cursor() as cur:
+            cur.execute("SELECT stress_run_id FROM scenario_scores WHERE scenario_id = %s",
+                        (scenario_id,))
+            row = cur.fetchone()
+            stress_run_id = row[0] if row else None
+
     xs = perturbed_states[target_idx, ts, 0]
     ys = perturbed_states[target_idx, ts, 1]
     wkt = _linestring_m_wkt(xs, ys, ts.astype(float))
@@ -223,15 +262,16 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO perturbed_paths
-                (scenario_id, target_idx, n_points, headings, path)
-            VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 0))
+                (scenario_id, target_idx, n_points, headings, path, stress_run_id)
+            VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 0), %s)
             ON CONFLICT (scenario_id) DO UPDATE SET
-                target_idx  = EXCLUDED.target_idx,
-                n_points    = EXCLUDED.n_points,
-                headings    = EXCLUDED.headings,
-                path        = EXCLUDED.path,
-                exported_at = now()
-        """, (scenario_id, int(target_idx), len(ts), headings, wkt))
+                target_idx    = EXCLUDED.target_idx,
+                n_points      = EXCLUDED.n_points,
+                headings      = EXCLUDED.headings,
+                path          = EXCLUDED.path,
+                stress_run_id = EXCLUDED.stress_run_id,
+                exported_at   = now()
+        """, (scenario_id, int(target_idx), len(ts), headings, wkt, stress_run_id))
     conn.commit()
     return True
 
