@@ -127,10 +127,23 @@ def _stress_one(states, validity, types, sdc_idx,
         PerturbationSpace, ReplayFidelityError, pick_nearest_challenger,
     )
     from src.optimization.scipy_optimizer import optimize_scenario
+    from src.scoring.db import (
+        OUTCOME_COLLISION_FOUND, OUTCOME_NO_CHALLENGER,
+        OUTCOME_NO_COLLISION_FOUND, OUTCOME_REPLAY_INFEASIBLE,
+    )
+
+    # How many challengers COULD have been searched, against how many were. Recorded
+    # because the honest description of this pass is "one heuristically-chosen
+    # challenger", and a reader of the result should not have to know that to
+    # interpret it (audit B04).
+    challengers_total = int(sum(1 for j in range(states.shape[0]) if j != sdc_idx))
 
     tgt = pick_nearest_challenger(states, validity, sdc_idx)
     if tgt < 0:
-        return {'status': 'no_challenger'}
+        return {'status': 'no_challenger',
+                'outcome': OUTCOME_NO_CHALLENGER,
+                'challengers_total': challengers_total,
+                'challengers_searched': 0}
 
     # Wrapped narrowly, around this one call and nothing else. A refused replay is a
     # known, expected, measurable outcome of a working pipeline, so it gets its own
@@ -142,12 +155,18 @@ def _stress_one(states, validity, types, sdc_idx,
     try:
         space = PerturbationSpace(states, validity, types, sdc_idx, tgt)
     except ReplayFidelityError as e:
+        # NOT a search that found nothing — no search ran at all. Kept as its own
+        # outcome all the way to the API so it can never be read as "came back clean".
         return {'status': 'replay_infeasible',
+                'outcome': OUTCOME_REPLAY_INFEASIBLE,
                 'target_idx': int(tgt),
                 'baseline_replay_error': e.baseline_replay_error,
-                'reason': e.reason}
+                'reason': e.reason,
+                'challengers_total': challengers_total,
+                'challengers_searched': 0}
 
-    result = optimize_scenario(space, **(de_kwargs or {}))
+    de_kwargs = dict(de_kwargs or {})
+    result = optimize_scenario(space, **de_kwargs)
     result['target_idx'] = int(tgt)
     result['method'] = 'de'
 
@@ -164,7 +183,47 @@ def _stress_one(states, validity, types, sdc_idx,
             result = refined
 
     result['status'] = 'ok'
+    result['outcome'] = (OUTCOME_COLLISION_FOUND if result.get('collision')
+                         else OUTCOME_NO_COLLISION_FOUND)
+    result['challengers_total'] = challengers_total
+    result['challengers_searched'] = 1
+
+    # What the claim rests on, recorded alongside the claim. Without this, a
+    # no_collision_found row is indistinguishable from a thorough search, when in
+    # fact it is one challenger under a finite stochastic budget.
+    result['search_provenance'] = {
+        'challenger_selection': 'nearest_by_min_center_distance',
+        'bounds': [[float(lo), float(hi)] for lo, hi in space.bounds],
+        'de_popsize': de_kwargs.get('popsize', 15),
+        'de_maxiter': de_kwargs.get('maxiter', 200),
+        'de_tol': de_kwargs.get('tol', 1e-3),
+        'de_seed': de_kwargs.get('seed', 0),
+        'de_n_iter': result.get('n_iter'),
+        'de_n_eval': result.get('n_eval'),
+        'baseline_replay_error': float(space.baseline_replay_error),
+        'target_has_interior_gap': bool(space.has_interior_gap),
+    }
     return result
+
+
+class StressResults(dict):
+    """
+    dict scenario_id -> result, plus `.errors` for failures that have no scenario id.
+
+    A plain dict cannot express "this record failed before we learned which scenario
+    it was" (audit B05). The old code wrote such failures under whatever `sid` was
+    left over from the previous iteration, destroying a result that had already
+    succeeded.
+
+    A dict SUBCLASS rather than a (results, errors) tuple, which would have been
+    symmetric with score_shard: every existing caller indexes the return directly —
+    export_shard_geometry, db.update_stress_results, the validation notebook, and the
+    audit fixture — and all of them keep working unchanged this way.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.errors = []
 
 
 def stress_test_scenarios(
@@ -180,20 +239,25 @@ def stress_test_scenarios(
     until all requested IDs have been found.
 
     Returns:
-        dict scenario_id -> phase 4 result dict
-        (keys: collision, min_perturbation, delta, collision_timestep,
-         target_idx, method, status — or status='no_challenger'/'error')
+        StressResults — a dict scenario_id -> phase 4 result dict
+        (keys: collision, min_perturbation, delta, collision_timestep, target_idx,
+         method, status, outcome — or status='no_challenger'/'replay_infeasible'/
+         'error'), carrying `.errors` for records that failed before yielding an id.
     """
     from src.data.loader import ShardLoader
     from src.data.parser import ScenarioParser
 
     wanted = set(scenario_ids)
-    results = {}
+    results = StressResults()
     t_start = time.time()
 
-    for raw in ShardLoader(shard_path):
+    for record_index, raw in enumerate(ShardLoader(shard_path)):
         if not wanted:
             break
+        # Reset every iteration (audit B05). Without this, `sid` survives from the
+        # previous pass, and a record that fails to parse BEFORE the assignment below
+        # lands in the except handler still holding the last scenario's id.
+        sid = None
         try:
             parser = ScenarioParser(raw)
             sid = parser.get_scenario_id()
@@ -216,16 +280,28 @@ def stress_test_scenarios(
                 else:
                     print(f"    robustly safe within bounds ({r.get('status')})")
         except Exception as e:  # noqa: BLE001
-            sid = sid if 'sid' in dir() else None
-            results[str(sid)] = {'status': 'error',
-                                 'error': f'{type(e).__name__}: {e}'}
-            if verbose:
-                print(f"  [error] {sid}: {e}")
+            detail = f'{type(e).__name__}: {e}'
+            if sid is None:
+                # The record never yielded an id, so there is no scenario to attribute
+                # this to. It goes in the separate error list against its record
+                # index — writing it into `results` under any key would either invent
+                # a scenario or overwrite a real one.
+                results.errors.append({'record_index': record_index,
+                                       'scenario_id': None, 'error': detail})
+                if verbose:
+                    print(f"  [error] record {record_index} (unidentified): {e}")
+            else:
+                results[sid] = {'status': 'error', 'outcome': 'error',
+                                'error': detail}
+                if verbose:
+                    print(f"  [error] {sid}: {e}")
 
     if verbose:
         missing = wanted
         if missing:
             print(f"  warning: {len(missing)} requested IDs not found in shard")
+        if results.errors:
+            print(f"  {len(results.errors)} record(s) failed before yielding an id")
         print(f"Stress pass done: {len(results)} scenarios, "
               f"{time.time() - t_start:.1f}s")
     return results

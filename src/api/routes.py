@@ -27,7 +27,9 @@ router = APIRouter()
 # query, the detail query and the perturbed query cannot disagree about them.
 _SCORE_COLUMNS = """
     scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score,
-    min_perturbation, collision_timestep, stress_method, stress_tested_at
+    min_perturbation, collision_timestep, stress_method, stress_tested_at,
+    stress_attempted_at, stress_outcome, last_attempt_outcome,
+    challengers_total, challengers_searched, search_certifies_infeasibility
 """
 
 
@@ -49,6 +51,13 @@ def _summary_fields(row) -> dict:
     frontend.
     """
     stress_tested = row['stress_tested_at'] is not None
+
+    # .get(), not [...], for every column added in Batch 2. Rows reach this function
+    # from _SCORE_COLUMNS and always carry them, but the audit's B04 fixture builds a
+    # bare dict by hand — and a KeyError there would be a FAILING test dressed up as
+    # a passing fix. Defensive access keeps the assertion the thing under test.
+    outcome = row.get('stress_outcome')
+
     return {
         'scenario_id': row['scenario_id'],
         'shard': row['shard'],
@@ -60,8 +69,31 @@ def _summary_fields(row) -> dict:
         'collision_timestep': row['collision_timestep'],
         'stress_method': row['stress_method'],
         'stress_tested': stress_tested,
-        # Phase 4 ran, and found no collision within bounds.
-        'robustly_safe': stress_tested and row['min_perturbation'] is None,
+        'stress_attempted': row.get('stress_attempted_at') is not None,
+        # What the MOST RECENT pass concluded. Distinct from stress_outcome, which
+        # describes the run that produced the stored result — they differ whenever a
+        # later pass failed to reproduce an earlier success.
+        'last_attempt_outcome': row.get('last_attempt_outcome'),
+        # What the pass that PRODUCED the stored result concluded. NULL on rows
+        # written before this column existed,
+        # and that stays None rather than being inferred — an old row with
+        # stress_tested_at set and min_perturbation NULL could have been a completed
+        # search OR a scenario that would now be refused as replay_infeasible.
+        'stress_outcome': outcome,
+        'challengers_total': row.get('challengers_total'),
+        'challengers_searched': row.get('challengers_searched'),
+        # A search ran to completion and found nothing within ITS BUDGET AND BOUNDS.
+        # This is a statement about the search, not about the scenario.
+        'no_collision_found': outcome == 'no_collision_found',
+        # A safety certificate, and therefore almost never true: it requires a method
+        # that actually establishes no collision is reachable. Nothing in this
+        # pipeline sets search_certifies_infeasibility, because DE's termination test
+        # is population spread rather than a proof of infeasibility, and only one
+        # heuristically-chosen challenger is searched (audit B04). Kept as a derived
+        # field so the day an exhaustive method exists, the data changes and this does
+        # not.
+        'robustly_safe': (outcome == 'no_collision_found'
+                          and bool(row.get('search_certifies_infeasibility'))),
     }
 
 
@@ -216,7 +248,7 @@ def stats(conn=Depends(get_db)):
     Corpus-level counts for the dashboard header.
 
     `count(*) FILTER (WHERE ...)` computes every count in ONE pass over the table,
-    rather than issuing four separate COUNT queries that each scan it again.
+    rather than issuing nine separate COUNT queries that each scan it again.
     """
     with dict_cursor(conn) as cur:
         cur.execute("""
@@ -227,8 +259,25 @@ def stats(conn=Depends(get_db)):
                 count(*) FILTER (WHERE stress_tested_at IS NOT NULL
                                    AND min_perturbation IS NOT NULL)
                                                                 AS collisions_found,
-                count(*) FILTER (WHERE stress_tested_at IS NOT NULL
-                                   AND min_perturbation IS NULL)
+                -- A completed search that found nothing within its budget and
+                -- bounds. NOT a safety certificate, and deliberately no longer
+                -- counted as one (audit B04).
+                count(*) FILTER (WHERE stress_outcome = 'no_collision_found')
+                                                                AS no_collision_found,
+                -- These three describe ATTEMPTS, not stored results, so they count
+                -- last_attempt_outcome. Counting stress_outcome would under-report
+                -- them: a scenario refused today but holding a result from an earlier
+                -- successful pass keeps stress_outcome='collision_found', and the
+                -- refusal would go uncounted — which is exactly the number Batch 5's
+                -- shard run needs.
+                count(*) FILTER (WHERE last_attempt_outcome = 'replay_infeasible')
+                                                                AS replay_infeasible,
+                count(*) FILTER (WHERE last_attempt_outcome = 'no_challenger')
+                                                                AS no_challenger,
+                count(*) FILTER (WHERE last_attempt_outcome = 'error')
+                                                                AS stress_errors,
+                count(*) FILTER (WHERE stress_outcome = 'no_collision_found'
+                                   AND search_certifies_infeasibility)
                                                                 AS robustly_safe,
                 min(fragility_score)                            AS fragility_min,
                 max(fragility_score)                            AS fragility_max,
@@ -254,6 +303,10 @@ def stats(conn=Depends(get_db)):
         total_scenarios=row['total_scenarios'],
         stress_tested=row['stress_tested'],
         collisions_found=row['collisions_found'],
+        no_collision_found=row['no_collision_found'],
+        replay_infeasible=row['replay_infeasible'],
+        no_challenger=row['no_challenger'],
+        stress_errors=row['stress_errors'],
         robustly_safe=row['robustly_safe'],
         with_geometry=with_geometry,
         fragility_min=row['fragility_min'],
@@ -466,7 +519,7 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
     """
     with dict_cursor(conn) as cur:
         cur.execute("""
-            SELECT min_perturbation, collision_timestep, delta
+            SELECT min_perturbation, collision_timestep, delta, stress_run_id
             FROM scenario_scores
             WHERE scenario_id = %s
         """, (scenario_id,))
@@ -476,6 +529,34 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
             raise HTTPException(status_code=404,
                                 detail=f"Unknown scenario: {scenario_id}")
 
+        # Join on stress_run_id, so a path exported from an OLDER delta is simply not
+        # returned (audit B14). update_stress_results already deletes the stale row
+        # when a new result is committed; this is the second line of defence, for a
+        # row written out of band or by a partially-completed export.
+        #
+        # An absent path is the right failure mode. The alternative is drawing an old
+        # trajectory beside a new delta and labelling it evidence, which is worse than
+        # drawing nothing — the audit's own fixture accepts a null path here and only
+        # checks the geometry IF one is returned.
+        #
+        # IS NOT DISTINCT FROM, NOT `=`, and the difference is a deliberate carve-out
+        # for rows that predate this column. `=` is NULL (not true) when either side
+        # is NULL, so it would hide the perturbed path of every row exported before
+        # Batch 2 — a silent regression dressed up as a safety check. The full truth
+        # table this relies on:
+        #
+        #     score    path     IS NOT DISTINCT FROM     served?
+        #     NULL     NULL     true                     yes  <- legacy, unchanged
+        #     'x'      NULL     false                    no   <- new result, stale export
+        #     'x'      'y'      false                    no   <- different runs
+        #     'x'      'x'      true                     yes  <- same run, verified
+        #
+        # So a legacy pair keeps serving exactly what it always served, and any row
+        # that has been through the new write path gets real protection. This is the
+        # same reasoning Block 5 applies to NULL versus the 1/999 sentinels: NULL
+        # means "not recorded", and "not recorded" is not evidence of a mismatch.
+        # Tested by test_legacy_rows_without_a_run_id_still_serve and
+        # test_a_mismatched_run_id_hides_the_perturbed_path.
         cur.execute("""
             SELECT pp.target_idx, pp.headings,
                    ST_AsGeoJSON(pp.path) AS geojson,
@@ -483,7 +564,9 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
                            FROM ST_DumpPoints(pp.path) dp
                           ORDER BY dp.path) AS measures
             FROM perturbed_paths pp
+            JOIN scenario_scores ss ON ss.scenario_id = pp.scenario_id
             WHERE pp.scenario_id = %s
+              AND pp.stress_run_id IS NOT DISTINCT FROM ss.stress_run_id
         """, (scenario_id,))
         pert_row = cur.fetchone()
 
