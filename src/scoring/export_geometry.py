@@ -127,9 +127,10 @@ def _linestring_m_wkt(xs, ys, ms) -> str:
     return f'LINESTRING M({pts})'
 
 
-def _valid_timesteps(validity, agent_idx) -> np.ndarray:
-    """Indices of the timesteps where this agent was actually observed."""
-    return np.where(validity[agent_idx])[0]
+# Re-exported rather than reimplemented: PerturbationSpace and the torch margin
+# answer "where does this agent start?" with the same helper, and three modules
+# quietly disagreeing about that was audit findings B01 and B02.
+from src.data.validity import valid_timesteps as _valid_timesteps
 
 
 # ── per-scenario exports ────────────────────────────────────────────────────────
