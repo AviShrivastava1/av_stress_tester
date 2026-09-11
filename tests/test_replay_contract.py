@@ -34,6 +34,19 @@ from src.physics.linear_model import A_MAX as LINEAR_A_MAX, linear_step
 DT = 0.1
 CAR_L, CAR_W = 4.5, 2.0
 
+# Drift tolerance for fixtures that TURN, and why it is not tighter. A discrete step
+# advances along the CHORD of the arc, length 2R*sin(w*dt/2), while the model advances
+# v*dt = R*w*dt along the arc. That leaves a relative shortfall of (w*dt/2)^2/6 = 1.7e-5
+# per step, which over the ~90 m of path in these fixtures accumulates to ~1.5e-3 m. It
+# is an inherent property of integrating a curve at 10 Hz, not a defect, and no choice
+# of midpoint removes it. Measured: 1.33e-3 m over the full 91 frames.
+#
+# 5e-3 sits above that residual and 100x below the 0.5 m fidelity gate, so it pins the
+# fix (the pre-fix integrator drifts 0.783 m here, 150x this bound) without pinning
+# float noise. Shared by every turning fixture so the bound is chosen once rather than
+# re-guessed per test against whatever margin that test happens to have.
+TURN_TOLERANCE_M = 5e-3
+
 
 def _scene(n=2, t=91):
     """n agents, all vehicles, all frames valid, with real dimensions."""
@@ -84,17 +97,6 @@ def test_turning_track_replays_without_drift():
     space = PerturbationSpace(s, v, types, 0, 1)
     replay = space.apply(np.zeros(4))
 
-    # TURN_TOLERANCE_M, and why it is not tighter. A discrete step advances along the
-    # CHORD of the arc, length 2R*sin(w*dt/2), while the model advances v*dt = R*w*dt
-    # along the arc. That leaves a relative shortfall of (w*dt/2)^2/6 = 1.7e-5 per
-    # step which accumulates over the 90 m of path here to ~1.5e-3 m — an inherent
-    # property of integrating a curve at 10 Hz, not a defect, and not removable by
-    # any choice of midpoint. Measured: 1.33e-3 m.
-    #
-    # 5e-3 sits above that residual and 100x below the 0.5 m fidelity gate, so it
-    # pins the fix (the pre-fix integrator drifts 0.783 m here, 150x this bound)
-    # without pinning float noise.
-    TURN_TOLERANCE_M = 5e-3
     drift = np.linalg.norm(replay[1, :, :2] - s[1, :, :2], axis=1).max()
     assert drift <= TURN_TOLERANCE_M, (
         f"turning replay drifted {drift:.6f} m at zero perturbation"
@@ -131,8 +133,12 @@ def test_late_start_replays_on_its_own_frames():
     assert space.t0 == 40
 
     replay = space.apply(np.zeros(4))
+    # This fixture TURNS, so it carries the same chord-vs-arc residual as the one
+    # above and must share its bound. It previously asserted 1e-3 against a measured
+    # 8.04e-4 — a 1.24x margin that would have failed on any change to t0, for a
+    # reason that is not a bug.
     drift = np.linalg.norm(replay[1, 40:, :2] - s[1, 40:, :2], axis=1).max()
-    assert drift <= 1e-3, f"late-start replay drifted {drift:.6f} m"
+    assert drift <= TURN_TOLERANCE_M, f"late-start replay drifted {drift:.6f} m"
     np.testing.assert_array_equal(replay[1, :40], logged_before)
 
 
