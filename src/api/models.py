@@ -129,6 +129,25 @@ DELTA_LABELS = [
     "steering bias (rad)",
 ]
 
+# The linear model's parameterization, for pedestrian and cyclist challengers
+# (audit B13). A delta produced by linear_step is [dvx0, dvy0, dax_bias, day_bias] —
+# four components with different meanings and different UNITS from the bicycle set
+# above. Labelling a pedestrian's y-velocity offset "initial heading (rad)" is not a
+# cosmetic slip: it invites a reader to interpret metres per second as radians.
+LINEAR_DELTA_LABELS = [
+    "initial vx (m/s)",
+    "initial vy (m/s)",
+    "x-acceleration bias (m/s^2)",
+    "y-acceleration bias (m/s^2)",
+]
+
+# Which label set belongs to which recorded parameterization. Keyed by the value
+# _stress_one writes into search_provenance, so the mapping has one definition.
+DELTA_LABELS_BY_PARAMETERIZATION = {
+    'bicycle': DELTA_LABELS,
+    'linear': LINEAR_DELTA_LABELS,
+}
+
 
 class ScenarioSummary(BaseModel):
     """One row of the ranked list."""
@@ -215,15 +234,24 @@ class PerturbedResponse(BaseModel):
     The Phase 4 answer, made drawable: the challenger's logged path next to its
     minimally-perturbed one.
 
-    Every field except scenario_id and delta_labels is nullable, because
-    "this scenario has not been stress-tested yet" is a normal state that returns
-    200, not an error.
+    Every field except scenario_id is nullable, because "this scenario has not been
+    stress-tested yet" is a normal state that returns 200, not an error.
+
+    delta_labels USED to be the second exception, and this docstring said so. It stopped
+    being one in Batch 3 (audit B13): a delta can only be labelled if we know which
+    kinematic model produced it, and for a legacy row with neither recorded provenance
+    nor exported geometry, nothing does. Corrected here rather than quietly reworded,
+    because the old sentence is exactly the guarantee a frontend would have been written
+    against.
     """
 
     scenario_id: str
     target_idx: int | None = None
     delta: list[float] | None = None
-    delta_labels: list[str] = DELTA_LABELS
+    # NULLABLE, and null means "we cannot say" (audit B13). A delta is only labellable
+    # if we know which parameterization produced it; see the module docstring. Guessing
+    # the vehicle set for an unlabellable delta is the B13 defect narrowed, not fixed.
+    delta_labels: list[str] | None = None
     min_perturbation: float | None = None
     collision_timestep: int | None = None
     baseline: AgentTrack | None = None

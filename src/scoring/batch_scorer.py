@@ -192,6 +192,17 @@ def _stress_one(states, validity, types, sdc_idx,
     # no_collision_found row is indistinguishable from a thorough search, when in
     # fact it is one challenger under a finite stochastic budget.
     result['search_provenance'] = {
+        # Which kinematic model produced this delta, and therefore which units its four
+        # components carry (audit B13). Recorded as the DIRECT fact — the model actually
+        # dispatched to — rather than left to be inferred downstream from agent type,
+        # because the agent type is only available once geometry has been exported and
+        # the label has to be right before that.
+        #
+        # It lives in search_provenance because it IS search provenance: "how was the
+        # stored result produced" is the same concept as the bounds and the DE budget
+        # beside it, and Batch 2 established that fields of one concept travel together
+        # rather than being split across a separate column.
+        'delta_parameterization': 'bicycle' if space.is_vehicle else 'linear',
         'challenger_selection': 'nearest_by_min_center_distance',
         'bounds': [[float(lo), float(hi)] for lo, hi in space.bounds],
         'de_popsize': de_kwargs.get('popsize', 15),

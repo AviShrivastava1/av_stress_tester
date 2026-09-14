@@ -37,6 +37,30 @@ class Settings:
         self.pool_min = int(os.environ.get('API_POOL_MIN', 1))
         self.pool_max = int(os.environ.get('API_POOL_MAX', 8))
 
+        # How long a request may wait for a free connection before the server admits
+        # it is overloaded (audit B18). ThreadedConnectionPool.getconn does not block —
+        # it raises the moment the pool is at its ceiling — so without a wait a brief
+        # burst becomes a 503 for a request that would have been served milliseconds
+        # later. The queries here are single-digit milliseconds, so 250 ms absorbs
+        # roughly thirty query-durations of queueing; past that the server really is
+        # overloaded and 503 is the honest answer. Bounded, so a worker thread can
+        # never park indefinitely waiting for a connection that is not coming.
+        self.pool_wait_ms = int(os.environ.get('API_POOL_WAIT_MS', 250))
+
+        # Server-side ceiling on any single statement (audit B18). Without it, one
+        # pathological query holds a pooled connection for as long as it runs, and with
+        # a ceiling of 8 it takes only eight of those to starve the API — the same
+        # failure the putconn-in-finally rule exists to prevent, arrived at from the
+        # other direction.
+        #
+        # Applied at CONNECT time via libpq's `options`, so every pooled connection
+        # carries it with no per-request round trip. 5 s is ~1000x the normal query
+        # cost, so it can only fire on something genuinely wrong.
+        #
+        # Deliberately NOT applied to src/scoring/db.py's connections: Pass 1/2/3 run
+        # long batch work and must not be interrupted by a limit sized for a dashboard.
+        self.statement_timeout_ms = int(os.environ.get('API_STATEMENT_TIMEOUT_MS', 5000))
+
         # ── CORS ──────────────────────────────────────────────────────────────
         # Explicit origins, comma-separated. Defaults cover the usual Vite (5173)
         # and CRA/Next (3000) dev servers.
@@ -65,6 +89,9 @@ class Settings:
             'password': self.pg_password,
             'host': self.pg_host,
             'port': self.pg_port,
+            # libpq passes this through to the backend at startup, so the timeout is
+            # in force for every statement on every pooled connection.
+            'options': f'-c statement_timeout={self.statement_timeout_ms}',
         }
 
 

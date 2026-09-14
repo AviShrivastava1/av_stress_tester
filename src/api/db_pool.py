@@ -41,12 +41,19 @@ failure appears long after the bug that caused it, which makes it miserable to
 diagnose. The `finally` is what turns "an error" into "just an error".
 """
 
+import time
 from contextlib import contextmanager
 
 import psycopg2.pool
+from fastapi import HTTPException
 from psycopg2.extras import RealDictCursor
 
 from src.api.config import settings
+
+
+# How often to re-try getconn while waiting out a burst. Small enough that a
+# connection returned mid-wait is picked up promptly, large enough not to spin.
+_POOL_POLL_SECONDS = 0.01
 
 
 # Module-level, created at app startup by init_pool() — see the lifespan handler in
@@ -98,6 +105,38 @@ def connection():
         pool.putconn(conn)
 
 
+def _getconn_or_503(pool):
+    """
+    Borrow a connection, waiting briefly for one, or refuse with an explicit 503.
+
+    ThreadedConnectionPool.getconn does NOT block: it raises PoolError the instant the
+    pool is at its ceiling. Unhandled, that surfaces as a 500 (audit B18) — which tells
+    a client the server is broken when the truth is that it is busy, and pages whoever
+    is on call for what is really a capacity signal.
+
+    The bounded wait keeps a brief burst from becoming a 503 for a request that would
+    have been served milliseconds later. It is bounded because an unbounded wait just
+    moves the failure: a worker thread parked forever on a connection that is not coming
+    is one fewer thread serving anyone, and the API would degrade into a hang instead of
+    an honest refusal.
+
+    503 rather than 500 because the condition is transient and retryable, and
+    `Retry-After` says so in terms a client library already understands.
+    """
+    deadline = time.monotonic() + settings.pool_wait_ms / 1000.0
+    while True:
+        try:
+            return pool.getconn()
+        except psycopg2.pool.PoolError:
+            if time.monotonic() >= deadline:
+                raise HTTPException(
+                    status_code=503,
+                    detail='All database connections are busy. Retry shortly.',
+                    headers={'Retry-After': '1'},
+                )
+            time.sleep(_POOL_POLL_SECONDS)
+
+
 def get_db():
     """
     FastAPI dependency. Yields a pooled connection and returns it afterwards.
@@ -106,7 +145,10 @@ def get_db():
     makes this equivalent to the try/finally above.
     """
     pool = get_pool()
-    conn = pool.getconn()
+    # OUTSIDE the try/finally, deliberately. If acquiring the connection fails, `conn`
+    # is never bound — widening the try to cover this call would make the `finally`
+    # raise NameError and turn an honest 503 into a 500.
+    conn = _getconn_or_503(pool)
     try:
         yield conn
     finally:

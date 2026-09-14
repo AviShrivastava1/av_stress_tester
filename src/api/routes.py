@@ -10,15 +10,22 @@ through one helper here so the summary and detail paths cannot drift apart.
 
 import base64
 import json
+import unicodedata
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
 from src.api.models import (
+    DELTA_LABELS_BY_PARAMETERIZATION,
     AgentTrack, HealthResponse, PerturbedResponse, ScenarioDetail,
     ScenarioPage, ScenarioSummary, StatsResponse, TrajectoryResponse,
 )
+
+# Ceiling on a client-supplied scenario_id. A resource guard, not a format rule —
+# see _reject_control_characters.
+_MAX_SCENARIO_ID_LEN = 4096
 
 router = APIRouter()
 
@@ -31,6 +38,82 @@ _SCORE_COLUMNS = """
     stress_attempted_at, stress_outcome, last_attempt_outcome,
     challengers_total, challengers_searched, search_certifies_infeasibility
 """
+
+
+# ── guards ──────────────────────────────────────────────────────────────────────
+
+def _table_exists(cur, table: str) -> bool:
+    """
+    Is this table present in the current database?
+
+    THE ONE PATTERN for "a table might not exist yet" (audit B12). Pass 3 creates the
+    geometry tables, and a scenario that has only been through Pass 1/2 legitimately
+    queries them before they exist.
+
+    A precheck rather than try/except, for three reasons:
+
+      1. "Pass 3 has not run" is a NORMAL state, not an error, and the project handles
+         expected outcomes explicitly rather than through exception control flow — the
+         same argument that made replay_infeasible a status in Batch 2.
+      2. It is precise about what it tolerates. This catches exactly "the table is
+         absent". A try/except would also swallow a genuine PostGIS or geometry failure
+         and return a cheerful empty response — the opposite of _make_track's entire
+         no-fallback argument, and of the guard tests/test_api.py asserts at :333.
+      3. No transaction abort. A failed statement poisons the transaction until
+         rollback; on a POOLED connection that makes reuse depend on rollback hygiene.
+         A precheck never aborts anything.
+
+    Cost is one catalog lookup against the ST_DumpPoints query it guards, which is not
+    a trade worth thinking about. db.update_stress_results uses the same to_regclass
+    check inline, so the codebase has one idea here, not two.
+    """
+    cur.execute('SELECT to_regclass(%s) IS NOT NULL AS present', (table,))
+    return bool(cur.fetchone()['present'])
+
+
+def _reject_control_characters(value: str, what: str) -> str:
+    """
+    Refuse client input that PostgreSQL cannot store, as a 4xx rather than a 500.
+
+    A NUL byte in a string reaches psycopg2 and raises there, which FastAPI reports as
+    a 500 — telling the client the server is broken when the client sent something
+    unusable (audit B17).
+
+    DEFENSIVE, NOT RESTRICTIVE, and the distinction is load-bearing. This rejects
+    control characters, which no identifier legitimately contains and which PostgreSQL
+    cannot round-trip. It does NOT attempt to whitelist a scenario_id format: nothing
+    in this project specifies what a real WOMD scenario_id looks like beyond "a globally
+    unique string", and a pattern inferred from the synthetic `syn_*` fixtures would
+    reject real shard data the moment it met one — a validator that fails closed on
+    valid input is worse than the 500 it replaced.
+
+    The length cap is a resource guard, not a format assumption: 4096 is far above any
+    plausible identifier while still bounding what a client can make the server hold.
+    """
+    if len(value) > _MAX_SCENARIO_ID_LEN:
+        raise HTTPException(
+            status_code=422,
+            detail=f'{what} is too long (limit {_MAX_SCENARIO_ID_LEN} characters).',
+        )
+    if any(unicodedata.category(ch) == 'Cc' for ch in value):
+        raise HTTPException(
+            status_code=422,
+            detail=f'{what} contains control characters, which are not valid here.',
+        )
+    return value
+
+
+def _validated_scenario_id(scenario_id: str) -> str:
+    """
+    The scenario_id path parameter, checked once.
+
+    A dependency rather than a call at the top of each handler so that a route added
+    later cannot quietly skip it.
+    """
+    return _reject_control_characters(scenario_id, 'scenario_id')
+
+
+ScenarioId = Annotated[str, Depends(_validated_scenario_id)]
 
 
 # ── row mapping ─────────────────────────────────────────────────────────────────
@@ -95,6 +178,47 @@ def _summary_fields(row) -> dict:
         'robustly_safe': (outcome == 'no_collision_found'
                           and bool(row.get('search_certifies_infeasibility'))),
     }
+
+
+def _resolve_delta_labels(score_row, base_row) -> list[str] | None:
+    """
+    Which parameterization produced this delta, and therefore how to label it.
+
+    A delta is four numbers whose meaning depends entirely on the model that produced
+    it: [dv0, dtheta0, da_bias, ddelta_bias] for the bicycle model, or
+    [dvx0, dvy0, dax_bias, day_bias] for the linear one. Labelling every delta with the
+    vehicle set gives a pedestrian's y-velocity offset the label "initial heading (rad)"
+    — metres per second presented as radians (audit B13).
+
+    Resolved in priority order:
+
+      1. search_provenance -> delta_parameterization. The direct fact, recorded by
+         _stress_one from the model it actually dispatched to, and preserved alongside
+         the delta it describes by Batch 2's column-ownership rule.
+
+      2. The exported agent's type, mapped with the same TYPE_VEHICLE == 1 rule
+         ForwardSimulator dispatches on. A documented INFERENCE, and a fallback rather
+         than the primary source for a specific reason: scenario_agents does not exist
+         until Pass 3, so a scenario that has been stress-tested but not yet exported
+         has no agent type to read — and its label has to be right before then. It is
+         also required outright, because the audit's own B13 fixture writes its result
+         without any search_provenance at all.
+
+      3. Neither available: return None.
+
+    None means "we cannot say", and the field is nullable precisely so that this case
+    has an honest representation. Falling back to the vehicle labels here would narrow
+    B13 from "every pedestrian" to "every pedestrian on a pre-Batch-3 row", which is
+    the same defect with a smaller blast radius rather than a fix.
+    """
+    parameterization = score_row.get('delta_parameterization')
+
+    if parameterization is None and base_row is not None:
+        agent_type = base_row.get('agent_type')
+        if agent_type is not None:
+            parameterization = 'bicycle' if int(agent_type) == 1 else 'linear'
+
+    return DELTA_LABELS_BY_PARAMETERIZATION.get(parameterization)
 
 
 def _geojson_xy(geojson_str: str) -> list[list[float]]:
@@ -201,12 +325,20 @@ def _decode_cursor(cursor: str) -> tuple[float, str]:
     """
     try:
         payload = json.loads(base64.urlsafe_b64decode(cursor.encode('ascii')))
-        return float(payload['f']), str(payload['s'])
+        fragility_score, scenario_id = float(payload['f']), str(payload['s'])
     except Exception:
         raise HTTPException(
             status_code=422,
             detail="Malformed cursor. Pass back a next_cursor value verbatim.",
         )
+
+    # Decoding SUCCEEDING is not the same as the payload being usable (audit B17). A
+    # cursor whose 's' carries a NUL byte parses cleanly here and then fails at the
+    # psycopg2 layer, which surfaces as a 500 for what is a malformed request. The
+    # check sits outside the try so its own 422 is not swallowed and relabelled by the
+    # blanket handler above.
+    _reject_control_characters(scenario_id, 'Cursor scenario id')
+    return fragility_score, scenario_id
 
 
 # ── endpoints ───────────────────────────────────────────────────────────────────
@@ -286,18 +418,22 @@ def stats(conn=Depends(get_db)):
         """)
         row = cur.fetchone()
 
-        # Pass 3 may never have run — the geometry tables can legitimately not
-        # exist yet. That is a normal state for a fresh database, so report 0
-        # rather than 500. The rollback clears the aborted transaction so this
-        # pooled connection stays usable.
+        # Pass 3 may never have run — the geometry tables can legitimately not exist
+        # yet, and that is a normal state for a fresh database rather than an error.
+        #
+        # This used to be a try/except that rolled back on any failure. Same outcome for
+        # the case it was written for, but it also swallowed every OTHER failure: a real
+        # PostGIS fault reported with_geometry=0, indistinguishable from "Pass 3 hasn't
+        # run". The precheck answers exactly the question being asked and lets anything
+        # else surface. It is also now the ONE pattern this codebase uses for a table
+        # that might not exist, matching the geometry routes and
+        # db.update_stress_results.
         with_geometry = 0
-        try:
+        if _table_exists(cur, 'scenario_agents'):
             cur.execute(
                 'SELECT count(DISTINCT scenario_id) AS n FROM scenario_agents'
             )
             with_geometry = cur.fetchone()['n']
-        except Exception:
-            conn.rollback()
 
     return StatsResponse(
         total_scenarios=row['total_scenarios'],
@@ -431,7 +567,7 @@ def list_scenarios(
 
 
 @router.get('/scenarios/{scenario_id}', response_model=ScenarioDetail)
-def get_scenario(scenario_id: str, conn=Depends(get_db)):
+def get_scenario(scenario_id: ScenarioId, conn=Depends(get_db)):
     """One scenario's full row, including the raw perturbation vector."""
     with dict_cursor(conn) as cur:
         cur.execute(f"""
@@ -452,7 +588,7 @@ def get_scenario(scenario_id: str, conn=Depends(get_db)):
 
 @router.get('/scenarios/{scenario_id}/trajectories',
             response_model=TrajectoryResponse)
-def get_trajectories(scenario_id: str, conn=Depends(get_db)):
+def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
     """
     Every agent's logged path for one scenario.
 
@@ -477,6 +613,12 @@ def get_trajectories(scenario_id: str, conn=Depends(get_db)):
         if cur.fetchone() is None:
             raise HTTPException(status_code=404,
                                 detail=f"Unknown scenario: {scenario_id}")
+
+        # Pass 3 has never run: the table this route reads does not exist yet. That is
+        # the normal state this route's own docstring promises to return empty for, so
+        # deliver it instead of letting the missing relation become a 500 (audit B12).
+        if not _table_exists(cur, 'scenario_agents'):
+            return TrajectoryResponse(scenario_id=scenario_id, agents=[])
 
         cur.execute("""
             SELECT sa.agent_idx, sa.agent_type, sa.is_sdc,
@@ -507,7 +649,7 @@ def get_trajectories(scenario_id: str, conn=Depends(get_db)):
 
 @router.get('/scenarios/{scenario_id}/perturbed',
             response_model=PerturbedResponse)
-def get_perturbed(scenario_id: str, conn=Depends(get_db)):
+def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
     """
     The challenger's logged path next to its minimally-perturbed one — the Phase 4
     result, made drawable.
@@ -519,7 +661,9 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
     """
     with dict_cursor(conn) as cur:
         cur.execute("""
-            SELECT min_perturbation, collision_timestep, delta, stress_run_id
+            SELECT min_perturbation, collision_timestep, delta, stress_run_id,
+                   search_provenance ->> 'delta_parameterization'
+                       AS delta_parameterization
             FROM scenario_scores
             WHERE scenario_id = %s
         """, (scenario_id,))
@@ -529,35 +673,50 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
             raise HTTPException(status_code=404,
                                 detail=f"Unknown scenario: {scenario_id}")
 
-        # Join on stress_run_id, so a path exported from an OLDER delta is simply not
-        # returned (audit B14). update_stress_results already deletes the stale row
-        # when a new result is committed; this is the second line of defence, for a
-        # row written out of band or by a partially-completed export.
+        # Two INDEPENDENT guards, not one as a proxy for the other (audit B12). The
+        # geometry tables are created together by a single init_geometry_schema
+        # statement, so they are atomic at creation — but CREATE TABLE IF NOT EXISTS
+        # means a database that acquired one from an older schema keeps it, and either
+        # can be dropped alone. Checking perturbed_paths and then assuming
+        # scenario_agents is a coupling assumption this route does not need to make:
+        # each query is gated by its own table, and a missing scenario_agents degrades
+        # to base_row=None, a shape the code below already handles.
         #
-        # An absent path is the right failure mode. The alternative is drawing an old
-        # trajectory beside a new delta and labelling it evidence, which is worse than
-        # drawing nothing — the audit's own fixture accepts a null path here and only
-        # checks the geometry IF one is returned.
-        #
-        # IS NOT DISTINCT FROM, NOT `=`, and the difference is a deliberate carve-out
-        # for rows that predate this column. `=` is NULL (not true) when either side
-        # is NULL, so it would hide the perturbed path of every row exported before
-        # Batch 2 — a silent regression dressed up as a safety check. The full truth
-        # table this relies on:
-        #
-        #     score    path     IS NOT DISTINCT FROM     served?
-        #     NULL     NULL     true                     yes  <- legacy, unchanged
-        #     'x'      NULL     false                    no   <- new result, stale export
-        #     'x'      'y'      false                    no   <- different runs
-        #     'x'      'x'      true                     yes  <- same run, verified
-        #
-        # So a legacy pair keeps serving exactly what it always served, and any row
-        # that has been through the new write path gets real protection. This is the
-        # same reasoning Block 5 applies to NULL versus the 1/999 sentinels: NULL
-        # means "not recorded", and "not recorded" is not evidence of a mismatch.
-        # Tested by test_legacy_rows_without_a_run_id_still_serve and
-        # test_a_mismatched_run_id_hides_the_perturbed_path.
-        cur.execute("""
+        # That degraded shape has a consequence worth knowing: agent_type, length_m and
+        # width_m are read off base_row, so a perturbed track served without
+        # scenario_agents carries a real path and NULL dimensions — drawable as a line,
+        # not as a box. Pinned by test_only_one_geometry_table_present_still_degrades.
+        pert_row = None
+        if _table_exists(cur, 'perturbed_paths'):
+            # Join on stress_run_id, so a path exported from an OLDER delta is simply
+            # not returned (audit B14). update_stress_results already deletes the stale
+            # row when a new result is committed; this is the second line of defence,
+            # for a row written out of band or by a partially-completed export.
+            #
+            # An absent path is the right failure mode. The alternative is drawing an
+            # old trajectory beside a new delta and labelling it evidence, which is
+            # worse than drawing nothing — the audit's own fixture accepts a null path
+            # here and only checks the geometry IF one is returned.
+            #
+            # IS NOT DISTINCT FROM, NOT `=`, and the difference is a deliberate
+            # carve-out for rows that predate this column. `=` is NULL (not true) when
+            # either side is NULL, so it would hide the perturbed path of every row
+            # exported before Batch 2 — a silent regression dressed up as a safety
+            # check. The full truth table this relies on:
+            #
+            #     score    path     IS NOT DISTINCT FROM     served?
+            #     NULL     NULL     true                     yes  <- legacy, unchanged
+            #     'x'      NULL     false                    no   <- new, stale export
+            #     'x'      'y'      false                    no   <- different runs
+            #     'x'      'x'      true                     yes  <- same run, verified
+            #
+            # So a legacy pair keeps serving exactly what it always served, and any row
+            # that has been through the new write path gets real protection. This is the
+            # same reasoning Block 5 applies to NULL versus the 1/999 sentinels: NULL
+            # means "not recorded", and "not recorded" is not evidence of a mismatch.
+            # Tested by test_legacy_rows_without_a_run_id_still_serve and
+            # test_a_mismatched_run_id_hides_the_perturbed_path.
+            cur.execute("""
             SELECT pp.target_idx, pp.headings,
                    ST_AsGeoJSON(pp.path) AS geojson,
                    ARRAY(SELECT ST_M(dp.geom)
@@ -567,12 +726,13 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
             JOIN scenario_scores ss ON ss.scenario_id = pp.scenario_id
             WHERE pp.scenario_id = %s
               AND pp.stress_run_id IS NOT DISTINCT FROM ss.stress_run_id
-        """, (scenario_id,))
-        pert_row = cur.fetchone()
+            """, (scenario_id,))
+            pert_row = cur.fetchone()
 
         baseline = None
         perturbed = None
-        if pert_row is not None:
+        base_row = None
+        if pert_row is not None and _table_exists(cur, 'scenario_agents'):
             # The baseline is the SAME agent's logged path, so the frontend can
             # draw "what happened" against "what nearly happened".
             cur.execute("""
@@ -597,6 +757,7 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
                     label=f"{scenario_id} agent {base_row['agent_idx']} (baseline)",
                 )
 
+        if pert_row is not None:
             perturbed = _make_track(
                 pert_row,
                 geojson=pert_row['geojson'], measures=pert_row['measures'],
@@ -615,6 +776,7 @@ def get_perturbed(scenario_id: str, conn=Depends(get_db)):
         scenario_id=scenario_id,
         target_idx=pert_row['target_idx'] if pert_row else None,
         delta=delta,
+        delta_labels=_resolve_delta_labels(score_row, base_row),
         min_perturbation=score_row['min_perturbation'],
         collision_timestep=score_row['collision_timestep'],
         baseline=baseline,
