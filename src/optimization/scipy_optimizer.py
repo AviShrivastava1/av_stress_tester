@@ -64,6 +64,48 @@ def _signed_gap(states, validity, a, b) -> float:
     return float(worst)
 
 
+class _DEObjective:
+    """
+    The DE penalty objective, as a MODULE-LEVEL callable instead of a closure.
+
+    J(delta) = ||delta||_w^2 + lam * relu(g(delta))
+
+    This used to be a nested `def objective(delta)` inside optimize_scenario, closing
+    over `space`, `lam`, `sdc`, `tgt` and `validity`. Nested functions are not
+    picklable — pickle stores a function by qualified name, and
+    `optimize_scenario.<locals>.objective` cannot be looked up in a fresh interpreter.
+    So `workers=-1` or any `workers > 1`, which scipy services with a process pool,
+    died at serialization with an AttributeError before evaluating anything (audit
+    B10). The documented `workers` parameter was unusable for every value it exists
+    to support.
+
+    A class with the state as attributes pickles by reference to the class plus a
+    dict of instance attributes, all of which are picklable here — PerturbationSpace
+    holds plain numpy arrays and scalars, verified to round-trip. functools.partial
+    over a module-level function would work equally well; a named class was chosen
+    so the object has a meaningful repr in a worker traceback, where the failure
+    would otherwise surface far from this file.
+
+    BEHAVIOURALLY IDENTICAL AT workers=1. The arithmetic below is the closure's,
+    unchanged and in the same order, so the default path returns bit-identical
+    results — which is asserted against pre-refactor captured values rather than
+    assumed, since no test in this project exercises workers > 1 at all.
+    """
+
+    def __init__(self, space, lam: float):
+        self.space = space
+        self.lam = lam
+        self.sdc = space.sdc_idx
+        self.tgt = space.target_idx
+        self.validity = space.validity
+
+    def __call__(self, delta):
+        pert = self.space.apply(delta)
+        g = _signed_gap(pert, self.validity, self.sdc, self.tgt)
+        norm = self.space.weighted_norm(delta)
+        return norm * norm + self.lam * max(0.0, g)
+
+
 def optimize_scenario(
     space,
     lam: float = LAMBDA,
@@ -96,14 +138,7 @@ def optimize_scenario(
             margin            : surrogate margin at the best delta
             n_iter, n_eval    : DE iteration / evaluation counts
     """
-    sdc, tgt = space.sdc_idx, space.target_idx
-    validity = space.validity
-
-    def objective(delta):
-        pert = space.apply(delta)
-        g = _signed_gap(pert, validity, sdc, tgt)
-        norm = space.weighted_norm(delta)
-        return norm * norm + lam * max(0.0, g)
+    objective = _DEObjective(space, lam)
 
     bounds = [tuple(b) for b in space.bounds]
 
@@ -113,6 +148,9 @@ def optimize_scenario(
         maxiter=maxiter, tol=tol, seed=seed, workers=workers,
         polish=False, init='latinhypercube', disp=verbose,
     )
+
+    sdc, tgt = space.sdc_idx, space.target_idx
+    validity = space.validity
 
     delta_star = result.x.astype(np.float32)
     pert = space.apply(delta_star)

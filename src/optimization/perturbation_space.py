@@ -183,7 +183,29 @@ class PerturbationSpace:
 
         # per-dimension weights for the norm: 1 / bound_magnitude, so each term is
         # a dimensionless fraction of its allowed budget (Concept 17, weighted norm).
-        self.weights = 1.0 / np.maximum(np.abs(self.bounds[:, 1]), 1e-6)
+        #
+        # THE MAGNITUDE IS THE LARGER SIDE, NOT THE UPPER BOUND (audit B20). Using
+        # abs(high) alone assumes every bound straddles zero symmetrically, which the
+        # defaults below do — but a one-sided bound is legitimate and the obvious one
+        # is braking-only, [-3, 0]. There abs(high) is 0, the 1e-6 floor takes over,
+        # and the weight becomes 1e6: a delta that spends exactly the 3 m/s the bound
+        # actually allows reports a norm of 3e6 instead of 1. The optimizers minimize
+        # this norm, so a one-sided dimension would be priced as unusable rather than
+        # as a full budget.
+        #
+        # Inert for every existing caller: all default bounds are symmetric, so
+        # max(|low|, |high|) == |high| and the weights are unchanged term for term.
+        # Nothing in src/ or tests/ passes custom bounds except the audit's own B20
+        # fixture.
+        #
+        # The 1e-6 floor stays, and now guards a genuinely degenerate case: a
+        # dimension pinned to a single value ([0, 0]) has NO budget, so any nonzero
+        # delta there is outside the box. A huge norm says "infinitely far outside its
+        # budget", which is true; a weight of zero would price it as free, which is
+        # not.
+        bound_magnitude = np.maximum(np.abs(self.bounds[:, 0]),
+                                     np.abs(self.bounds[:, 1]))
+        self.weights = 1.0 / np.maximum(bound_magnitude, 1e-6)
 
         # ── replay fidelity (audit B03) ──────────────────────────────────────────
         # Measure what a ZERO perturbation actually reproduces before anyone asks

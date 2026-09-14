@@ -135,8 +135,30 @@ def check_any_collision(
 
     Returns:
         (collision_occurred, colliding_agent_idx, first_collision_timestep)
+
+    EARLIEST IN TIME, NOT FIRST BY AGENT INDEX (audit B16). This used to return as
+    soon as any agent collided, walking agents in index order — so with agent 1
+    hitting at frame 4 and agent 2 at frame 1 it reported (True, 1, 4), naming a
+    later event as the first one. The docstring above promised the first collision
+    timestep and the code delivered the lowest-numbered colliding agent, which are
+    the same thing only by accident.
+
+    NOTE, recorded rather than implied: this has never affected a stored result.
+    Nothing in the pipeline calls this function — _stress_one, optimize_scenario,
+    refine_scenario and PerturbationSpace all call check_collision_trajectory on one
+    chosen pair instead, and a repo-wide search for callers finds only the audit's
+    own test. It is fixed because it is public API whose contract was wrong, and
+    because the first caller to trust that contract would have paid for it; it is
+    not fixed because any number in the database is wrong.
+
+    Every agent is now scanned. The early return is gone, which costs a full pass
+    instead of a possibly-short one — irrelevant against the per-pair Shapely work
+    already being done, and the only way to know which collision is earliest is to
+    look at all of them.
     """
     N = states.shape[0]
+
+    best_agent, best_t = -1, -1
 
     for agent_idx in range(N):
         if agent_idx == sdc_idx:
@@ -146,7 +168,13 @@ def check_any_collision(
             states, validity, sdc_idx, agent_idx
         )
 
-        if collision:
-            return True, agent_idx, t
+        # Strictly earlier only, so a tie keeps the LOWER agent index. Ties are
+        # possible whenever two agents strike in the same frame, and leaving the
+        # winner to iteration order would make the result depend on how the scene
+        # happened to be numbered.
+        if collision and (best_t == -1 or t < best_t):
+            best_agent, best_t = agent_idx, t
 
-    return False, -1, -1
+    if best_agent == -1:
+        return False, -1, -1
+    return True, best_agent, best_t

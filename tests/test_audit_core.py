@@ -179,7 +179,25 @@ def test_B10_de_objective_can_be_serialized_for_process_workers(monkeypatch):
 @pytest.mark.parametrize('contents', [
     b'abc',  # incomplete header silently looks like EOF
     struct.pack('<Q',10) + b'\0'*4 + b'ab',  # advertised payload is truncated
-    struct.pack('<Q',3) + b'\0'*4 + b'abc' + b'\0'*4,  # invalid CRCs accepted
+    # MARKER ADDED, ASSERTION UNTOUCHED (Batch 5). The two framing cases above are
+    # fixed unconditionally. This one asks the DEFAULT path to verify checksums, and
+    # Block 1 Concept 2 decided on the record not to: the shard is a local file from a
+    # trusted source and checksumming every payload costs a full pass on every read.
+    # An audit finding does not get to silently reverse a documented tradeoff, so
+    # ShardLoader takes verify_crc=False by default and this expectation is rejected
+    # on stated grounds rather than quietly satisfied.
+    #
+    # strict=True is the point: if anyone later flips that default and forgets this
+    # marker, the xpass becomes a LOUD failure instead of a silent one. The behaviour
+    # the flag does provide is asserted positively in tests/test_batch5_contract.py.
+    pytest.param(
+        struct.pack('<Q',3) + b'\0'*4 + b'abc' + b'\0'*4,
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason='CRC verification is opt-in by design (Block 1 Concept 2); '
+                   'ShardLoader(verify_crc=True) does raise here',
+        ),
+    ),
 ], ids=['partial_header','truncated_payload','invalid_crc'])
 def test_B11_loader_rejects_corrupt_tfrecord_framing(tmp_path, contents):
     path = tmp_path/'corrupt.tfrecord'
@@ -198,7 +216,28 @@ def test_B16_any_collision_returns_the_earliest_time_across_agents():
 
 def test_B19_notebook_geometry_validation_rejects_missing_valid_agents():
     notebook = json.loads((PROJECT/'notebooks/colab_validation_run.ipynb').read_text())
-    code = ''.join(notebook['cells'][39]['source'])
+    # SETUP FIX, ASSERTION UNTOUCHED (Batch 5). This used to read cells[39] by index.
+    # Batch 4 inserted four cells at index 26, which moved the geometry-validation cell
+    # to 43 — so this test began exec'ing a MARKDOWN cell and dying with SyntaxError
+    # instead of reaching what it checks. It stayed red either way, so the failure
+    # count never moved and nothing flagged the changed reason.
+    #
+    # Locating the cell by content removes the class of breakage rather than the
+    # instance: an index is exactly what just failed, and this was the second
+    # cell-insertion event in five batches. Same category of change as Batch 1's edit
+    # to the B08 scene — how the fixture FINDS its target, never what it asserts.
+    #
+    # The selector is a CONJUNCTION because 'n_exact_match' alone matches two cells:
+    # the validation cell and the final summary cell that prints the same counter.
+    # Requiring the dump_points_m call as well pins the one that actually reads
+    # geometry back out of PostGIS.
+    sources = [''.join(c['source']) for c in notebook['cells'] if c['cell_type'] == 'code']
+    cells = [src for src in sources
+             if 'n_exact_match' in src and 'dump_points_m(' in src]
+    assert len(cells) == 1, (
+        f'expected exactly one geometry-validation cell, found {len(cells)}'
+    )
+    code = cells[0]
     class Parser:
         def __init__(self, raw): pass
         def get_scenario_id(self): return 'A'

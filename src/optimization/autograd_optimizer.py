@@ -206,6 +206,37 @@ def refine_scenario(
 
     opt = torch.optim.Adam([delta], lr=lr)
 
+    # ── keep the best EXACT-VERIFIED candidate, not the last iterate (audit B09) ──
+    #
+    # Adam minimizes wnorm2 + lam * relu(smooth_margin). The smooth margin is a
+    # SURROGATE, so the loop can walk out of the exact-collision region while its own
+    # objective still reports progress — and the function used to verify only wherever
+    # the loop happened to stop. On the audit's scene it was handed a warm start that
+    # exact-verifies as colliding at norm 0.750 and returned collision=False, having
+    # discarded a feasible answer it was given for free.
+    #
+    # The warm start is a candidate, which is what makes "never worse than what DE
+    # handed in" true by construction rather than by luck.
+    #
+    # "Better" = exact-verified colliding, smallest space.weighted_norm. That is the
+    # SAME predicate batch_scorer._stress_one uses to choose between DE's result and
+    # this one:
+    #     if refined['collision'] and (not result['collision']
+    #                                  or refined['min_perturbation'] < ...)
+    # so the two cannot disagree about the same comparison.
+    def _verified(candidate):
+        """(collides, timestep, weighted_norm) under the EXACT Shapely SAT check."""
+        hit, t = check_collision_trajectory(space.apply(candidate), space.validity,
+                                            space.sdc_idx, space.target_idx)
+        return bool(hit), int(t), space.weighted_norm(candidate)
+
+    best_delta, best_t, best_norm = None, -1, float('inf')
+
+    warm = np.asarray(delta_init, np.float32)
+    warm_hit, warm_t, warm_norm = _verified(warm)
+    if warm_hit:
+        best_delta, best_t, best_norm = warm.copy(), warm_t, warm_norm
+
     for it in range(n_iters):
         opt.zero_grad()
         traj = roll.rollout(delta)
@@ -217,16 +248,45 @@ def refine_scenario(
         opt.step()
         with torch.no_grad():
             delta.clamp_(low, high)  # stay inside the box bounds
+
+        # EXACT-verify this iterate. Unconditional, and both halves of that were
+        # measured on the audit's scene rather than assumed:
+        #
+        #   * Cost. One apply+verify against one Adam iteration is a few percent —
+        #     the torch rollout, the softmin and the backward pass dominate.
+        #
+        #   * Gating on the surrogate would not be safe. Filtering "only verify when
+        #     smooth_margin <= 0" looks free, and here it is worthless: the softmin
+        #     reports colliding at 100/100 iterates while exact SAT agrees at 10/100,
+        #     so it admits everything. Worse, the bias runs the OTHER way when the
+        #     circle covering dominates instead of the softmin — three circles
+        #     under-cover a box's corners (Block 4 Concept 16), and isolating that
+        #     effect on this same scene gives circle-min +0.0206 against truth,
+        #     flagging 3/100 where exact flags 10/100. In that regime a
+        #     smooth_margin > 0 filter would SKIP real collisions. A filter that is
+        #     useless in one regime and unsafe in the other is not a filter.
+        candidate = delta.detach().numpy().astype(np.float32)
+        hit, t_cand, norm_cand = _verified(candidate)
+        if hit and norm_cand < best_norm:
+            best_delta, best_t, best_norm = candidate.copy(), t_cand, norm_cand
+
         if verbose and it % 50 == 0:
             print(f"[{it:4d}] loss={loss.item():.4f} margin={g.item():+.3f} "
                   f"||d||={space.weighted_norm(delta.detach().numpy()):.4f}")
 
-    delta_np = delta.detach().numpy().astype(np.float32)
+    # Report the best verified candidate if one was ever seen; otherwise the final
+    # iterate, which is what this function always used to return.
+    if best_delta is not None:
+        delta_np, collided, t_hit = best_delta, True, best_t
+    else:
+        delta_np = delta.detach().numpy().astype(np.float32)
+        collided, t_hit = check_collision_trajectory(
+            space.apply(delta_np), space.validity, space.sdc_idx, space.target_idx)
 
-    # EXACT verification using the numpy pipeline (same equations as the rollout).
-    pert = space.apply(delta_np)
-    collided, t_hit = check_collision_trajectory(pert, space.validity,
-                                                 space.sdc_idx, space.target_idx)
+    # EVERY field below describes delta_np, the delta actually being returned — not
+    # the final iterate. A smooth_margin or collision_timestep left over from a
+    # different candidate would be the same juxtaposition defect Batch 2 removed from
+    # scenario_scores: fields of one result that silently describe two.
     final_margin = _smooth_margin(space, roll.rollout(
         torch.tensor(delta_np, dtype=dtype)), beta, n_circles, dtype).item()
 
