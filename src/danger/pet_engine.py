@@ -40,29 +40,58 @@ def get_path_polygon(states: np.ndarray, agent_idx: int,
     return unary_union(boxes)
 
 
-def _occupancy_interval(states: np.ndarray, validity: np.ndarray,
-                        agent: int, conflict_zone) -> tuple:
+def _occupancy_visits(states: np.ndarray, validity: np.ndarray,
+                      agent: int, conflict_zone) -> list:
     """
-    First and last timestep at which `agent`'s bounding box intersects the
-    conflict zone.
+    Every SEPARATE visit `agent` makes to the conflict zone, as [(enter, exit), ...]
+    in ascending time. Empty if the agent never occupies the zone.
 
-    Returns (first, last), or (-1, -1) if the agent never occupies the zone.
-    One pass over the trajectory yields both boundaries, so callers do not scan
-    the agent twice.
+    This replaces _occupancy_interval, which returned only the first and last
+    occupied frame. That single span silently merged an agent that entered the zone,
+    LEFT, and came back into one continuous occupancy it never had (audit B06). The
+    audit's repro: A occupies frames 0, 1, 5, 6 and B occupies only frame 3. There is
+    no frame where both are present, yet the merged spans (0, 6) and (3, 3) overlap,
+    and PET was reported as -0.3 s — the signature of a genuine simultaneous
+    encroachment, invented out of a gap.
+
+    A VISIT IS A MAXIMAL RUN OF CONSECUTIVE FRAMES WHERE THE AGENT IS BOTH VALID AND
+    INSIDE THE ZONE, and the "valid" half of that is not a stylistic choice. An
+    unobserved frame breaks the run. The alternative — treating an invalid frame as
+    "unknown, probably still here" and bridging it — reintroduces exactly the
+    fictitious continuity this function exists to remove, just sourced from missing
+    data instead of real departure. It is also what the audit's own fixture demands:
+    its two visits are created by a VALIDITY gap (v[0] = [1,1,0,0,0,1,1]), not by the
+    agent moving away, so bridging invalid frames fails B06 outright.
+
+    That choice has a cost, stated rather than hidden: across a long unobserved
+    stretch an agent that never actually left will be recorded as two visits, and the
+    gap between them reported as a safe positive PET. That is the direction Batch 1
+    already committed to in validity.has_interior_gap — a gap means consecutive valid
+    frames are not consecutive in time, so two observations cannot be joined into one
+    continuous thing. How often it happens on real data is measured by the validation
+    notebook rather than assumed here.
+
+    One pass over the trajectory, same cost as the single-span version it replaces:
+    the Polygon construction per frame dominates, and that is unchanged.
     """
     T = states.shape[1]
-    first = last = -1
+    visits = []
     for t in range(T):
-        if not validity[agent, t]:
+        inside = False
+        if validity[agent, t]:
+            box = Polygon(get_corners(states[agent, t, 0], states[agent, t, 1],
+                                      states[agent, t, 4], states[agent, t, 5],
+                                      states[agent, t, 6]))
+            inside = box.intersects(conflict_zone)
+
+        if not inside:
             continue
-        box = Polygon(get_corners(states[agent, t, 0], states[agent, t, 1],
-                                  states[agent, t, 4], states[agent, t, 5],
-                                  states[agent, t, 6]))
-        if box.intersects(conflict_zone):
-            if first == -1:
-                first = t
-            last = t
-    return first, last
+        if visits and visits[-1][1] == t - 1:
+            visits[-1][1] = t          # extend the run in progress
+        else:
+            visits.append([t, t])      # a new, separate visit
+
+    return [(int(enter), int(leave)) for enter, leave in visits]
 
 
 def compute_pet_pair(
@@ -79,22 +108,41 @@ def compute_pet_pair(
     PET is the time gap between one agent clearing the shared conflict zone and
     the other agent entering it. A small positive PET is a near-miss.
 
-    Both crossing orders are evaluated and the larger (safer) gap is returned:
+    EACH AGENT OCCUPIES THE ZONE AS A SET OF DISJOINT VISITS, NOT ONE SPAN, and the
+    result is the minimum over every pairing of one A-visit with one B-visit:
 
-        pet = max(enter_b - exit_a, enter_a - exit_b) * DT
+        pet = min over (i, j) of  max(enter_Bj - exit_Ai, enter_Ai - exit_Bj) * DT
 
-    Whichever agent actually crossed first contributes the meaningful positive
-    gap; the other ordering contributes a negative number that only reflects the
-    arbitrary a/b labelling. Taking the max makes the result independent of which
-    agent is passed as `agent_a` (see `compute_pet_pair(a, b) == compute_pet_pair(b, a)`).
+    The inner max is unchanged from the previous version and is what makes the
+    result independent of which agent is passed as `agent_a`: whichever agent
+    actually crossed first contributes the meaningful positive gap, and the other
+    ordering contributes a negative number that only reflects the arbitrary a/b
+    labelling. (Evaluating only `enter_b - exit_a` reported a spurious negative
+    whenever `b` happened to cross first; on a real WOMD shard that was 56% of
+    sampled crossing pairs, a third of which were safely sequenced.)
 
-    A negative result means BOTH terms are negative — `enter_b < exit_a` and
-    `enter_a < exit_b` — which is exactly the condition for the two agents'
-    occupancy intervals to overlap, i.e. genuine simultaneous presence in the
-    conflict zone. (The previous implementation computed only `enter_b - exit_a`
-    and so reported a spurious negative whenever `b` happened to cross first; on
-    a real WOMD shard that was 56% of sampled crossing pairs, a third of which
-    were safely sequenced.)
+    The outer min over visit pairs is the audit B06 fix. With a single visit each it
+    collapses to exactly the expression above, so nothing about the crossing-order
+    correction is re-litigated — it is that formula applied to every pair of visits
+    instead of to one merged span per agent.
+
+    WHY MIN IS THE RIGHT AGGREGATOR, since this is the load-bearing claim:
+
+      * Per pair, `max(...) <= 0` iff `enter_Bj <= exit_Ai` AND `enter_Ai <= exit_Bj`,
+        which is exactly the condition for those two closed intervals to overlap. So
+        a negative per-pair value means genuine simultaneous presence, with no gap in
+        the logic.
+      * Visits PARTITION each agent's presence in the zone, so if any instant has
+        both agents present it falls inside exactly one visit of each, that pair
+        overlaps, and the min is negative. If no such instant exists, no pair
+        overlaps, every pair is non-negative, and so is the min. The guarantee that
+        "negative means genuine overlap" therefore transfers exactly, not
+        approximately.
+      * A temporally distant, irrelevant visit pair cannot spuriously win the min:
+        mismatched pairs produce one large positive and one large negative term, and
+        the inner max always selects the large positive one. Distant pairs can only
+        produce large uninteresting values, never small ones. The search space is
+        safely oversized.
 
     Args:
         states:   shape (N, T, 7)
@@ -108,8 +156,10 @@ def compute_pet_pair(
         path_b:   optional pre-built swept polygon for agent_b.
 
     Returns:
-        PET in seconds. PET_INFINITY if the agents' swept paths never overlap or
-        if either agent never actually enters the spatial conflict zone.
+        PET in seconds — the smallest gap over all visit pairings. Negative means
+        the two agents were genuinely in the zone at the same time. PET_INFINITY if
+        the agents' swept paths never overlap or if either agent never actually
+        enters the spatial conflict zone.
     """
     # spatial conflict zone — where both agents' swept paths overlap
     if path_a is None:
@@ -125,15 +175,19 @@ def compute_pet_pair(
     if conflict_zone.is_empty:
         return PET_INFINITY  # paths never cross spatially
 
-    enter_a, exit_a = _occupancy_interval(states, validity, agent_a, conflict_zone)
-    enter_b, exit_b = _occupancy_interval(states, validity, agent_b, conflict_zone)
+    visits_a = _occupancy_visits(states, validity, agent_a, conflict_zone)
+    visits_b = _occupancy_visits(states, validity, agent_b, conflict_zone)
 
-    if enter_a == -1 or enter_b == -1:
+    if not visits_a or not visits_b:
         # swept paths overlap, but at least one agent's box never actually
         # reaches the zone (thin slivers from the polygon intersection)
         return PET_INFINITY
 
-    pet = max(enter_b - exit_a, enter_a - exit_b) * DT
+    pet = min(
+        max(enter_b - exit_a, enter_a - exit_b)
+        for enter_a, exit_a in visits_a
+        for enter_b, exit_b in visits_b
+    ) * DT
     return float(pet)
 
 

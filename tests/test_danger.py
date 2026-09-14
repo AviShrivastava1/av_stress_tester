@@ -137,9 +137,27 @@ def test_rank_divergence_sdc_vs_all_pairs():
     4.5x2.0 boxes, so the non-SDC pair drives all-pairs TTC to exactly 0.0. The
     SDC stays ~200 m from everything.
 
-    Pre-verified against the engines:
+    The parked pair still saturates to 0.0 after Batch 4: they are ALREADY
+    overlapping (c <= 0), which is the one branch the B07 quadratic leaves untouched.
+    So this test still measures what it was written to measure.
+
+    Pre-verified against the engines (re-measured after Batch 4's audit B07 fix):
         all-pairs: min_ttc=0.0     min_pet=-9.0   -> compute_danger_score = 100.0
-        SDC-only:  min_ttc=161.67  min_pet=999.0  -> compute_danger_score = 0.0035
+        SDC-only:  min_ttc=999.0   min_pet=999.0  -> compute_danger_score = 0.0
+
+    The SDC-only row USED TO READ min_ttc=161.67 -> 0.0035, and that is worth keeping
+    on the record rather than silently overwriting. 161.67 s was the old linear
+    extrapolation `(dist - safe_dist) / closing_speed` answering a question nobody
+    asked: the SDC and the parked cars are closing on each other in the radial sense,
+    but the SDC passes ~200 m away and the circles never come near touching. Batch 4
+    replaced that projection with the exact quadratic root, which returns
+    TTC_INFINITY for a pair whose paths do not intersect (audit B07). The signal went
+    from "danger in 161 seconds" to "no danger", which is the correct reading of a
+    car 200 m from anything.
+
+    Every assertion below is unchanged and still passes — 999.0 is still > 100, and
+    0.0 is still < 0.1. That is exactly why the numbers had to be corrected by hand:
+    a fully green test can still teach the next reader something false.
     """
     t = np.arange(T) * DT
     s = np.zeros((3, T, 7), dtype=np.float32)
