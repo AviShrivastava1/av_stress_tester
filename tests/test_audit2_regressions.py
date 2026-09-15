@@ -1,5 +1,5 @@
 """
-test_audit2_regressions.py — second audit, findings R02, R04, R05 and R09.
+test_audit2_regressions.py — second audit: R01, R02, R03, R04, R05, R06, R07, R09.
 
 PROVENANCE, STATED PLAINLY: these tests are RECONSTRUCTED FROM THE SECOND AUDIT'S
 DESCRIPTIONS, NOT COPIED FROM ITS OWN CODE. The audit's source archive is on disk
@@ -31,6 +31,22 @@ re-checked rather than taken on faith:
            -> returned collision=True, delta [0, 0.15000000596046448, 0, 0],
               min_perturbation 15.000000953674316 — a heading offset 15x its
               allowed maximum, reported as a verified answer
+
+    R01  persist result A, persist newer result B, export using A's result dict
+           -> A's geometry stamped with B's run id (23eb305e65629e43), so
+              GET /perturbed served B's delta [-2,0,0,0] beside A's trajectory:
+              path point 9 = 2.299999714 where B's replay is 1.399999380. The B14
+              join passed, because both sides genuinely held the same id
+    R03  result A with A's geometry, both content-derived and matching; a commit
+         landing between get_perturbed's two statements
+           -> delta [-1,0,0,0] and min_perturbation 0.5 from result A, served beside
+              a path whose point 9 is 0.5 — result B's trajectory
+    R06  scenario_scores had no target_idx column at all, so a stress-tested,
+         not-yet-exported scenario answered target_idx=None
+    R07  after a replay_infeasible attempt, the persisted row held
+         last_attempt_outcome and stress_attempted_at and nothing else; reason
+         ('collision') and baseline_replay_error were both gone. _stress_one never
+         carried baseline_replay_collides out of the exception in the first place
 
 THE AUDIT'S OWN R04 NUMBERS (176 evaluations, 126 colliding, best colliding norm
 0.339553833, returned 0.262787908) ARE NOT REPRODUCED HERE and no attempt is made to
@@ -479,4 +495,239 @@ def test_R05_refiner_never_returns_an_out_of_bounds_warm_start():
     assert np.all(delta >= space.bounds[:, 0]) and np.all(delta <= space.bounds[:, 1]), (
         f'returned {delta.tolist()} for bounds {space.bounds.tolist()} — a delta '
         'outside the search space it claims to have searched'
+    )
+
+
+# ── R01 / R03 / R06 / R07: result-and-geometry consistency ─────────────────────
+#
+# DB-backed, gated on the same AV_CLAIMS_DB flag the rest of the results layer uses
+# rather than a new environment variable — these are claims-layer tests and want the
+# same explicitly-nominated disposable database.
+
+requires_db = pytest.mark.skipif(
+    os.environ.get('AV_CLAIMS_DB') != '1',
+    reason='Requires an explicitly-nominated disposable database',
+)
+
+
+def _r7_scene():
+    """SDC plus a small challenger closing head-on. Two agents, ten frames."""
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[0, :, 5:7] = [4.5, 2.0]
+    states[1, :, 5:7] = [0.6, 0.6]
+    states[1, :, 0] = 5.0 - 2.0 * np.arange(10) * 0.1
+    states[1, :, 2] = -2.0
+    states[1, :, 4] = np.pi
+    return states, np.ones((2, 10), dtype=bool), np.array([1, 2])
+
+
+@pytest.fixture
+def conn7():
+    from src.scoring import db
+    from src.scoring.export_geometry import init_geometry_schema
+    connection = db.get_connection()
+    with connection.cursor() as cur:
+        cur.execute('DROP TABLE IF EXISTS perturbed_paths, scenario_agents, '
+                    'scenario_scores CASCADE')
+    connection.commit()
+    db.init_schema(connection)
+    init_geometry_schema(connection)
+    yield connection
+    connection.rollback()
+    connection.close()
+
+
+def _seed7(conn, sid='scene'):
+    from src.scoring import db
+    db.upsert_scores(conn, [dict(scenario_id=sid, shard='synthetic', n_agents=2,
+                                 min_ttc=9.0, min_pet=9.0, fragility_score=1.0)])
+
+
+_RESULT_A = {'status': 'ok', 'outcome': 'collision_found', 'collision': True,
+             'min_perturbation': 0.5, 'delta': [-1.0, 0.0, 0.0, 0.0],
+             'collision_timestep': 3, 'target_idx': 1, 'method': 'de'}
+_RESULT_B = dict(_RESULT_A, delta=[-2.0, 0.0, 0.0, 0.0], min_perturbation=1.0)
+
+
+@requires_db
+def test_R01_a_stale_export_cannot_borrow_the_current_run_id(conn7):
+    """
+    The audit's repro: persist A, persist a newer B, then export using A's dict.
+
+    Pre-fix the export was stamped with B's id and the API served B's delta beside
+    A's trajectory — 0.9 m apart at the last frame — with the B14 join passing,
+    because the ids matched. They were simply attached to different content.
+
+    The assertion is the INVARIANT: whatever geometry is served must have been built
+    from the delta that is served beside it. Refusing the write and serving no
+    picture satisfies that; so would any other correct answer.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import (
+        export_perturbed_path, export_scenario_agents,
+    )
+    from src.optimization.perturbation_space import PerturbationSpace
+
+    states, validity, types = _r7_scene()
+    _seed7(conn7)
+    export_scenario_agents(conn7, 'scene', states, validity, types, 0)
+    space = PerturbationSpace(states, validity, types, 0, 1)
+
+    db.update_stress_results(conn7, {'scene': _RESULT_A})
+    id_a = db.fetch_scenario(conn7, 'scene')['stress_run_id']
+    db.update_stress_results(conn7, {'scene': _RESULT_B})
+    id_b = db.fetch_scenario(conn7, 'scene')['stress_run_id']
+    assert id_a != id_b, 'fixture regressed: the two results must be different runs'
+
+    stale = space.apply(np.float32(_RESULT_A['delta']))
+    try:
+        # The content kwargs are what make the id derive from THIS trajectory. Against
+        # the pre-R01 signature they do not exist, and the fallback below takes the
+        # old path deliberately — otherwise this test would fail pre-fix with a
+        # TypeError about a keyword argument, which demonstrates nothing about the
+        # finding. With the fallback it fails pre-fix on the ASSERTION, naming the run
+        # the geometry was actually published under.
+        export_perturbed_path(conn7, 'scene', stale, validity, 1,
+                              delta=_RESULT_A['delta'], method=_RESULT_A['method'])
+    except TypeError:
+        export_perturbed_path(conn7, 'scene', stale, validity, 1)
+    except Exception as e:                       # refused outright — one right answer
+        assert id_a in str(e) and id_b in str(e), (
+            f'the refusal must name both the refused run and the stored one: {e}'
+        )
+    else:
+        conn7.rollback()
+
+    with conn7.cursor() as cur:
+        cur.execute("SELECT stress_run_id FROM perturbed_paths WHERE scenario_id='scene'")
+        row = cur.fetchone()
+    assert row is None or row[0] == id_a, (
+        f"A's geometry was published under run {row[0]}, which is not the run it was "
+        f'built from ({id_a})'
+    )
+
+
+@requires_db
+def test_R03_the_two_reads_are_one_snapshot(conn7, monkeypatch):
+    """
+    Correct writes throughout — both exports content-derived and matching — read
+    inconsistently.
+
+    A commit lands between get_perturbed's two statements. `_table_exists` runs
+    exactly there, which makes the interleaving deterministic: no sleeps, no timing.
+
+    NOTE THE FIXTURE STAMPS BOTH EXPORTS FROM CONTENT, i.e. R01 is already fixed
+    here. That is deliberate: it is what makes this a test of R03 rather than of R01
+    leaking into it.
+    """
+    from fastapi.testclient import TestClient
+    from src.api import routes
+    from src.api.main import app
+    from src.scoring import db
+    from src.scoring.export_geometry import (
+        export_perturbed_path, export_scenario_agents,
+    )
+    from src.optimization.perturbation_space import PerturbationSpace
+
+    states, validity, types = _r7_scene()
+    _seed7(conn7)
+    export_scenario_agents(conn7, 'scene', states, validity, types, 0)
+    space = PerturbationSpace(states, validity, types, 0, 1)
+
+    db.update_stress_results(conn7, {'scene': _RESULT_A})
+    export_perturbed_path(conn7, 'scene', space.apply(np.float32(_RESULT_A['delta'])),
+                          validity, 1, delta=_RESULT_A['delta'], method='de')
+
+    real = routes._table_exists
+    fired = []
+
+    def interfering(cur, name):
+        if name == 'perturbed_paths' and not fired:
+            fired.append(True)
+            other = db.get_connection()
+            db.update_stress_results(other, {'scene': _RESULT_B})
+            export_perturbed_path(
+                other, 'scene', space.apply(np.float32(_RESULT_B['delta'])),
+                validity, 1, delta=_RESULT_B['delta'], method='de')
+            other.close()
+        return real(cur, name)
+
+    monkeypatch.setattr(routes, '_table_exists', interfering)
+    with TestClient(app) as client:
+        data = client.get('/scenarios/scene/perturbed').json()
+    assert fired, 'fixture regressed: the interfering commit never ran'
+
+    if data['perturbed'] is None:
+        return                      # a result with no matching picture is consistent
+
+    served_last_x = data['perturbed']['path'][-1][0]
+    replay = space.apply(np.float32(data['delta']))
+    assert served_last_x == pytest.approx(float(replay[1, 9, 0]), abs=1e-3), (
+        f"served delta {data['delta']} against a path ending at x={served_last_x}, "
+        f'which that delta replays to x={float(replay[1, 9, 0])} — the response '
+        'describes two different runs'
+    )
+
+
+@requires_db
+def test_R06_the_searched_challenger_survives_without_geometry(conn7):
+    """A stress-tested, not-yet-exported scenario must still say which agent."""
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+    from src.scoring import db
+
+    _seed7(conn7)
+    db.update_stress_results(conn7, {'scene': _RESULT_A})
+
+    assert db.fetch_scenario(conn7, 'scene')['target_idx'] == 1, (
+        'target_idx is not recoverable from the score row'
+    )
+    with TestClient(app) as client:
+        data = client.get('/scenarios/scene/perturbed').json()
+    assert data['perturbed'] is None, 'fixture regressed: no geometry should exist'
+    assert data['target_idx'] == 1
+
+
+@requires_db
+def test_R07_a_refusal_keeps_its_diagnostics(conn7):
+    """
+    reason, baseline_replay_error and baseline_replay_collides all survive
+    persistence. Pre-fix the row held last_attempt_outcome and a timestamp, and a
+    collision-refusal was indistinguishable from a drift-refusal.
+    """
+    from src.scoring import db
+
+    _seed7(conn7)
+    db.update_stress_results(conn7, {'scene': {
+        'status': 'replay_infeasible', 'outcome': 'replay_infeasible',
+        'target_idx': 1, 'baseline_replay_error': 3.9, 'reason': 'drift',
+        'baseline_replay_collides': False,
+        'challengers_total': 2, 'challengers_searched': 0}})
+
+    diagnostics = db.fetch_scenario(conn7, 'scene')['last_attempt_diagnostics']
+    assert diagnostics is not None, 'the refusal recorded nothing'
+    assert diagnostics['reason'] == 'drift'
+    assert diagnostics['baseline_replay_error'] == 3.9
+    assert diagnostics['baseline_replay_collides'] is False
+    assert diagnostics['target_idx'] == 1
+
+
+@requires_db
+def test_R07_stress_one_carries_every_field_the_exception_holds():
+    """
+    The half of R07 that happens before the database: _stress_one dropped
+    baseline_replay_collides on the floor, so no schema could have persisted it.
+    """
+    from src.scoring.batch_scorer import _stress_one
+
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[:, :, 5:7] = [4.5, 2.0]
+    result = _stress_one(states, np.ones((2, 10), dtype=bool), np.ones(2, dtype=int),
+                         0, de_kwargs={'popsize': 4, 'maxiter': 5, 'seed': 1})
+
+    assert result['status'] == 'replay_infeasible', 'fixture regressed'
+    assert result['reason'] == 'collision'
+    assert result['baseline_replay_error'] == 0.0
+    assert result['baseline_replay_collides'] is True, (
+        'the refusal dict still drops a field the exception carried'
     )

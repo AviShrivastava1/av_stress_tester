@@ -86,6 +86,44 @@ ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS stress_run_id TEXT;
 -- last_attempt_outcome travels with stress_attempted_at.
 ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS last_attempt_outcome TEXT;
 
+-- WHICH CHALLENGER the stored result was searched against (audit R06).
+--
+-- It was already folded into stress_run_id's hash and duplicated on
+-- perturbed_paths, but never recoverable from the score row itself — so a scenario
+-- that had been stress-tested and not yet geometry-exported could not answer "which
+-- agent was this?", even though _stress_one knew.
+--
+-- IT SITS IN THE RESULT GROUP, not the attempt group, by Batch 2's own column
+-- ownership rule rather than a new argument: target_idx is an input to
+-- compute_stress_run_id alongside delta and stress_method, both of which are in the
+-- result group. A row whose delta is preserved from an earlier run while target_idx
+-- described a later REFUSED attempt would be the same juxtaposition defect the
+-- split exists to prevent.
+--
+-- The refused attempt's own challenger is not lost; it goes to
+-- last_attempt_diagnostics below. target_idx therefore partitions cleanly across
+-- the two owners: the result group says which agent the STORED RESULT describes,
+-- the attempt group says which agent the LATEST PASS selected.
+ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS target_idx INTEGER;
+
+-- What the most recent attempt CONCLUDED, beyond its one-word outcome (audit R07).
+--
+-- ReplayFidelityError carries reason, baseline_replay_error and
+-- baseline_replay_collides all the way to _stress_one (Batch 1), and persistence
+-- used to keep none of it: a collision-refusal and a drift-refusal became
+-- indistinguishable the moment the in-memory dict went out of scope. That defeats
+-- the stated purpose of measuring baseline_replay_error at all, which is to
+-- establish the real distribution before defending the 0.5 m default.
+--
+-- JSONB and not columns, for the same reason search_provenance is JSONB: these are
+-- fields of one concept ("what did the latest attempt conclude"), they travel
+-- together, and the set will grow as more refusal gates are added.
+--
+-- WRITTEN UNCONDITIONALLY, NULL when the attempt had nothing to report. Writing it
+-- only on refusals would leave a stale diagnostic from an earlier refusal sitting
+-- beside a later successful attempt — the same defect in a new column.
+ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS last_attempt_diagnostics JSONB;
+
 -- The safety certificate, kept deliberately as a column that nothing sets.
 --
 -- robustly_safe is derived from this. No code path writes TRUE, because no method
@@ -222,6 +260,41 @@ def resolve_outcome(result) -> str:
     return OUTCOME_ERROR
 
 
+# The fields ReplayFidelityError carries, in the order its own docstring lists them.
+# Named here so "everything the refusal knew" has one definition rather than being
+# re-enumerated at the call site (audit R07).
+_ATTEMPT_DIAGNOSTIC_FIELDS = (
+    'reason',
+    'baseline_replay_error',
+    # REDUNDANT TODAY, STORED ANYWAY. There are exactly two raise sites in
+    # PerturbationSpace — ('collision', err, True) and ('drift', err, False) — so
+    # this boolean is currently derivable from `reason`. It is persisted because a
+    # future gate could raise 'drift' with collides=True, and a reader who had been
+    # taught to derive it would have no way to learn the mapping had stopped being
+    # two-way. The project already makes this trade for min_ttc_all_pairs and
+    # challengers_total: record the fact, do not make a later reader re-derive an
+    # invariant from code structure that can silently change. One boolean in a JSONB
+    # blob is free; a silently-wrong derivation is not.
+    'baseline_replay_collides',
+    # Which challenger THIS attempt selected, which is not necessarily the one the
+    # stored result describes — see the target_idx column comment.
+    'target_idx',
+)
+
+
+def _attempt_diagnostics(result) -> dict:
+    """
+    What the latest attempt concluded beyond its outcome word, or None if it had
+    nothing to report (audit R07).
+
+    None rather than an empty dict, so the column reads NULL — "this attempt
+    recorded no diagnostics" — instead of "{}", which invites a reader to conclude
+    the attempt recorded an empty set of them.
+    """
+    present = {k: result[k] for k in _ATTEMPT_DIAGNOSTIC_FIELDS if result.get(k) is not None}
+    return present or None
+
+
 def update_stress_results(conn, results):
     """
     Write PASS 2 (Phase 4) results onto existing rows.
@@ -235,10 +308,11 @@ def update_stress_results(conn, results):
 
     A row can describe TWO different runs, so it carries two of everything:
 
-        the latest pass          last_attempt_outcome, stress_attempted_at
+        the latest pass          last_attempt_outcome, stress_attempted_at,
+                                 last_attempt_diagnostics
         the stored result        stress_outcome, stress_tested_at, min_perturbation,
                                  delta, collision_timestep, stress_method,
-                                 stress_run_id, search_provenance,
+                                 stress_run_id, search_provenance, target_idx,
                                  challengers_total, challengers_searched
 
     They diverge exactly when a later pass fails to reproduce an earlier success. The
@@ -288,16 +362,24 @@ def update_stress_results(conn, results):
                       if search_ran and target_idx is not None else None)
 
             provenance = r.get('search_provenance')
+            diagnostics = _attempt_diagnostics(r)
 
             # Two groups of columns, with two different owners.
             #
             # THE LATEST PASS (always written): last_attempt_outcome,
-            # stress_attempted_at.
+            # stress_attempted_at, last_attempt_diagnostics.
             #
             # THE LAST VERIFIED RESULT (written only by a pass that PRODUCED one):
             # min_perturbation, delta, collision_timestep, stress_method,
             # stress_run_id, search_provenance, stress_outcome, stress_tested_at,
-            # challengers_total, challengers_searched.
+            # target_idx, challengers_total, challengers_searched.
+            #
+            # target_idx joined the second group in Batch 7 (audit R06) because it is
+            # an input to compute_stress_run_id beside delta and stress_method, which
+            # are already there. last_attempt_diagnostics joined the first (audit R07)
+            # and is written on EVERY pass, NULL included — a diagnostic left behind
+            # by an earlier refusal sitting beside a later successful attempt is the
+            # same juxtaposition this grouping exists to prevent.
             #
             # challengers_total/searched are in the second group because they are part
             # of the SAME concept as search_provenance — "how was the stored result
@@ -347,11 +429,13 @@ def update_stress_results(conn, results):
                     stress_method        = CASE WHEN %s THEN %s ELSE stress_method END,
                     stress_run_id        = CASE WHEN %s THEN %s ELSE stress_run_id END,
                     search_provenance    = CASE WHEN %s THEN %s ELSE search_provenance END,
+                    target_idx           = CASE WHEN %s THEN %s ELSE target_idx END,
                     stress_outcome       = CASE WHEN %s THEN %s ELSE stress_outcome END,
                     challengers_total    = CASE WHEN %s THEN %s ELSE challengers_total END,
                     challengers_searched = CASE WHEN %s THEN %s ELSE challengers_searched END,
                     stress_tested_at     = CASE WHEN %s THEN now() ELSE stress_tested_at END,
                     last_attempt_outcome = %s,
+                    last_attempt_diagnostics = %s,
                     stress_attempted_at  = now()
                 WHERE scenario_id = %s
             """, (search_ran, min_pert,
@@ -360,11 +444,13 @@ def update_stress_results(conn, results):
                   search_ran, method,
                   search_ran, run_id,
                   search_ran, Json(provenance) if provenance is not None else None,
+                  search_ran, None if target_idx is None else int(target_idx),
                   search_ran, outcome,
                   search_ran, r.get('challengers_total'),
                   search_ran, r.get('challengers_searched'),
                   search_ran,
                   outcome,
+                  Json(diagnostics) if diagnostics is not None else None,
                   sid))
             updated = cur.rowcount
             n += updated

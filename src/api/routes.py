@@ -662,6 +662,7 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
     with dict_cursor(conn) as cur:
         cur.execute("""
             SELECT min_perturbation, collision_timestep, delta, stress_run_id,
+                   target_idx,
                    search_provenance ->> 'delta_parameterization'
                        AS delta_parameterization
             FROM scenario_scores
@@ -716,6 +717,24 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
             # means "not recorded", and "not recorded" is not evidence of a mismatch.
             # Tested by test_legacy_rows_without_a_run_id_still_serve and
             # test_a_mismatched_run_id_hides_the_perturbed_path.
+            # MATCHED AGAINST THE RUN ID ALREADY IN HAND, NOT A FRESH READ (audit
+            # R03). This used to re-join scenario_scores here, which made the
+            # response the product of TWO reads of that table: score_row from the
+            # statement above, and ss.stress_run_id from this one. Under Read
+            # Committed a commit landing between them produces an internally
+            # inconsistent HTTP response even though each statement is individually
+            # correct — measured, with the older result's delta and
+            # min_perturbation served beside the newer result's trajectory.
+            #
+            # Binding to score_row['stress_run_id'] does not narrow that window, it
+            # removes it: scenario_scores is now read exactly once, so there is no
+            # second read to disagree with the first. Every field in the response
+            # except the path comes from score_row, and the path is served only if it
+            # matches the id score_row itself carried. A concurrent commit can only
+            # make the path disappear — update_stress_results deletes the old row, and
+            # a newly exported one carries a different id — which reads as "here is
+            # the result, there is no matching picture". That is consistent, and it is
+            # the same failure mode B14 already chose.
             cur.execute("""
             SELECT pp.target_idx, pp.headings,
                    ST_AsGeoJSON(pp.path) AS geojson,
@@ -723,10 +742,9 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
                            FROM ST_DumpPoints(pp.path) dp
                           ORDER BY dp.path) AS measures
             FROM perturbed_paths pp
-            JOIN scenario_scores ss ON ss.scenario_id = pp.scenario_id
             WHERE pp.scenario_id = %s
-              AND pp.stress_run_id IS NOT DISTINCT FROM ss.stress_run_id
-            """, (scenario_id,))
+              AND pp.stress_run_id IS NOT DISTINCT FROM %s
+            """, (scenario_id, score_row['stress_run_id']))
             pert_row = cur.fetchone()
 
         baseline = None
@@ -772,9 +790,17 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
     delta = ([float(x) for x in score_row['delta']]
              if score_row['delta'] is not None else None)
 
+    # Which challenger, even before geometry exists (audit R06). The geometry row is
+    # preferred when present because it is the agent the served PATH describes; they
+    # cannot disagree, since target_idx is an input to the run id the two were just
+    # matched on. Falling back to the score row is what makes "this scenario was
+    # stress-tested against agent N" answerable for a scenario Pass 3 has not reached.
+    target_idx = (pert_row['target_idx'] if pert_row is not None
+                  else score_row['target_idx'])
+
     return PerturbedResponse(
         scenario_id=scenario_id,
-        target_idx=pert_row['target_idx'] if pert_row else None,
+        target_idx=target_idx,
         delta=delta,
         delta_labels=_resolve_delta_labels(score_row, base_row),
         min_perturbation=score_row['min_perturbation'],

@@ -222,8 +222,35 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
     return written, skipped
 
 
+class StaleExportError(RuntimeError):
+    """
+    The geometry offered for export does not belong to the result currently stored
+    (audit R01).
+
+    A DISTINCT EXCEPTION RATHER THAN A FALSY RETURN. export_perturbed_path already
+    returns False for "the target had too few valid timesteps", which is a property
+    of the input and not a failure. Collapsing "this export is stale" into that same
+    False would make the two indistinguishable to every caller — the defect class
+    Batch 2 spent two rounds removing from scenario_scores, reappearing in a return
+    value.
+
+    Carries both ids so the caller can say WHICH run was refused against WHICH, not
+    merely that something was.
+    """
+
+    def __init__(self, scenario_id, attempted_run_id, current_run_id):
+        self.scenario_id = scenario_id
+        self.attempted_run_id = attempted_run_id
+        self.current_run_id = current_run_id
+        super().__init__(
+            f"refusing to publish geometry for {scenario_id!r}: it was built from "
+            f"run {attempted_run_id!r}, but the stored result is run "
+            f"{current_run_id!r}"
+        )
+
+
 def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_idx,
-                          stress_run_id=None):
+                          stress_run_id=None, delta=None, method=None):
     """
     Write the challenger's PERTURBED trajectory — the Phase 4 answer, made visible.
 
@@ -233,20 +260,56 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     logged trajectory by construction (PerturbationSpace.apply only rewrites the
     target), so re-storing them would duplicate scenario_agents for no gain.
 
+    ⚠ PASS `delta` AND `method`. THE STALE-EXPORT PROTECTION IS VACUOUS WITHOUT THEM.
+    =================================================================================
+    They are optional only for backwards compatibility with callers written before
+    audit R01, and a call that omits them gets the OLD, DEFECTIVE behaviour: the run
+    id is read from whatever is in scenario_scores at this instant and stamped onto
+    whatever trajectory was handed in, so geometry rebuilt from an older result is
+    labelled as current and the read-side join cannot see it — the ids genuinely
+    match, they are simply attached to the wrong content. The verification below then
+    compares a value against itself and always passes.
+
+    With `delta` and `method` supplied, the run id is DERIVED FROM THE CONTENT being
+    exported — compute_stress_run_id(scenario_id, target_idx, delta, method), the
+    same function and the same four inputs update_stress_results used to stamp the
+    result — and the write publishes only if that id is still the persisted one.
+
+    The audit's repro, which this refuses: persist result A, persist a newer result
+    B, then export using A's result dict. Before R01 the API served B's delta beside
+    A's trajectory, 0.9 m apart at the last frame, with the B14 join passing.
+
+    Args:
+        stress_run_id: override the derived/looked-up id. Callers that genuinely know
+                       better may still set it; it is checked like any other.
+        delta:         the perturbation this trajectory was rebuilt from.
+        method:        'de' or 'de+autograd', as recorded on the result.
+
     Returns True if a row was written, False if the target had too few valid
     timesteps to form a linestring.
+
+    Raises:
+        StaleExportError: the run id this export carries is not the one currently
+                          stored for the scenario. Nothing is written.
+
+                          Its `current_run_id` is READ AFTER the refusal, so it is
+                          the current value at report time rather than a guaranteed
+                          part of the snapshot the refusal was decided against — a
+                          third writer landing in between would change what the
+                          message says. That affects the message only. The refusal
+                          itself already happened atomically, inside the single
+                          INSERT ... SELECT ... WHERE below, and is not re-derived
+                          from this read.
     """
     ts = _valid_timesteps(validity, target_idx)
     if len(ts) < 2:
         return False
 
-    # Default to the run id currently recorded on the score row (audit B14).
-    #
-    # An optional parameter rather than a required one, and defaulted from the
-    # database rather than from the caller: an exporter is always replaying the delta
-    # that was just persisted, so reading the id back from the row is both the
-    # correct answer and the one that cannot be passed inconsistently. Callers that
-    # genuinely know better may still override it.
+    # Derive from the content in hand when the caller supplied it (audit R01);
+    # otherwise fall back to the pre-R01 lookup, with the caveat in the docstring.
+    if stress_run_id is None and delta is not None:
+        from src.scoring.db import compute_stress_run_id
+        stress_run_id = compute_stress_run_id(scenario_id, target_idx, delta, method)
     if stress_run_id is None:
         with conn.cursor() as cur:
             cur.execute("SELECT stress_run_id FROM scenario_scores WHERE scenario_id = %s",
@@ -260,10 +323,22 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     headings = [float(h) for h in perturbed_states[target_idx, ts, 4]]
 
     with conn.cursor() as cur:
+        # INSERT ... SELECT ... WHERE, so the check and the write are ONE statement.
+        # A SELECT-then-INSERT would have a race of its own — exactly the shape of the
+        # bug being fixed — and this project has no precedent for locking primitives,
+        # which single-statement consistency makes unnecessary here.
+        #
+        # IS NOT DISTINCT FROM, not `=`, matching the read side in api/routes.py: a
+        # legacy scenario with NULL on both sides still exports. `=` is NULL rather
+        # than true when either operand is NULL, which would refuse every export for a
+        # row that predates stress_run_id.
         cur.execute("""
             INSERT INTO perturbed_paths
                 (scenario_id, target_idx, n_points, headings, path, stress_run_id)
-            VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 0), %s)
+            SELECT %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s
+            FROM scenario_scores ss
+            WHERE ss.scenario_id = %s
+              AND ss.stress_run_id IS NOT DISTINCT FROM %s
             ON CONFLICT (scenario_id) DO UPDATE SET
                 target_idx    = EXCLUDED.target_idx,
                 n_points      = EXCLUDED.n_points,
@@ -271,7 +346,20 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
                 path          = EXCLUDED.path,
                 stress_run_id = EXCLUDED.stress_run_id,
                 exported_at   = now()
-        """, (scenario_id, int(target_idx), len(ts), headings, wkt, stress_run_id))
+        """, (scenario_id, int(target_idx), len(ts), headings, wkt, stress_run_id,
+              scenario_id, stress_run_id))
+        published = cur.rowcount
+
+    if not published:
+        # Nothing was written, so nothing needs rolling back — but the transaction is
+        # left clean for the caller either way.
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute("SELECT stress_run_id FROM scenario_scores WHERE scenario_id = %s",
+                        (scenario_id,))
+            row = cur.fetchone()
+        raise StaleExportError(scenario_id, stress_run_id, row[0] if row else None)
+
     conn.commit()
     return True
 
@@ -296,7 +384,15 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         verbose:        print progress lines
 
     Returns a summary dict: exported, agents_written, agents_skipped,
-    perturbed_written, errors (list of dicts).
+    perturbed_written, perturbed_stale (list of dicts), errors (list of dicts).
+
+    perturbed_stale RECORDS EACH REFUSAL INDIVIDUALLY, not as a tally. Block 5
+    Concept 19: a batch that reports "982 scored, 18 skipped, here is why" is
+    trustworthy; one that reports "982 scored" and hides 18 failures is a silent
+    data-quality bug. A count answers "how many", and an operator looking at a
+    stale-export spike needs "which scenarios, and which run did each one think it
+    was" — so every entry carries the scenario id, the run it was built from, and
+    the run currently stored.
 
     Every scenario is isolated in its own try/except. Errors are RECORDED and the
     walk continues — one malformed record must not cost a multi-hour batch.
@@ -319,6 +415,7 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         'agents_written': 0,
         'agents_skipped': 0,
         'perturbed_written': 0,
+        'perturbed_stale': [],
         'errors': [],
     }
     t_start = time.time()
@@ -382,8 +479,32 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                     states, validity, types, sdc_idx, int(result['target_idx'])
                 )
                 perturbed = space.apply(np.asarray(result['delta'], dtype=np.float32))
-                if export_perturbed_path(conn, sid, perturbed, validity,
-                                         int(result['target_idx'])):
+                try:
+                    # delta and method are what make the run id derive from THIS
+                    # content rather than from whatever is currently on the score row
+                    # (audit R01). Without them the protection is vacuous — see
+                    # export_perturbed_path's docstring.
+                    written = export_perturbed_path(
+                        conn, sid, perturbed, validity, int(result['target_idx']),
+                        delta=result['delta'], method=result.get('method'),
+                    )
+                except StaleExportError as stale:
+                    # A refused export is a NORMAL outcome of a delayed or retried
+                    # pass, not a crash — the same reasoning that makes
+                    # replay_infeasible a status rather than an exception. Recorded
+                    # in full and the walk continues.
+                    conn.rollback()
+                    summary['perturbed_stale'].append({
+                        'scenario_id': stale.scenario_id,
+                        'attempted_run_id': stale.attempted_run_id,
+                        'current_run_id': stale.current_run_id,
+                    })
+                    if verbose:
+                        print(f"    [stale] perturbed path refused: built from run "
+                              f"{stale.attempted_run_id}, stored result is run "
+                              f"{stale.current_run_id}")
+                    written = False
+                if written:
                     summary['perturbed_written'] += 1
                     if verbose:
                         print(f"    + perturbed path (target {result['target_idx']})")
@@ -404,6 +525,7 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
             print(f"  warning: {len(wanted)} requested IDs not found in shard")
         print(f"Geometry pass done: {summary['exported']} scenarios, "
               f"{summary['agents_written']} agents, "
+              f"{len(summary['perturbed_stale'])} stale exports refused, "
               f"{len(summary['errors'])} errors, "
               f"{time.time() - t_start:.1f}s")
     return summary

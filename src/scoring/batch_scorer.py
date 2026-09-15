@@ -202,6 +202,11 @@ def _stress_one(states, validity, types, sdc_idx,
                 'outcome': OUTCOME_REPLAY_INFEASIBLE,
                 'target_idx': int(tgt),
                 'baseline_replay_error': e.baseline_replay_error,
+                # EVERY field the exception carries, not a selection of them (audit
+                # R07). baseline_replay_collides was dropped here, so no column could
+                # persist it however the schema was written — the loss happened before
+                # the database was involved.
+                'baseline_replay_collides': e.baseline_replay_collides,
                 'reason': e.reason,
                 'challengers_total': challengers_total,
                 'challengers_searched': 0}

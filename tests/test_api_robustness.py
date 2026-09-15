@@ -294,6 +294,19 @@ def test_perturbed_keeps_the_score_fields_when_geometry_is_absent(bare_conn, bar
     min_perturbation, delta and collision_timestep come from scenario_scores and do not
     depend on the geometry tables at all. Degrading must null the PICTURE, not the
     result.
+
+    AMENDED BY BATCH 7 (audit R06), AND THE AMENDMENT IS THE FINDING. This test used
+    to assert `target_idx is None` here, because there was nowhere else for it to come
+    from: it lived only on perturbed_paths, so a scenario stress-tested but not yet
+    geometry-exported could not say which agent it had been tested against — even
+    though _stress_one knew. That is R06, and the old assertion was pinning the defect
+    in place rather than testing a contract.
+
+    scenario_scores.target_idx now answers it, so the expectation flips from "null" to
+    "the challenger that was actually searched". Strictly stronger: null was satisfied
+    by any implementation that lost the value, and 1 is satisfied only by one that
+    keeps it. Everything else about the degraded shape is unchanged — the PICTURE is
+    still null, which is what this test is chiefly about.
     """
     states, validity, types = _pedestrian_scene()
     _seed(bare_conn)
@@ -307,7 +320,9 @@ def test_perturbed_keeps_the_score_fields_when_geometry_is_absent(bare_conn, bar
     assert data['delta'] is not None and len(data['delta']) == 4
     assert data['collision_timestep'] is not None
     assert data['baseline'] is None and data['perturbed'] is None
-    assert data['target_idx'] is None
+    assert data['target_idx'] == 1, (
+        'the searched challenger must be recoverable without geometry (audit R06)'
+    )
     assert data['delta_labels'] == LINEAR_DELTA_LABELS, (
         'provenance must still label the delta with no geometry present'
     )
