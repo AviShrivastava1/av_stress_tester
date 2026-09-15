@@ -26,6 +26,7 @@ import torch
 
 from src.physics.bicycle_model import get_wheelbase, DELTA_MAX, A_MAX, V_MAX
 from src.danger.collision_detector import check_collision_trajectory
+from src.optimization.scipy_optimizer import keeps_challenger
 
 
 def _softmin(x: torch.Tensor, beta: float) -> torch.Tensor:
@@ -162,6 +163,69 @@ def _smooth_margin(space, traj, beta, n_circles, dtype):
     return _softmin(torch.stack(per_t_min), beta)
 
 
+def _reject_out_of_bounds(space, delta_init) -> np.ndarray:
+    """
+    A warm start outside the declared search space is a CALLER ERROR, and is
+    refused rather than quietly projected (audit R05).
+
+    refine_scenario used to exact-verify delta_init and store it as the incumbent
+    BEFORE anything looked at space.bounds, while every Adam iterate after it was
+    clamped every step. So a warm start that won outright was the one candidate
+    that never had to be legal. The audit's repro: bounds [[0,0], [-0.01, 0.01],
+    [0,0], [0,0]] with delta_init [0, 0.15, 0, 0] — a heading offset 15x its
+    allowed maximum — came back as collision=True with min_perturbation 15.0,
+    which under Batch 5's B20 weighting reads as "fifteen times the entire
+    permitted range", presented as a verified minimum.
+
+    REJECT, NOT CLAMP, and the distinction is not stylistic. Iterates are clamped
+    because the optimizer GENERATES them and clamping is how a box constraint is
+    enforced during descent. delta_init is INPUT. Validating input and projecting
+    an iterate are different operations that happen to share an expression, and
+    collapsing them is what produced the defect. Clamping would also return a
+    delta the caller never supplied, and if the clamped version does not collide
+    the caller gets collision=False with nothing to explain why.
+
+    The usability argument for clamping — an external caller that reasonably does
+    not know the bounds — does not apply here: space.bounds is a public attribute
+    of the object the caller must already build to call this function at all.
+    There is no state in which a caller holds a delta but cannot see the box.
+    This is the same fail-loud instinct as PerturbationSpace's dimension checks
+    and _make_track's no-fallback rule.
+
+    Checked AFTER delta_init has defaulted, because the check is on the value
+    actually used: a bounds box that excludes the origin makes the zero default
+    illegal, and that should be loud too.
+
+    Comparison is exact, on the float32 cast against the float32 bounds — the
+    precision this function actually computes in.
+
+    NOTHING IN THE PIPELINE TRIGGERS THIS. _stress_one and the validation
+    notebook both warm-start from DE, whose output scipy keeps inside the bounds;
+    measured across 12036 evaluated deltas over six configurations, zero lay
+    outside in float64 and zero after the float32 cast (the cast cannot push a
+    point out, because space.bounds is float32 so the endpoints are exactly
+    representable and round-to-nearest stays inside). Audit R04 changes WHICH
+    delta DE returns, and the archived candidates were included in that
+    measurement. So this is audit B16's category: dead in practice, wrong in the
+    contract, and the first hand-supplied warm start pays for it.
+    """
+    candidate = np.asarray(delta_init, np.float32)
+    low = np.asarray(space.bounds[:, 0], np.float32)
+    high = np.asarray(space.bounds[:, 1], np.float32)
+    offending = np.nonzero((candidate < low) | (candidate > high))[0]
+    if offending.size:
+        detail = '; '.join(
+            f'component {int(i)} = {float(candidate[i])!r} outside '
+            f'[{float(low[i])!r}, {float(high[i])!r}]'
+            for i in offending
+        )
+        raise ValueError(
+            'delta_init lies outside the perturbation space bounds and is '
+            f'refused rather than clamped (audit R05): {detail}'
+        )
+    return candidate
+
+
 def refine_scenario(
     space,
     delta_init=None,
@@ -190,6 +254,10 @@ def refine_scenario(
     Returns:
         dict with collision (EXACT-verified), min_perturbation, delta,
         collision_timestep, smooth_margin, n_iters.
+
+    Raises:
+        ValueError: delta_init lies outside space.bounds (audit R05). See
+                    _reject_out_of_bounds for why this is refused, not clamped.
     """
     torch.manual_seed(seed)
     dtype = torch.float64
@@ -198,6 +266,9 @@ def refine_scenario(
 
     if delta_init is None:
         delta_init = np.zeros(space.dim, dtype=np.float64)
+    # Before the warm start becomes a candidate — which is exactly the ordering
+    # bug (audit R05).
+    warm = _reject_out_of_bounds(space, delta_init)
     delta = torch.tensor(np.asarray(delta_init, np.float64), dtype=dtype, requires_grad=True)
 
     low = torch.tensor(space.bounds[:, 0], dtype=dtype)
@@ -223,7 +294,10 @@ def refine_scenario(
     # this one:
     #     if refined['collision'] and (not result['collision']
     #                                  or refined['min_perturbation'] < ...)
-    # so the two cannot disagree about the same comparison.
+    # so the two cannot disagree about the same comparison. It is no longer written
+    # out here at all: the comparison below calls scipy_optimizer.keeps_challenger,
+    # which the DE archive also calls, so two of the three sites share one
+    # definition instead of three sites agreeing by inspection (audit R04).
     def _verified(candidate):
         """(collides, timestep, weighted_norm) under the EXACT Shapely SAT check."""
         hit, t = check_collision_trajectory(space.apply(candidate), space.validity,
@@ -232,9 +306,8 @@ def refine_scenario(
 
     best_delta, best_t, best_norm = None, -1, float('inf')
 
-    warm = np.asarray(delta_init, np.float32)
     warm_hit, warm_t, warm_norm = _verified(warm)
-    if warm_hit:
+    if keeps_challenger(warm_hit, warm_norm, best_delta is not None, best_norm):
         best_delta, best_t, best_norm = warm.copy(), warm_t, warm_norm
 
     for it in range(n_iters):
@@ -267,7 +340,7 @@ def refine_scenario(
         #     useless in one regime and unsafe in the other is not a filter.
         candidate = delta.detach().numpy().astype(np.float32)
         hit, t_cand, norm_cand = _verified(candidate)
-        if hit and norm_cand < best_norm:
+        if keeps_challenger(hit, norm_cand, best_delta is not None, best_norm):
             best_delta, best_t, best_norm = candidate.copy(), t_cand, norm_cand
 
         if verbose and it % 50 == 0:

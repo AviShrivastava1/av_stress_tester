@@ -32,7 +32,9 @@ from src.danger.collision_detector import check_any_collision, check_collision_t
 from src.data.loader import ShardLoader, _crc32c, _masked_crc32c
 from src.optimization.autograd_optimizer import refine_scenario
 from src.optimization.perturbation_space import PerturbationSpace
-from src.optimization.scipy_optimizer import _DEObjective, optimize_scenario
+from src.optimization.scipy_optimizer import (
+    _DEObjective, keeps_challenger, optimize_scenario,
+)
 
 
 def _scene(n=2, t=10):
@@ -215,6 +217,26 @@ def test_workers_one_is_bit_identical_after_the_refactor():
     drift happened to move the converged point; running both objectives through DE
     under identical settings catches any arithmetic difference between them on this
     machine's own numbers, and it cannot go red for being run somewhere else.
+
+    AMENDED BY BATCH 6, AND FOR THE SAME REASON THE LITERALS WERE REMOVED. The final
+    assertion used to read
+
+        assert np.array_equal(result['delta'], reference.x.astype(np.float32))
+
+    which pinned optimize_scenario's OUTPUT to differential_evolution's raw winner.
+    Audit R04 changed that relationship by definition: optimize_scenario now returns
+    the better of DE's winner and the best exact-verified collision the search
+    evaluated, so the two coincide only when DE happens to converge onto its own best
+    feasible point. On this machine, at this fixture and seed, it does — which is
+    exactly the trap. The assertion would have stayed green here and gone red on a
+    machine whose DE arithmetic put the archive ahead, reporting a portability
+    accident as a regression. Identical shape to the literals it replaced.
+
+    So the assertion below tests the post-R04 contract instead: the returned delta is
+    DE's raw winner UNLESS the archive beat it, in which case it must be a genuinely
+    better verified collision. That is a real constraint in both branches, and it
+    cannot be satisfied by an implementation that has stopped wiring the objective in
+    — which is what this half of the test is for, and which nit/nfev also pin.
     """
     from scipy.optimize import differential_evolution
     from src.optimization.scipy_optimizer import _signed_gap
@@ -256,9 +278,30 @@ def test_workers_one_is_bit_identical_after_the_refactor():
     # ...and that optimize_scenario actually wires the new objective in, rather than
     # the two merely agreeing in isolation.
     result = optimize_scenario(space, lam=lam, popsize=6, maxiter=25, seed=3)
-    assert np.array_equal(result['delta'], reference.x.astype(np.float32))
     assert result['n_iter'] == reference.nit
     assert result['n_eval'] == reference.nfev
+
+    de_delta = reference.x.astype(np.float32)
+    if result['candidate_source'] == 'de_winner':
+        assert np.array_equal(result['delta'], de_delta), (
+            f"claims to have returned DE's winner {de_delta!r} but returned "
+            f"{result['delta']!r}"
+        )
+    else:
+        # The archive won. It has to have won on the merits: a verified collision,
+        # strictly smaller than DE's own answer under the shared predicate.
+        de_hit, _ = check_collision_trajectory(space.apply(de_delta), space.validity,
+                                               space.sdc_idx, space.target_idx)
+        de_norm = space.weighted_norm(de_delta)
+        hit, _ = check_collision_trajectory(space.apply(result['delta']),
+                                            space.validity, space.sdc_idx,
+                                            space.target_idx)
+        assert keeps_challenger(hit, space.weighted_norm(result['delta']),
+                                de_hit, de_norm), (
+            f"the archive replaced DE's winner without being better: returned "
+            f"{result['delta']!r} (collides={hit}) over {de_delta!r} "
+            f"(collides={de_hit}, norm={de_norm})"
+        )
 
 
 def test_the_objective_matches_the_closure_it_replaced():
