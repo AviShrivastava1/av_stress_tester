@@ -323,8 +323,26 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
     }
     t_start = time.time()
 
-    for idx, raw in enumerate(ShardLoader(shard_path)):
+    # Audit R02, same shape as batch_scorer's two loops: the fetch sits inside a
+    # handler so a truncated shard cannot discard geometry already exported, and the
+    # completion check runs BEFORE the fetch so an export of N scenarios never reads
+    # the N+1'th record.
+    reader = iter(ShardLoader(shard_path))
+    idx = -1
+    while True:
         if not wanted:
+            break
+        idx += 1
+        try:
+            raw = next(reader)
+        except StopIteration:
+            break                      # clean EOF — normal completion, not an error
+        except Exception as e:  # noqa: BLE001
+            summary['errors'].append({'index': idx, 'scenario_id': None,
+                                      'error': f'{type(e).__name__}: {e}',
+                                      'kind': 'shard_truncated'})
+            if verbose:
+                print(f"  [fatal] shard unreadable at record {idx}: {e}")
             break
 
         sid = None

@@ -83,9 +83,50 @@ def score_shard(
     records, errors = [], []
     t_start = time.time()
 
-    for i, raw in enumerate(ShardLoader(shard_path)):
+    # ── why this is a while loop and not `for raw in ShardLoader(...)` ──────────
+    #
+    # THE FETCH IS OUTSIDE THE BODY'S TRY (audit R02). A `for` statement calls
+    # next() on the iterator as part of its own protocol, BEFORE the body runs — so
+    # an exception raised inside ShardLoader.__iter__ is structurally outside the
+    # per-record handler below and propagates straight out of this function,
+    # discarding every record already scored. Batch 5 (audit B11) made the loader
+    # correctly refuse truncated framing instead of reading it as clean EOF, and that
+    # fix turned a silently-short batch into a lost one: Block 5 Concept 19's rule
+    # that "one bad record must never kill the batch" was defeated by a fix to an
+    # unrelated finding.
+    #
+    # THE COMPLETION CHECK RUNS BEFORE THE FETCH, not after. Asking for N scenarios
+    # used to read the N+1'th record before noticing it was done — so a bounded run
+    # touched shard data it was never asked for, and could die on corruption beyond
+    # its own request.
+    reader = iter(ShardLoader(shard_path))
+    i = -1
+    while True:
         if max_scenarios is not None and len(records) >= max_scenarios:
             break
+        i += 1
+        try:
+            raw = next(reader)
+        except StopIteration:
+            # Clean end of file, exactly on a record boundary. Normal completion, and
+            # caught BEFORE the clause below because StopIteration subclasses
+            # Exception — sharing a handler would log every successful run as a fault.
+            break
+        except Exception as e:  # noqa: BLE001
+            # The reader itself failed. Terminal by nature: the iterator is dead and
+            # no later record is reachable, so the response is the same whatever the
+            # type. Recorded with a `kind` rather than a bare flag so a consumer can
+            # tell "the shard ends mid-record, an unknown number of scenarios were
+            # never seen" from "record 7 was garbage and we carried on" — those mean
+            # different things about whether this run is COMPLETE, and an
+            # undifferentiated list asserts the weaker one for both.
+            errors.append({'index': i, 'scenario_id': None,
+                           'error': f'{type(e).__name__}: {e}',
+                           'kind': 'shard_truncated'})
+            if verbose:
+                print(f"  [fatal] shard unreadable at record {i}: {e}")
+            break
+
         scenario_id = None
         try:
             parser = ScenarioParser(raw)
@@ -262,9 +303,31 @@ def stress_test_scenarios(
     results = StressResults()
     t_start = time.time()
 
-    for record_index, raw in enumerate(ShardLoader(shard_path)):
+    # Same shape as score_shard's loop, and for the same two reasons (audit R02):
+    # the fetch must sit inside a handler, and the completion check must run before
+    # it. The second matters more here than there — this function is USUALLY called
+    # with a handful of ids, so reading one record past the last one found is the
+    # common case, not the edge case. stress_test_scenarios(shard, ['A']) with A as
+    # record 0 used to read record 1 anyway, and died if it was corrupt.
+    reader = iter(ShardLoader(shard_path))
+    record_index = -1
+    while True:
         if not wanted:
             break
+        record_index += 1
+        try:
+            raw = next(reader)
+        except StopIteration:
+            break                      # clean EOF — normal completion, not an error
+        except Exception as e:  # noqa: BLE001
+            results.errors.append({'record_index': record_index,
+                                   'scenario_id': None,
+                                   'error': f'{type(e).__name__}: {e}',
+                                   'kind': 'shard_truncated'})
+            if verbose:
+                print(f"  [fatal] shard unreadable at record {record_index}: {e}")
+            break
+
         # Reset every iteration (audit B05). Without this, `sid` survives from the
         # previous pass, and a record that fails to parse BEFORE the assignment below
         # lands in the except handler still holding the last scenario's id.

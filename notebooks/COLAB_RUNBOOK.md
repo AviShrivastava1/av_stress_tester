@@ -259,6 +259,15 @@ indices again, and the fixture is unaffected** — which is the fix doing its jo
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
 
+**If no scenario in the Pass 2 sample produced a verified collision** — an ordinary outcome
+at `TOP_N = 5`, not a failure — section 14 no longer crashes on it (audit R09). It falls
+back to any scenario with exported geometry, prints every outcome it did see, and states
+explicitly that collision-specific checks were **skipped, not passed**. The round-trip
+assertion still runs, on a non-colliding agent; it never needed a delta. Read that notice
+if it appears: it means the `/perturbed` delta and `collision_timestep` printed as null
+legitimately, and it is also the signal that `B09_N`'s sample in section 10b may contain
+few or no usable comparisons.
+
 ---
 
 ## What to bring back
