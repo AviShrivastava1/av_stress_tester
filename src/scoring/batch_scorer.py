@@ -29,6 +29,16 @@ import time
 import numpy as np
 
 from src.danger.danger_score import score_scenario
+# MODULE LEVEL, unlike the other src.optimization imports in this file, which are
+# deferred into the functions that need them. selection.py imports nothing at all and
+# src/optimization/__init__.py is docstring-only, so this costs no scipy, no shapely
+# and no torch — batch_scorer stays importable on a machine with none of them.
+#
+# It is also what makes the guarantee checkable: a deferred import inside _stress_one
+# would leave no module attribute for test_all_three_selection_sites_are_one_object to
+# bind to, and "they are the same object" would go back to being an argument rather
+# than an assertion.
+from src.optimization.selection import keeps_challenger
 
 
 def _score_one(states, validity, scenario_id, sdc_index,
@@ -219,11 +229,12 @@ def _stress_one(states, validity, types, sdc_idx,
     if use_autograd and space.is_vehicle:
         from src.optimization.autograd_optimizer import refine_scenario
         refined = refine_scenario(space, delta_init=result['delta'])
-        # keep whichever exact-verified collision has the smaller norm
-        if refined['collision'] and (
-            not result['collision']
-            or refined['min_perturbation'] < result['min_perturbation']
-        ):
+        # Keep whichever exact-verified collision has the smaller norm — THE SAME
+        # FUNCTION OBJECT the DE archive and the refiner's own iterate loop call, not
+        # a transcription of it (Batch 10). This was an inline expression held equal
+        # to theirs by test until src/scoring/ came back into scope.
+        if keeps_challenger(refined['collision'], refined['min_perturbation'],
+                            result['collision'], result['min_perturbation']):
             refined['target_idx'] = int(tgt)
             refined['method'] = 'de+autograd'
             result = refined

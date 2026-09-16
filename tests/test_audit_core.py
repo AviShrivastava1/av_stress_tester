@@ -18,7 +18,26 @@ import numpy as np
 import pytest
 
 os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
-PROJECT = Path(os.environ['AV_AUDIT_PROJECT']).resolve()
+
+# DERIVED, WITH THE VARIABLE AS AN OVERRIDE (audit R12 / A11).
+#
+# This used to be os.environ['AV_AUDIT_PROJECT'], which raises at IMPORT time — so a
+# missing variable did not skip two files, it INTERRUPTED the whole session:
+# `228 tests collected, 2 errors` and nothing runnable. The variable stays, because
+# running these expectations against an extracted copy elsewhere is exactly what the
+# audit bundle does; it just no longer gates collection of the repo it lives in.
+#
+# `.get(...) or ...` rather than a .get() default, so an empty AV_AUDIT_PROJECT=
+# resolves to the repo rather than silently to the current working directory.
+#
+# NOT the same kind of switch as AV_AUDIT_DB / AV_CLAIMS_DB / AV_ROBUSTNESS_DB, which
+# stay REQUIRED. Those gate something destructive — the DB suites drop and recreate
+# the project's tables in whatever PGDATABASE names — so the explicit opt-in IS the
+# safety property there, and a derived default would be a way to lose a real database.
+# This one gated nothing; it demanded a path the file already knows. Every other test
+# module here has derived it from __file__ all along.
+PROJECT = Path(os.environ.get('AV_AUDIT_PROJECT')
+               or Path(__file__).resolve().parents[1]).resolve()
 sys.path.insert(0, str(PROJECT))
 
 from src.optimization.perturbation_space import PerturbationSpace

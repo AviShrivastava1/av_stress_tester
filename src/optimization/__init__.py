@@ -12,5 +12,8 @@ Modules:
     scipy_optimizer     — gradient-free global search via Differential Evolution.
     autograd_optimizer  — gradient-based local refinement via a differentiable
                           PyTorch rollout + smooth (multi-circle) collision margin.
+    selection           — keeps_challenger: the one rule for which of two candidates
+                          survives. Imported by both optimizers and by
+                          scoring.batch_scorer, and it imports nothing itself.
 """
  

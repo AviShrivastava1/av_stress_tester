@@ -15,7 +15,13 @@ from psycopg2.pool import ThreadedConnectionPool
 import pytest
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, str(Path(os.environ['AV_AUDIT_PROJECT']).resolve()))
+# Derived, with the variable as an override — see the full reasoning in
+# test_audit_core.py (audit R12 / A11). The KeyError here fired at import, BEFORE the
+# AV_AUDIT_DB skipif below could gate anything, so this file aborted collection even
+# though every test in it was going to skip.
+PROJECT = Path(os.environ.get('AV_AUDIT_PROJECT')
+               or Path(__file__).resolve().parents[1]).resolve()
+sys.path.insert(0, str(PROJECT))
 from src.scoring import db
 from src.scoring.export_geometry import (
     init_geometry_schema, export_scenario_agents, export_perturbed_path,

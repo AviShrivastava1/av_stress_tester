@@ -1,5 +1,5 @@
 """
-test_audit2_regressions.py — second audit: R01, R02, R03, R04, R05, R06, R07, R09.
+test_audit2_regressions.py — second audit: R01, R02, R03, R04, R05, R06, R07, R09, R12.
 
 PROVENANCE, STATED PLAINLY: these tests are RECONSTRUCTED FROM THE SECOND AUDIT'S
 DESCRIPTIONS, NOT COPIED FROM ITS OWN CODE. The audit's source archive is on disk
@@ -67,6 +67,7 @@ import io
 import json
 import os
 import struct
+import subprocess
 import sys
 import types
 
@@ -730,4 +731,97 @@ def test_R07_stress_one_carries_every_field_the_exception_holds():
     assert result['baseline_replay_error'] == 0.0
     assert result['baseline_replay_collides'] is True, (
         'the refusal dict still drops a field the exception carried'
+    )
+
+
+# ── R12 / A11: pytest must collect without an environment variable ──────────────
+#
+# Raised twice: R12 in the second audit, A11 in the third. One finding.
+#
+# Reconstructed from the description, and the description understates it. The claim
+# is "collection requires AV_AUDIT_PROJECT"; what actually happens is that the
+# KeyError fires at IMPORT time in two files, pytest reports `2 errors during
+# collection`, and INTERRUPTS the entire session. Measured on the unfixed tree:
+#
+#     $ env -u AV_AUDIT_PROJECT pytest tests/ --collect-only -q
+#     ERROR tests/test_audit_core.py - KeyError: 'AV_AUDIT_PROJECT'
+#     ERROR tests/test_audit_db.py - KeyError: 'AV_AUDIT_PROJECT'
+#     !!!!!! Interrupted: 2 errors during collection !!!!!!
+#     228 tests collected, 2 errors in 1.20s
+#
+# 228 tests collected and zero of them runnable. Not "two files skip".
+#
+# This file has derived PROJECT from __file__ since it was written (line 80 above),
+# as does every other test module here; the two audit files are the outliers.
+
+def _pytest_run(args, drop=(), timeout=300):
+    """
+    pytest in a subprocess with specific variables removed from the environment.
+
+    A subprocess rather than monkeypatch because the defect is at MODULE IMPORT of a
+    file this session has already imported — os.environ cannot be un-read. Same
+    technique tests/test_claims_contract.py uses for PYTHONHASHSEED determinism.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    return subprocess.run(
+        [sys.executable, '-m', 'pytest', *args, '-p', 'no:cacheprovider'],
+        cwd=PROJECT, env=env, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def test_R12_the_suite_collects_without_the_audit_project_variable():
+    """
+    Collection is a path question, and the path is knowable from __file__.
+
+    --collect-only, so this does not recursively run the suite (it collects itself,
+    which is fine — collection does not execute test bodies).
+    """
+    proc = _pytest_run(['tests/', '--collect-only', '-q'], drop=('AV_AUDIT_PROJECT',))
+
+    assert 'AV_AUDIT_PROJECT' not in proc.stdout + proc.stderr, (
+        'collection still fails on the missing variable:\n'
+        + (proc.stdout + proc.stderr)[-2000:]
+    )
+    assert proc.returncode == 0, (
+        f'collection exited {proc.returncode}:\n' + (proc.stdout + proc.stderr)[-2000:]
+    )
+
+
+@pytest.mark.parametrize('flag,path', [
+    ('AV_CLAIMS_DB', 'tests/test_claims_contract.py'),
+    ('AV_ROBUSTNESS_DB', 'tests/test_api_robustness.py'),
+    ('AV_AUDIT_DB', 'tests/test_audit_db.py'),
+])
+def test_R12_the_disposable_database_opt_in_is_still_required(flag, path):
+    """
+    THE OTHER HALF, AND IT IS THE HALF WITH TEETH.
+
+    AV_AUDIT_PROJECT gated nothing — it demanded a path the file already knows.
+    These three gate something DESTRUCTIVE: each of those suites drops and recreates
+    the project's tables in whatever PGDATABASE points at. The explicit opt-in IS the
+    safety property, and deriving a default for one of them would be a way to lose a
+    real database.
+
+    So this test exists to fail if R12's fix is over-applied. Without the flag the
+    gated tests must SKIP — not run, and not error.
+
+    ASSERTED ON THE SKIP REASON, NOT ON THE ABSENCE OF PASSES. An earlier version of
+    this test asserted `' passed' not in stdout`, which is wrong and was caught by
+    running it: test_claims_contract.py holds 43 tests of which only 20 are gated, so
+    23 pure ones pass without any database and always should. The question is not
+    whether anything ran, it is whether the GATE FIRED — so the assertion reads the
+    -rs report for a skip attributed to the disposable-database marker. Derive the
+    flag away and that line disappears, whatever else the file does.
+    """
+    proc = _pytest_run([path, '-q', '-rs'], drop=(flag,))
+
+    assert proc.returncode == 0, (
+        f'{path} without {flag} did not exit clean:\n'
+        + (proc.stdout + proc.stderr)[-2000:]
+    )
+    gated = [line for line in proc.stdout.splitlines()
+             if line.startswith('SKIPPED') and 'disposable' in line]
+    assert gated, (
+        f'{path} reported no disposable-database skip without {flag} — the opt-in '
+        f'has been derived away:\n' + proc.stdout[-2000:]
     )

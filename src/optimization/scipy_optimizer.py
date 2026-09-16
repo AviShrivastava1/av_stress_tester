@@ -52,48 +52,16 @@ from shapely.geometry import Polygon
 from scipy.optimize import differential_evolution
 
 from src.danger.collision_detector import get_corners, check_collision_trajectory
+# Re-exported, not redefined (Batch 10). The definition moved to selection.py when
+# _stress_one became a third real importer; this name is kept here because it is where
+# two test modules and autograd_optimizer already import it from, and because the
+# archive below is one of its three call sites. Same object, one definition.
+from src.optimization.selection import keeps_challenger
 
 
 # penalty weight: must dominate ||delta||^2 so feasibility (a real collision) is
 # found before the norm is minimized. Tunable; 1e3 works for these unit scales.
 LAMBDA = 1.0e3
-
-
-def keeps_challenger(challenger_collides, challenger_norm,
-                     incumbent_collides, incumbent_norm) -> bool:
-    """
-    THE ONE definition of "this candidate is better than the one we are holding":
-    feasibility first, then smaller weighted norm. Ties go to the incumbent.
-
-    Three places in this project make that comparison — the DE archive below,
-    refine_scenario's iterate loop, and batch_scorer._stress_one choosing between
-    DE's answer and the refiner's. Written out three times they can drift, and a
-    drift is silent: an internal rule that disagreed with _stress_one's would make
-    a search discard work it had correctly done. Two of the three import this
-    function. The third, _stress_one, still carries the expression inline because
-    src/scoring/ was out of scope for the batch that added this, and is held equal
-    to it by test (test_the_de_selection_rule_matches_stress_one) rather than by
-    sharing the code. When a third real importer appears this earns its own module.
-
-    Args:
-        challenger_collides: does the candidate under consideration EXACT-verify?
-        challenger_norm:     its space.weighted_norm.
-        incumbent_collides:  does the currently-held answer exact-verify?
-        incumbent_norm:      its space.weighted_norm.
-
-    Returns:
-        True iff the challenger should replace the incumbent.
-    """
-    # STRICT `<`, so an exact tie in weighted norm KEEPS THE INCUMBENT, always and
-    # deterministically. Nothing observable rides on it today — tied norms report the
-    # same min_perturbation whichever delta is kept — but which DELTA survives a tie
-    # is a real choice, and this project has been caught before treating a tiebreak as
-    # cosmetic (the scenario_id tiebreak in Block 5 read as decorative until keyset
-    # pagination made it load-bearing). Written down rather than left to be inferred
-    # from an operator.
-    return bool(challenger_collides) and (
-        not incumbent_collides or challenger_norm < incumbent_norm
-    )
 
 
 def _signed_gap(states, validity, a, b) -> float:

@@ -154,23 +154,41 @@ def test_a_non_colliding_warm_start_still_reports_honestly():
 
 def test_the_selection_rule_matches_stress_one():
     """
-    refine_scenario's internal rule and batch_scorer._stress_one's DE-vs-refined rule
-    are the same comparison and must not drift: feasibility first, then smaller
-    weighted norm. If refinement returned a colliding delta with a LARGER norm than
-    the warm start, _stress_one would discard the whole refinement — so an internal
-    rule that disagreed would silently waste the work.
+    refine_scenario must return something _stress_one will actually keep.
+
+    "MUST NOT DRIFT" IS NO LONGER THE RIGHT CLAIM, and the old wording understated
+    what is true now. This docstring used to say the refiner's internal rule and
+    _stress_one's DE-vs-refined rule "are the same comparison and must not drift".
+    Since Batch 10 they cannot drift: both call the same function object out of
+    src/optimization/selection.py, asserted directly by
+    test_batch6_contract.test_all_three_selection_sites_are_one_object.
+
+    What is left for this test to check is the thing identity does not give you — that
+    refinement's OUTPUT satisfies the rule. If refinement returned a colliding delta
+    with a LARGER norm than its warm start, _stress_one would discard the whole
+    refinement, and every site agreeing about that would not make it less wasteful.
+
+    So the comparison below now CALLS keeps_challenger rather than restating it. The
+    restatement's job was to catch drift between two copies; there is one copy, and a
+    hand-written stand-in here would only be able to drift away from it. The frozen
+    restatement that still guards the predicate's MEANING lives in
+    test_batch6_contract._stress_one_rule, which says why it stays hand-written.
     """
     space, _ = _b09_space()
     warm = np.array([0.0, 0.15, 0.0, 0.0], dtype=np.float32)
     result = refine_scenario(space, delta_init=warm, n_iters=100)
 
-    # _stress_one keeps `refined` iff refined['collision'] and its norm is smaller.
+    # _stress_one's exact comparison: the refined result as challenger, DE's answer as
+    # incumbent.
     de_like = {'collision': True, 'min_perturbation': space.weighted_norm(warm)}
-    kept = result['collision'] and (not de_like['collision']
-                                    or result['min_perturbation'] < de_like['min_perturbation'])
+    kept = keeps_challenger(result['collision'], result['min_perturbation'],
+                            de_like['collision'], de_like['min_perturbation'])
     assert kept, (
-        'refinement returned something _stress_one would throw away, which means the '
-        'two disagree about which candidate is better'
+        'refinement returned something _stress_one would throw away: '
+        f"collision={result['collision']}, norm={result['min_perturbation']} against "
+        f"a warm start at norm {de_like['min_perturbation']}. Since Batch 10 this can "
+        'no longer mean the two rules disagree — they are one object — so it means '
+        'refinement produced a worse answer than the warm start it was given.'
     )
 
 

@@ -71,12 +71,27 @@ _PREDICATE_CASES = [
 def _stress_one_rule(challenger_collides, challenger_norm,
                      incumbent_collides, incumbent_norm):
     """
-    batch_scorer._stress_one's DE-vs-refined comparison, transcribed:
+    THE RULE AS WRITTEN IN BATCH 6, FROZEN. This was a live transcription of
+    batch_scorer._stress_one's inline DE-vs-refined comparison:
 
         if refined['collision'] and (
             not result['collision']
             or refined['min_perturbation'] < result['min_perturbation']
         ):
+
+    Batch 10 moved keeps_challenger into src/optimization/selection.py and made
+    _stress_one import it, so that expression no longer exists to transcribe.
+
+    THE ASSERTION BELOW IS UNCHANGED AND THE TEST IS NOT WEAKER — it has changed what
+    it proves. It used to prove "two copies agree", which is now guaranteed by
+    construction and asserted directly by test_all_three_selection_sites_are_one_object.
+    It now proves the surviving copy STILL MEANS WHAT IT MEANT: an independent
+    restatement, written before the move, that the predicate must keep agreeing with.
+    Identity says the three sites cannot disagree with each other; only this says they
+    cannot all drift together.
+
+    So it is deliberately NOT updated to call keeps_challenger. A frozen restatement
+    that calls the thing it is checking would assert nothing.
     """
     refined = {'collision': challenger_collides, 'min_perturbation': challenger_norm}
     result = {'collision': incumbent_collides, 'min_perturbation': incumbent_norm}
@@ -110,6 +125,34 @@ def test_the_refiner_and_the_searcher_use_one_predicate():
     from src.optimization import scipy_optimizer
     assert autograd_optimizer.keeps_challenger is scipy_optimizer.keeps_challenger, (
         'the refiner has its own copy of the selection rule'
+    )
+
+
+def test_all_three_selection_sites_are_one_object():
+    """
+    Batch 10's strengthening of the test above, extended to the site that was left out.
+
+    Batch 6 could only make two of the three share code — src/scoring/ was out of
+    scope — so _stress_one kept an inline expression, held equal to the other two by
+    _stress_one_rule's truth table. "Proven equivalent today" and "cannot differ" are
+    different guarantees, and only the second one survives somebody editing one site.
+
+    An identity assertion rather than a behavioural one, for the reason the test above
+    gives: two copies that agree today are two copies that can drift tomorrow, and the
+    drift is silent. Re-inline the expression in _stress_one and this fails; make it
+    import a wrapper instead of the function and this fails too.
+    """
+    from src.optimization import scipy_optimizer, selection
+    from src.scoring import batch_scorer
+
+    assert batch_scorer.keeps_challenger is selection.keeps_challenger, (
+        '_stress_one no longer uses the shared selection rule'
+    )
+    assert scipy_optimizer.keeps_challenger is selection.keeps_challenger, (
+        'the searcher no longer uses the shared selection rule'
+    )
+    assert autograd_optimizer.keeps_challenger is selection.keeps_challenger, (
+        'the refiner no longer uses the shared selection rule'
     )
 
 
