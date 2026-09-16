@@ -5,6 +5,36 @@ A_MAX = 5.0    # max acceleration magnitude (m/s^2)
 V_MAX = 40.0   # max speed (m/s)
 DT    = 0.1    # timestep duration (seconds)
 
+# The speed below which this model's HEADING IS NOT OBSERVABLE (audit A01).
+#
+# The linear state vector is [x, y, vx, vy]. It has no heading, so every consumer
+# that needs one recovers it as arctan2(vy, vx) — and that recovery is singular at
+# the origin. atan2(eps, 0) is exactly pi/2 for EVERY positive eps, down to the
+# smallest float32 subnormal, so the derived orientation of a stationary agent is
+# not approximately undefined, it is a step function of an unmeasurable quantity.
+#
+# Measured on a stationary cyclist beside the SDC: dvy0 = 1e-9 rotated the footprint
+# a quarter turn into a verified collision at weighted norm 5e-10, and dvy0 = 1e-30
+# did the same at a weighted norm of EXACTLY 0.0 — the float32 square underflows
+# while atan2 does not care how small the input was. A real DE run found the exploit
+# unprompted at norm 0.003215756.
+#
+# Same shape as invert_bicycle's `if abs(v) < 1e-3: delta = 0.0` guard, and for the
+# same reason: a quantity recovered by dividing by v is not recoverable as v -> 0,
+# so return the honest value rather than one amplified by 1/|v|. The constants
+# differ deliberately. That one only has to avoid a division by zero; this one has
+# to bound a CONDITION NUMBER, and at 1e-3 m/s the sensitivity is still 1000 rad per
+# m/s, which leaves the exploit merely six times more expensive instead of eight
+# orders of magnitude.
+#
+# 0.5 m/s IS A DEFAULT TO BE MEASURED, NOT A CONSTANT THAT HAS BEEN DEFENDED. It has
+# exactly the status BASELINE_DRIFT_REFUSE_M has: PerturbationSpace takes
+# heading_speed_floor=None to switch it off, and records how much of the challenger
+# falls below it on EVERY scenario whether it is switched on or not, so the real
+# distribution of near-stationary challengers can be measured on a real shard before
+# this number is argued for.
+V_HEADING_MIN = 0.5
+
 
 def project_to_magnitude(u: float, v: float, limit: float):
     """

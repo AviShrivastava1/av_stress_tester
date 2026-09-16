@@ -259,6 +259,30 @@ def _stress_one(states, validity, types, sdc_idx,
         'de_n_eval': result.get('n_eval'),
         'baseline_replay_error': float(space.baseline_replay_error),
         'target_has_interior_gap': bool(space.has_interior_gap),
+        # How near-stationary this challenger actually was (audit A01). Recorded on
+        # EVERY searched scenario, exactly like target_has_interior_gap beside it and
+        # baseline_replay_error above it, and for the same reason both of those are:
+        # V_HEADING_MIN = 0.5 m/s is a proposed default, and the only way it becomes a
+        # defended one is a query over a real shard. A threshold whose effect is only
+        # visible where it already fired cannot tell anyone how often it fires.
+        #
+        # This is the one place Batch 9 surfaces something outside
+        # src/optimization/ and src/physics/, and it is surfaced because the
+        # measurement has no route to the validation pass otherwise — the notebook
+        # reads search_provenance, not PerturbationSpace instances.
+        #
+        # None rather than inf when the challenger has no observed frame, because
+        # JSON has no infinity literal and this dict is written to JSONB. That is
+        # Phase 5 doctrine — Block 6 Concept 24, "Why NULL Instead of Infinity", the
+        # same rule db.update_stress_results applies to min_perturbation — and not an
+        # audit finding; B04 is the robustly_safe defect, which is a different thing
+        # that merely happens to be discussed alongside it in api/models.py.
+        'target_min_speed': (float(space.target_min_speed)
+                             if np.isfinite(space.target_min_speed) else None),
+        'frames_below_heading_floor': int(space.frames_below_heading_floor),
+        'frames_observed': int(space.frames_observed),
+        'heading_speed_floor': (None if space.heading_speed_floor is None
+                                else float(space.heading_speed_floor)),
     }
     return result
 

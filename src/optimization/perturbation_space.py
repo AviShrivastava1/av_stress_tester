@@ -37,6 +37,7 @@ from src.physics.bicycle_model import (
     V_MAX, extract_state_from_womd as bicycle_extract,
 )
 from src.physics.linear_model import (
+    V_HEADING_MIN,
     project_to_magnitude, extract_state_from_womd as linear_extract,
 )
 from src.physics.simulator import (
@@ -111,6 +112,7 @@ class PerturbationSpace:
         bounds: np.ndarray = None,
         dt: float = 0.1,
         max_baseline_drift: float = BASELINE_DRIFT_REFUSE_M,
+        heading_speed_floor: float = V_HEADING_MIN,
     ):
         """
         Args:
@@ -127,6 +129,16 @@ class PerturbationSpace:
                         than this (metres) from the logged track. None disables the
                         check and records the error only — use that to measure the
                         real distribution, not to silence an inconvenient refusal.
+            heading_speed_floor:
+                        speed (m/s) below which a LINEAR-model challenger's heading is
+                        held at its logged value instead of being derived from the
+                        velocity direction (audit A01). Ignored for vehicles, whose
+                        heading is real state. None disables the floor and restores
+                        the pre-A01 behaviour — same escape hatch, and the same
+                        warning, as max_baseline_drift: it exists so the real
+                        distribution can be measured, not so a refusal can be
+                        silenced. The measurement is recorded either way; see
+                        `frames_below_heading_floor` and `target_min_speed`.
 
         Raises:
             ValueError:            the challenger is never observed, or its recorded
@@ -177,6 +189,35 @@ class PerturbationSpace:
             self.base_init = bicycle_extract(states, self.target_idx, self.t0)
         else:
             self.base_init = linear_extract(states, self.target_idx, self.t0)
+
+        # ── heading observability for the linear model (audit A01) ──────────────
+        #
+        # RECORDED ON EVERY SCENARIO, INCLUDING WHEN THE FLOOR IS OFF AND INCLUDING
+        # FOR VEHICLES, for the same reason has_interior_gap is recorded whether or
+        # not it changes anything: a number that only exists when it already mattered
+        # cannot tell anyone how often it matters. These two are what a Colab pass
+        # needs to turn V_HEADING_MIN from a proposal into a defended default.
+        #
+        # Measured against the LOGGED velocities, not a perturbed replay, so it
+        # describes the scenario rather than one search's path through it.
+        self.heading_speed_floor = heading_speed_floor
+        _ts = valid_timesteps(self.validity, self.target_idx)
+        if len(_ts):
+            _logged_speed = np.hypot(
+                self.states0[self.target_idx, _ts, 2].astype(np.float64),
+                self.states0[self.target_idx, _ts, 3].astype(np.float64),
+            )
+            self.target_min_speed = float(_logged_speed.min())
+            # counted against the ACTIVE floor when there is one, and against the
+            # module default when the floor is off, so switching it off to measure
+            # does not also switch off the measurement.
+            _floor = V_HEADING_MIN if heading_speed_floor is None else heading_speed_floor
+            self.frames_below_heading_floor = int((_logged_speed < _floor).sum())
+            self.frames_observed = int(len(_ts))
+        else:
+            self.target_min_speed = float('inf')
+            self.frames_below_heading_floor = 0
+            self.frames_observed = 0
 
         # per-dimension box bounds (used by DE and by gradient clamping)
         self.bounds = self._default_bounds() if bounds is None else np.asarray(bounds, np.float32)
@@ -382,9 +423,91 @@ class PerturbationSpace:
             states[i, t0:end, 1] = y
             states[i, t0:end, 2] = vx
             states[i, t0:end, 3] = vy
-            states[i, t0:end, 4] = np.arctan2(vy, vx)  # heading from velocity
+            states[i, t0:end, 4] = self._linear_heading(vx, vy, t0, end)
 
         return states
+
+    def _linear_heading(self, vx, vy, t0, end) -> np.ndarray:
+        """
+        The heading to write for a linear-model challenger: derived from the velocity
+        direction where that direction is observable, and the LOGGED heading where it
+        is not (audit A01).
+
+        THE OLD LINE WAS `np.arctan2(vy, vx)`, UNCONDITIONALLY, and it had two
+        defects rather than the one the audit reported.
+
+        The reported one: atan2 is singular at the origin, and not in a way more
+        precision helps. atan2(eps, 0) is EXACTLY pi/2 for every positive eps down to
+        the smallest float32 subnormal, so a stationary challenger's footprint could
+        be rotated a quarter turn — into a verified, exact-SAT collision — by a delta
+        too small to be worth anything. Measured on a stationary cyclist 1.8 m from
+        the SDC: dvy0 = 1e-9 collided at weighted norm 5.0e-10, and dvy0 = 1e-30
+        collided at a weighted norm of EXACTLY 0.0, because the float32 square
+        underflows while atan2 does not. The centre never moved. A real DE run found
+        it unprompted at norm 0.003215756, so this was reachable by the ordinary
+        pipeline and not a constructed curiosity — pick_nearest_challenger has no
+        speed filter, and a parked bicycle beside the SDC is an entirely ordinary
+        challenger.
+
+        The UNREPORTED one, found while reproducing the first, is worse because it
+        needs no perturbation at all: for a stationary agent vx = vy = 0 in the
+        LOGGED data too, so arctan2(0, 0) = 0 fired on the zero-delta replay and
+        silently rewrote the agent's logged orientation to zero. A parked car facing
+        0.7 rad replayed facing 0.0 — a 40-degree footprint rotation applied by a
+        delta of exactly zero. That is a Batch 1 / audit B03 violation ("the
+        zero-perturbation replay must reproduce the logged track") living in a column
+        B03's own measurement never inspected: _measure_baseline_replay compares
+        states[..., :2], and heading is column 4, so it reported 0.0000 m of error
+        while the orientation was being destroyed.
+
+        Holding the LOGGED heading FRAME BY FRAME, rather than the t0 heading, is
+        what makes the zero-delta replay exact everywhere instead of merely at the
+        start — an agent that was logged rotating in place keeps doing so.
+
+        WHAT THIS FIXES AND WHAT IT DOES NOT, stated rather than implied:
+
+          * fixed — orientation is preserved exactly under the identity perturbation;
+          * fixed — rotation is no longer free. Rotating a resting linear agent now
+            requires first pushing its speed to the floor, which costs at least
+            heading_speed_floor * weight_vy = 0.5 * 0.5 = 0.25 of weighted norm,
+            against 0.0 before, and buys a physically real change of motion;
+          * NOT fixed — above the floor the 1/|v| sensitivity remains. At v = 0.5 a
+            unit of weighted norm still buys about 2 rad, where a vehicle's dtheta0
+            buys 0.2, so a linear agent's orientation stays roughly ten times cheaper
+            to rotate than a vehicle's. Bounded, not equalised;
+          * NOT fixed — rotation is still not a priced DIMENSION. The cost function
+            sees it only through the velocity change that caused it. Pricing it
+            directly means a fifth perturbation dimension, which is rejected on arity
+            (four separate assertions plus the delta column) rather than on merit;
+          * NOT addressed — whether a cyclist can physically rotate in place at all
+            is a modelling question this does not open.
+
+        Vehicles never reach this function: the bicycle model carries theta as real
+        state, so its heading is written from the rollout and was never derived.
+        """
+        derived = np.arctan2(vy, vx)
+        if self.heading_speed_floor is None:
+            return derived
+        # np.hypot in float64 rather than sqrt(vx*vx + vy*vy) in float32. DEFENSIVE,
+        # NOT LOAD-BEARING, and the distinction is recorded because the obvious story
+        # about it is wrong: the float32 square is what underflows in weighted_norm,
+        # so it is tempting to say this comparison would inherit the same blind spot.
+        # It would not. v*v reaches exactly zero in float32 only below
+        # sqrt(smallest float32 subnormal) = sqrt(1.4013e-45) = 3.7434e-23, and any
+        # floor worth setting is twenty-odd orders of magnitude above that, so both
+        # spellings agree such a speed is below it. Mutation-tested: swapping this for
+        # the float32 form changed no test.
+        #
+        # (Derived, not recalled. A previous version of this comment said 1e-19, which
+        # is sqrt of the smallest NORMAL — wrong by four orders, because the square
+        # stays representable as a subnormal well past that point. The conclusion
+        # survived the error, which is exactly why the number had to be checked.)
+        #
+        # Kept because it costs nothing and the float64 form is the one whose
+        # correctness does not depend on where the floor happens to be set.
+        speed = np.hypot(vx.astype(np.float64), vy.astype(np.float64))
+        logged = self.states0[self.target_idx, t0:end, 4]
+        return np.where(speed >= self.heading_speed_floor, derived, logged)
 
 
 def pick_nearest_challenger(states, validity, sdc_idx) -> int:
