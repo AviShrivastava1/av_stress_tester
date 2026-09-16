@@ -298,6 +298,67 @@ def _stress_one(states, validity, types, sdc_idx,
     return result
 
 
+def _describe_outcome(r) -> str:
+    """
+    One console line per result, saying what the pass actually concluded.
+
+    THIS USED TO BE A TWO-BRANCH `if r.get('collision') ... else`, and the else printed
+    "robustly safe within bounds" for EVERY other outcome (audit R08 / A09, raised by
+    two separate audits at two different sets of lines). That included
+    replay_infeasible — a scenario whose own zero-perturbation replay was not faithful
+    enough to measure against, so NO SEARCH RAN AT ALL. There was no budget, no bounds
+    and no result, and the console announced it as a safety conclusion.
+
+    The API and models.py stopped making that claim in Batch 2, when B04 replaced the
+    inferred robustly_safe with an explicit search_certifies_infeasibility that no code
+    path sets. The console was never brought along. So this is not a wording change: it
+    is the console finally saying the same thing the rest of the system says.
+
+    EVERY OUTCOME IS NAMED EXPLICITLY, with no catch-all that could absorb a new one
+    silently — a `else: pass` here is how the original defect got in. A status this
+    does not know about is reported AS unrecognized rather than described.
+
+    Phrased in the OUTCOME vocabulary (src/scoring/db.py's OUTCOME_* constants), so a
+    console line, an API field and a database column all read the same.
+    """
+    from src.scoring.db import (
+        OUTCOME_COLLISION_FOUND, OUTCOME_ERROR, OUTCOME_NO_CHALLENGER,
+        OUTCOME_NO_COLLISION_FOUND, OUTCOME_REPLAY_INFEASIBLE,
+    )
+
+    outcome = r.get('outcome')
+
+    if outcome == OUTCOME_COLLISION_FOUND:
+        return (f"{OUTCOME_COLLISION_FOUND}: collision at "
+                f"||delta||={r['min_perturbation']:.4f} "
+                f"(t={r['collision_timestep']}, {r['method']})")
+
+    if outcome == OUTCOME_NO_COLLISION_FOUND:
+        # DELIBERATELY NOT "safe". A completed search that found nothing is a fact
+        # about THIS search: one heuristically-chosen challenger, a finite stochastic
+        # budget, and a bounded box. The counts are printed because they are what
+        # makes that readable rather than something the reader has to know.
+        return (f"{OUTCOME_NO_COLLISION_FOUND}: no collision within this search's "
+                f"budget and bounds "
+                f"({r.get('challengers_searched')}/{r.get('challengers_total')} "
+                f"challengers)")
+
+    if outcome == OUTCOME_REPLAY_INFEASIBLE:
+        return (f"{OUTCOME_REPLAY_INFEASIBLE}: no search ran — "
+                f"reason={r.get('reason')}, "
+                f"baseline drift={r.get('baseline_replay_error')}, "
+                f"baseline collides={r.get('baseline_replay_collides')}")
+
+    if outcome == OUTCOME_NO_CHALLENGER:
+        return (f"{OUTCOME_NO_CHALLENGER}: no search ran — nothing to perturb "
+                f"({r.get('challengers_total')} candidate agents)")
+
+    if outcome == OUTCOME_ERROR:
+        return f"{OUTCOME_ERROR}: {r.get('error')}"
+
+    return f"unrecognized outcome {outcome!r} (status={r.get('status')!r})"
+
+
 class StressResults(dict):
     """
     dict scenario_id -> result, plus `.errors` for failures that have no scenario id.
@@ -387,12 +448,7 @@ def stress_test_scenarios(
             results[sid] = _stress_one(states, validity, types, sdc_idx,
                                        use_autograd, de_kwargs)
             if verbose:
-                r = results[sid]
-                if r.get('collision'):
-                    print(f"    collision at ||delta||={r['min_perturbation']:.4f} "
-                          f"(t={r['collision_timestep']}, {r['method']})")
-                else:
-                    print(f"    robustly safe within bounds ({r.get('status')})")
+                print(f"    {_describe_outcome(results[sid])}")
         except Exception as e:  # noqa: BLE001
             detail = f'{type(e).__name__}: {e}'
             if sid is None:

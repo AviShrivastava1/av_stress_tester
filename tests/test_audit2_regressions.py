@@ -1,5 +1,8 @@
 """
-test_audit2_regressions.py — second audit: R01, R02, R03, R04, R05, R06, R07, R09, R12.
+test_audit2_regressions.py — second audit: R01–R12 except R09's siblings, i.e.
+R01, R02, R03, R04, R05, R06, R07, R08, R09, R10, R11, R12. The third audit's A08,
+A09 and A11 are the same findings as R11, R08 and R12 and are covered here rather
+than duplicated in test_audit3_regressions.py, which holds A-only findings.
 
 PROVENANCE, STATED PLAINLY: these tests are RECONSTRUCTED FROM THE SECOND AUDIT'S
 DESCRIPTIONS, NOT COPIED FROM ITS OWN CODE. The audit's source archive is on disk
@@ -62,6 +65,7 @@ Run:
     ./venv/bin/python -m pytest tests/test_audit2_regressions.py -q
 """
 
+import base64
 import contextlib
 import io
 import json
@@ -70,6 +74,7 @@ import struct
 import subprocess
 import sys
 import types
+import unicodedata
 
 import numpy as np
 import pytest
@@ -824,4 +829,418 @@ def test_R12_the_disposable_database_opt_in_is_still_required(flag, path):
     assert gated, (
         f'{path} reported no disposable-database skip without {flag} — the opt-in '
         f'has been derived away:\n' + proc.stdout[-2000:]
+    )
+
+
+# ── R08 / A09: nothing reports a safety conclusion the pass did not reach ───────
+#
+# One finding, raised twice, and each audit found it at a DIFFERENT set of lines —
+# which is why Batch 10 answered it with a repo-wide sweep and a standing test
+# (tests/test_batch10_contract.py) rather than two edits.
+#
+# The claim: the verbose console line in stress_test_scenarios and the notebook's
+# Pass 2 aggregate both call every non-collision outcome "robustly safe", including
+# replay_infeasible — a scenario the pipeline REFUSED TO MEASURE. The API and
+# models.py stopped making that claim in Batch 2; these two never did.
+#
+# Measured on the unfixed tree, with the fixtures below:
+#
+#     stress-testing refused ...
+#         robustly safe within bounds (replay_infeasible)   <- no search ran at all
+#     stress-testing searched ...
+#         robustly safe within bounds (ok)
+#     stress-testing solo ...
+#         robustly safe within bounds (no_challenger)       <- nothing to perturb
+
+@pytest.fixture
+def outcome_parser(monkeypatch):
+    """
+    A parser stub whose scene depends on the scenario id, so ONE shard can drive
+    _stress_one to every outcome it has. Same substitution technique as stub_parser
+    above; a different scene table is the only difference.
+
+    Each scene was run through _stress_one and the outcome it produces recorded, so
+    this fixture is not asserting an outcome it merely hopes for:
+
+        refused   two 4.5x2.0 boxes both at the origin -> replay_infeasible/collision
+        searched  boxes 40 m apart, closing at 10 m/s  -> no_collision_found
+        solo      one agent, nothing to perturb        -> no_challenger
+        hit       boxes 2.1 m apart laterally          -> collision_found
+    """
+    def _boxes(n=2):
+        states = np.zeros((n, 10, 7), dtype=np.float32)
+        states[:, :, 5:7] = [4.5, 2.0]
+        return states
+
+    def _searched():
+        states = _boxes()
+        states[0, :, 0] = -20.0 + 10.0 * (np.arange(10) * 0.1)
+        states[0, :, 2] = 10.0
+        states[1, :, 0] = 30.0
+        return states
+
+    def _hit():
+        states = _boxes()
+        states[1, :, 1] = 2.1
+        return states
+
+    scenes = {'refused': _boxes, 'searched': _searched,
+              'solo': lambda: _boxes(n=1), 'hit': _hit}
+
+    module = types.ModuleType('src.data.parser')
+
+    class ScenarioParser:
+        def __init__(self, raw):
+            self.sid = raw.decode()
+            self.states = scenes[self.sid]()
+
+        def get_scenario_id(self):
+            return self.sid
+
+        def get_agent_states(self):
+            return self.states
+
+        def get_agent_validity(self):
+            return np.ones(self.states.shape[:2], dtype=bool)
+
+        def get_agent_types(self):
+            return np.ones(self.states.shape[0], dtype=int)
+
+        def get_sdc_index(self):
+            return 0
+
+    module.ScenarioParser = ScenarioParser
+    monkeypatch.setitem(sys.modules, 'src.data.parser', module)
+    return module
+
+
+_SAFETY_CLAIMS = ('robustly safe', 'certified safe', 'proven safe',
+                  'guaranteed safe', 'collision-free')
+
+
+def _verbose_stress(tmp_path, ids):
+    from src.scoring.batch_scorer import stress_test_scenarios
+
+    path = _write_shard(tmp_path / 'outcomes.tfrecord', [i.encode() for i in ids])
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        results = stress_test_scenarios(
+            path, ids, verbose=True,
+            de_kwargs={'popsize': 4, 'maxiter': 8, 'seed': 1},
+        )
+    return results, buffer.getvalue()
+
+
+def test_R08_the_console_does_not_call_a_refused_replay_safe(tmp_path, outcome_parser):
+    """
+    THE SHARPEST CASE, and the reason this is not cosmetic: replay_infeasible means
+    the scenario's own zero-perturbation replay was not faithful enough to measure
+    against, so NO SEARCH RAN. There is no budget, no bounds, and no result — and the
+    console announced it as safety.
+    """
+    results, output = _verbose_stress(tmp_path, ['refused'])
+
+    assert results['refused']['status'] == 'replay_infeasible', (
+        f"fixture regressed: {results['refused'].get('status')}"
+    )
+    for claim in _SAFETY_CLAIMS:
+        assert claim not in output.lower(), (
+            f'the console called a refused replay {claim!r}:\n{output}'
+        )
+    assert 'replay_infeasible' in output, (
+        f'the refusal is not named at all:\n{output}'
+    )
+
+
+@pytest.mark.parametrize('sid,expected_status', [
+    ('refused', 'replay_infeasible'),
+    ('searched', 'ok'),
+    ('solo', 'no_challenger'),
+])
+def test_R08_every_non_collision_outcome_gets_its_own_console_line(
+        tmp_path, outcome_parser, sid, expected_status):
+    """
+    PARAMETRIZED OVER ALL THREE, because the defect was one `else` branch swallowing
+    them. Fixing only the refusal would leave a completed search that found nothing
+    still described as a safety certificate, which is the same defect narrowed.
+
+    Each outcome must be NAMED. Asserting only the absence of the banned phrase would
+    pass on an empty line.
+    """
+    results, output = _verbose_stress(tmp_path, [sid])
+
+    assert results[sid]['status'] == expected_status, 'fixture regressed'
+    for claim in _SAFETY_CLAIMS:
+        assert claim not in output.lower(), f'{sid}: {claim!r} in:\n{output}'
+    assert results[sid]['outcome'] in output, (
+        f'{sid}: the outcome is not reported:\n{output}'
+    )
+
+
+def test_R08_a_real_collision_still_reports_as_one(tmp_path, outcome_parser):
+    """
+    The branch that was already correct, pinned so the fix cannot eat it.
+
+    ASSERTED ON THE NUMBERS, NOT ON THE LINE'S SHAPE. An earlier version of this test
+    asserted that the outcome name did NOT appear on the collision line, which was a
+    guess about formatting rather than about content — and it failed once the fix
+    prefixed every line with its outcome, which is the point of the fix. What actually
+    has to survive is the norm and the timestep: replacing an informative line with a
+    bare outcome name would be a regression dressed as consistency.
+    """
+    results, output = _verbose_stress(tmp_path, ['hit'])
+
+    assert results['hit']['collision'] is True, 'fixture regressed'
+    assert f"{results['hit']['min_perturbation']:.4f}" in output, (
+        f'the collision line no longer reports the norm:\n{output}'
+    )
+    assert f"t={results['hit']['collision_timestep']}" in output, (
+        f'the collision line no longer reports the timestep:\n{output}'
+    )
+    assert results['hit']['method'] in output, (
+        f'the collision line no longer reports the method:\n{output}'
+    )
+
+
+def _exec_pass2_aggregate(stress_results):
+    """
+    Run the notebook's Pass 2 aggregate cell against a supplied result dict.
+
+    ShardLoader is stubbed to an empty iterable, so the cell's re-parse loop does not
+    run and no shard or Waymo package is needed — the aggregate block below it, which
+    is what the finding is about, runs in full.
+    """
+    cell = _cell_by_content('PASS 2 AGGREGATES', 'n_no_challenger')
+    env = {
+        'ShardLoader': lambda path: [], 'SHARD_PATH': 'unused',
+        'ScenarioParser': None, 'np': np,
+        'stress_results': stress_results, 'ids_to_test': list(stress_results),
+        'pass2_elapsed': 1.0,
+    }
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        exec(compile(cell, '<cell:pass2_aggregate>', 'exec'), env)
+    return buffer.getvalue(), env
+
+
+_NOTEBOOK_SAMPLE = {
+    'syn_hit': {'status': 'ok', 'outcome': 'collision_found', 'collision': True,
+                'min_perturbation': 0.5, 'collision_timestep': 3, 'target_idx': 1},
+    'syn_searched': {'status': 'ok', 'outcome': 'no_collision_found',
+                     'collision': False, 'target_idx': 1},
+    'syn_refused': {'status': 'replay_infeasible', 'outcome': 'replay_infeasible',
+                    'target_idx': 1},
+    'syn_solo': {'status': 'no_challenger', 'outcome': 'no_challenger'},
+    'syn_broke': {'status': 'error', 'outcome': 'error', 'error': 'boom'},
+}
+
+
+def test_A09_the_notebook_does_not_count_a_completed_search_as_safe():
+    """
+    The notebook half. n_safe counts `status == 'ok' and not collided` — a search that
+    ran to completion inside ITS budget and ITS bounds against ONE heuristically
+    chosen challenger — and prints it as "robustly safe".
+    """
+    output, _ = _exec_pass2_aggregate(_NOTEBOOK_SAMPLE)
+
+    for claim in _SAFETY_CLAIMS:
+        assert claim not in output.lower(), (
+            f'the notebook aggregate still reports {claim!r}:\n{output}'
+        )
+
+
+def test_A09_the_notebook_aggregate_accounts_for_every_result():
+    """
+    A SECOND DEFECT IN THE SAME CELL, not previously cited by either audit.
+
+    The aggregate counts no_challenger, error, and the two `ok` cases. Nothing counts
+    replay_infeasible, so the block does not sum to len(stress_results) and says so
+    nowhere. Batch 9 makes that worse: scenarios whose logged geometry genuinely
+    overlaps now refuse instead of searching, so the uncounted bucket grows.
+
+    Asserted on the CELL'S OWN NAMESPACE rather than on its printed text, so this
+    cannot be satisfied by a print that says the right number while the counters
+    behind it still lose a row.
+    """
+    _, env = _exec_pass2_aggregate(_NOTEBOOK_SAMPLE)
+
+    counters = {name: env[name] for name in
+                ('n_collision', 'n_no_collision', 'n_replay_infeasible',
+                 'n_no_challenger', 'n_error') if name in env}
+    missing = {'n_collision', 'n_no_collision', 'n_replay_infeasible',
+               'n_no_challenger', 'n_error'} - set(counters)
+    assert not missing, f'the aggregate has no counter for {sorted(missing)}'
+    assert sum(counters.values()) == len(_NOTEBOOK_SAMPLE), (
+        f'counters {counters} sum to {sum(counters.values())}, but the pass produced '
+        f'{len(_NOTEBOOK_SAMPLE)} results — some outcome is counted by nothing'
+    )
+
+
+# ── R10: an unpaired surrogate is a client error, not a server fault ────────────
+#
+# _reject_control_characters tests unicodedata.category(ch) == 'Cc'. A lone surrogate
+# is category 'Cs', so it passes validation and reaches psycopg2, which cannot encode
+# it and raises — a 500 for what the client sent.
+#
+# THE CURSOR IS THE REACHABLE VECTOR AND THE PATH IS NOT, measured rather than
+# assumed. Starlette and uvicorn both decode the request path with urllib.parse
+# .unquote, whose default errors='replace' turns %ED%A0%80 into three U+FFFD, and
+# quote('\ud800') raises before a client can even build such a URL. A path-based
+# repro would pass vacuously whatever the validator did, so there is not one here.
+
+_LONE_SURROGATE = '\ud800'
+
+
+def _surrogate_cursor():
+    """
+    What a hostile client actually puts on the wire: valid base64 of valid JSON whose
+    \\ud800 escape decodes to an unpaired surrogate. Nothing in the transport objects.
+    """
+    return base64.urlsafe_b64encode(
+        b'{"f":1.0,"s":"\\ud800"}').decode('ascii')
+
+
+def test_R10_a_surrogate_cursor_is_rejected_by_the_validator():
+    """
+    The DB-free half, at the layer the defect is in: _decode_cursor must not hand back
+    a string the database cannot store. Pre-fix it returns it happily.
+    """
+    from fastapi import HTTPException
+    from src.api.routes import _decode_cursor
+
+    assert unicodedata.category(_LONE_SURROGATE) == 'Cs', 'fixture regressed'
+
+    with pytest.raises(HTTPException) as caught:
+        _decode_cursor(_surrogate_cursor())
+    assert caught.value.status_code == 422, caught.value.status_code
+
+
+@requires_db
+def test_R10_a_surrogate_cursor_is_a_422_not_a_500(conn7):
+    """
+    The audit's own claim, end to end: the request returns a client error rather than
+    crashing in psycopg2. raise_server_exceptions=False so the 500 is observable as a
+    status code instead of propagating out of the client.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+
+    _seed7(conn7)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get('/scenarios', params={'cursor': _surrogate_cursor()})
+
+    assert response.status_code == 422, (
+        f'surrogate cursor returned {response.status_code}: {response.text[:300]}'
+    )
+
+
+@pytest.mark.parametrize('legal', [
+    'a.b.c', 'a-b_c', 'ABC123', 'ünïcødé', 'scenario nested', 'a+b=c&d', 'x' * 200,
+])
+def test_R10_the_new_check_rejects_nothing_that_was_legal(legal):
+    """
+    The regression risk in any validator change: failing closed on valid input.
+
+    Reuses test_api_robustness.test_the_validator_does_not_become_a_format_whitelist's
+    fixture list verbatim — the same seven strings, including a non-ASCII one — and
+    checks them at the function rather than through HTTP, so this runs without a
+    database alongside the surrogate case it is the counterweight to.
+
+    RESOLVES THE VALIDATOR UNDER EITHER NAME, DELIBERATELY. The claim here is "these
+    seven were legal before the change and are legal after it", and a test that can
+    only run against the fixed tree cannot check the first half — it would fail
+    pre-fix with an ImportError, which demonstrates nothing about validation. Batch 7
+    hit exactly this: test_R01 failed pre-fix on a TypeError about a new keyword and
+    was reported as reproducing a defect it had never reached.
+    """
+    from src.api import routes
+
+    validator = getattr(routes, '_reject_unstorable_text',
+                        getattr(routes, '_reject_control_characters', None))
+    assert validator is not None, 'neither validator name exists in src.api.routes'
+
+    assert validator(legal, 'scenario_id') == legal
+
+
+# ── R11 / A08: the loader must not trust a length it has not checked ────────────
+#
+# TWO FIXES, DIFFERENT IN KIND, and the module's own docstring already draws the line
+# between them: "FRAMING is checked unconditionally... CHECKSUMS are opt-in."
+#
+#   (1) VERIFICATION, inside the opt-in path. With verify_crc=True the length field's
+#       own checksum was verified AFTER the length had already been used to size the
+#       read. Ordering only; the flag still gates it.
+#   (2) FRAMING, unconditional. A declared length larger than the bytes remaining is a
+#       structural defect detectable from the file alone, with no checksum and no
+#       constant. Batch 5 self-disclosed this and deferred it.
+#
+# ASSERTED VIA A CALL RECORDER, NOT BY OBSERVING A MemoryError. How a machine responds
+# to a 256 MiB allocation is not a property of this code, and a test that depends on it
+# is a test that passes or fails by luck.
+
+_OVERSIZED = 2 ** 28          # 256 MiB claimed by a file of a few bytes
+
+
+@pytest.fixture
+def read_recorder(monkeypatch):
+    """Records every byte count _read_exactly is asked for, and calls through."""
+    from src.data.loader import ShardLoader
+
+    requested = []
+    original = ShardLoader._read_exactly
+
+    def recording(self, f, n, what, record):
+        requested.append(n)
+        return original(self, f, n, what, record)
+
+    monkeypatch.setattr(ShardLoader, '_read_exactly', recording)
+    return requested
+
+
+def test_R11_a_length_longer_than_the_file_is_refused_before_it_is_read(
+        tmp_path, read_recorder):
+    """
+    The unconditional half: verify_crc is OFF, and the length's checksum is VALID, so
+    the framing check is the only thing that can catch this. Pre-fix the loader asks
+    for 256 MiB out of a 17-byte file.
+    """
+    from src.data.loader import ShardLoader
+
+    header = struct.pack('<Q', _OVERSIZED)
+    path = tmp_path / 'oversized.tfrecord'
+    path.write_bytes(header + struct.pack('<I', _masked_crc32c(header)) + b'short')
+    size = path.stat().st_size
+
+    with pytest.raises(ValueError):
+        list(ShardLoader(str(path)))
+
+    assert max(read_recorder) <= size, (
+        f'asked for {max(read_recorder)} bytes from a {size}-byte file — the declared '
+        f'length was used before it was checked against the file'
+    )
+
+
+def test_A08_the_length_checksum_is_verified_before_the_length_is_used(
+        tmp_path, read_recorder):
+    """
+    The opt-in half, which is a DIFFERENT fix: here the length's checksum is WRONG, so
+    with verify_crc=True the loader has everything it needs to reject the record
+    without touching the payload — and used to size the read first anyway.
+
+    The message assertion matters: post-fix this must be the LENGTH checksum failing,
+    not the framing check quietly taking credit for it.
+    """
+    from src.data.loader import ShardLoader
+
+    header = struct.pack('<Q', _OVERSIZED)
+    path = tmp_path / 'bad_length_crc.tfrecord'
+    path.write_bytes(header + b'\x00\x00\x00\x00' + b'short')
+    size = path.stat().st_size
+
+    with pytest.raises(ValueError, match='length checksum mismatch'):
+        list(ShardLoader(str(path), verify_crc=True))
+
+    assert max(read_recorder) <= size, (
+        f'asked for {max(read_recorder)} bytes before verifying the length checksum '
+        f'that would have rejected the record'
     )

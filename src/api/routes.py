@@ -24,7 +24,7 @@ from src.api.models import (
 )
 
 # Ceiling on a client-supplied scenario_id. A resource guard, not a format rule —
-# see _reject_control_characters.
+# see _reject_unstorable_text.
 _MAX_SCENARIO_ID_LEN = 4096
 
 router = APIRouter()
@@ -71,21 +71,27 @@ def _table_exists(cur, table: str) -> bool:
     return bool(cur.fetchone()['present'])
 
 
-def _reject_control_characters(value: str, what: str) -> str:
+def _reject_unstorable_text(value: str, what: str) -> str:
     """
     Refuse client input that PostgreSQL cannot store, as a 4xx rather than a 500.
 
     A NUL byte in a string reaches psycopg2 and raises there, which FastAPI reports as
     a 500 — telling the client the server is broken when the client sent something
-    unusable (audit B17).
+    unusable (audit B17). An unpaired surrogate does the same (audit R10).
 
-    DEFENSIVE, NOT RESTRICTIVE, and the distinction is load-bearing. This rejects
-    control characters, which no identifier legitimately contains and which PostgreSQL
-    cannot round-trip. It does NOT attempt to whitelist a scenario_id format: nothing
-    in this project specifies what a real WOMD scenario_id looks like beyond "a globally
-    unique string", and a pattern inferred from the synthetic `syn_*` fixtures would
-    reject real shard data the moment it met one — a validator that fails closed on
-    valid input is worse than the 500 it replaced.
+    RENAMED FROM _reject_control_characters. It enforces three things and only one of
+    them is about control characters; the idea they share is the sentence above, not
+    the mechanism. A name that describes one of its branches invited exactly the gap
+    R10 found — the check was extended in thought ("reject what the database cannot
+    take") but written to a narrower spec ("reject category Cc").
+
+    DEFENSIVE, NOT RESTRICTIVE, and the distinction is load-bearing. It does NOT
+    attempt to whitelist a scenario_id format: nothing in this project specifies what
+    a real WOMD scenario_id looks like beyond "a globally unique string", and a pattern
+    inferred from the synthetic `syn_*` fixtures would reject real shard data the
+    moment it met one — a validator that fails closed on valid input is worse than the
+    500 it replaced. Every rejection below is something no encoder can represent, not
+    something this project has an opinion about.
 
     The length cap is a resource guard, not a format assumption: 4096 is far above any
     plausible identifier while still bounding what a client can make the server hold.
@@ -100,6 +106,25 @@ def _reject_control_characters(value: str, what: str) -> str:
             status_code=422,
             detail=f'{what} contains control characters, which are not valid here.',
         )
+    # UNPAIRED SURROGATES (audit R10). unicodedata.category returns 'Cs' for these, not
+    # 'Cc', so the check above passed them straight through to psycopg2, which cannot
+    # encode them and raises — a 500 for a malformed request.
+    #
+    # ASKED AS "CAN THIS BE ENCODED", not as surrogate-range arithmetic, because that
+    # is the question the database is going to ask. The live psycopg2 failure names
+    # whatever codec the CONNECTION encoding selects — latin-1 on this deployment, not
+    # utf-8 — so encoding to a specific codec here is a proxy rather than a
+    # reproduction of that call. It is a sufficient one: an unpaired surrogate is
+    # unrepresentable in every standard text encoding, so anything this accepts, the
+    # connection can encode too.
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise HTTPException(
+            status_code=422,
+            detail=f'{what} contains unpaired surrogate characters, which cannot be '
+                   f'encoded or stored.',
+        )
     return value
 
 
@@ -110,7 +135,7 @@ def _validated_scenario_id(scenario_id: str) -> str:
     A dependency rather than a call at the top of each handler so that a route added
     later cannot quietly skip it.
     """
-    return _reject_control_characters(scenario_id, 'scenario_id')
+    return _reject_unstorable_text(scenario_id, 'scenario_id')
 
 
 ScenarioId = Annotated[str, Depends(_validated_scenario_id)]
@@ -337,7 +362,7 @@ def _decode_cursor(cursor: str) -> tuple[float, str]:
     # psycopg2 layer, which surfaces as a 500 for what is a malformed request. The
     # check sits outside the try so its own 422 is not swallowed and relabelled by the
     # blanket handler above.
-    _reject_control_characters(scenario_id, 'Cursor scenario id')
+    _reject_unstorable_text(scenario_id, 'Cursor scenario id')
     return fragility_score, scenario_id
 
 
@@ -786,6 +811,45 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
                 width_m=base_row['width_m'] if base_row else None,
                 label=f"{scenario_id} agent {pert_row['target_idx']} (perturbed)",
             )
+
+        # LABEL RESOLUTION DOES NOT NEED THE PERTURBED PATH (audit B13, reached via
+        # R06's target_idx column).
+        #
+        # _resolve_delta_labels' second source is the challenger's agent_type, which
+        # lives in scenario_agents. But the read above is nested inside
+        # `if pert_row is not None`, because it indexes scenario_agents by
+        # pert_row['target_idx'] — so until Batch 7 put target_idx on scenario_scores,
+        # reaching the agent type REQUIRED perturbed_paths to exist AND to hold a
+        # run-id-matching row. Neither of those is a fact about which units a delta
+        # carries. This route's own B12 comment already argues the two geometry tables
+        # must not proxy for each other; this is the direction it did not yet deliver.
+        #
+        # NARROW ON PURPOSE. It runs only when it would change the answer — no
+        # provenance on the row, no base_row from the path, but a known challenger —
+        # so the common paths pay nothing and no response that is served today changes
+        # shape. In particular the whole `base_row` read is NOT un-gated from pert_row:
+        # doing that would start serving a `baseline` track where none is served now,
+        # which is arguably more correct and is not this finding.
+        #
+        # The gap it closes is real but small: rows whose stored result predates
+        # search_provenance, whose geometry is exported, and whose perturbed path is
+        # absent or stale — the window between a re-run Pass 2 and the matching Pass 3,
+        # and the one-geometry-table state test_only_one_geometry_table_present_still_
+        # degrades pins. Everything the current pipeline writes carries provenance and
+        # never reaches here.
+        if (base_row is None
+                and score_row['delta_parameterization'] is None
+                and score_row['target_idx'] is not None
+                and _table_exists(cur, 'scenario_agents')):
+            cur.execute("""
+                SELECT agent_type
+                FROM scenario_agents
+                WHERE scenario_id = %s AND agent_idx = %s
+            """, (scenario_id, score_row['target_idx']))
+            # Assigned to base_row because that is the argument _resolve_delta_labels
+            # reads agent_type from. It carries ONLY agent_type, and nothing below
+            # touches it — `baseline` and `perturbed` were both built above.
+            base_row = cur.fetchone()
 
     delta = ([float(x) for x in score_row['delta']]
              if score_row['delta'] is not None else None)

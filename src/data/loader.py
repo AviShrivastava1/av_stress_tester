@@ -1,3 +1,5 @@
+import os
+import stat
 import struct
 from pathlib import Path
 
@@ -92,6 +94,17 @@ class ShardLoader:
         Yields raw bytes — one blob per scenario.
         """
         with open(self.shard_path, 'rb') as f:
+            # Taken from the OPEN HANDLE, not the path, so nothing can substitute the
+            # file between this and the reads below.
+            #
+            # None for anything that is not a regular file. A FIFO reports st_size 0,
+            # and a bytes-remaining check against that would reject every record in a
+            # perfectly good stream — a validator that fails closed on valid input is
+            # worse than the failure it replaces, which is the same argument
+            # api/routes.py makes for not inferring a scenario_id format.
+            st = os.fstat(f.fileno())
+            file_size = st.st_size if stat.S_ISREG(st.st_mode) else None
+
             record = 0
             while True:
                 header = f.read(8)
@@ -106,11 +119,52 @@ class ShardLoader:
 
                 length_crc = self._read_exactly(f, 4, 'length checksum', record)
                 length = struct.unpack('<Q', header)[0]
+
+                # ── NOTHING BELOW USES `length` UNTIL IT HAS BEEN CHECKED ──────────
+                #
+                # TWO CHECKS, DIFFERENT IN KIND (audit R11 / A08). Both used to run
+                # AFTER `f.read(length)`, which is the whole finding: the loader sized
+                # a read from a number it had not validated, so a corrupt or hostile
+                # length field was acted on before it was examined. Measured: a
+                # 17-byte file declaring 2**28 asked for 268435456 bytes.
+                #
+                # (1) VERIFICATION, still opt-in. The length field's own checksum
+                #     answers "is this number what the writer wrote", and it can only
+                #     answer it when checksums are enabled. Nothing about Batch 5's
+                #     verify_crc architecture changes — only when this runs. It goes
+                #     FIRST of the two, because when the CRC is available and fails,
+                #     "the length field is corrupt" is a better answer than "this
+                #     record claims more bytes than the file holds".
+                if self.verify_crc:
+                    self._check(header, length_crc, 'length', record)
+
+                # (2) FRAMING, unconditional, and this is the half Batch 5 deferred.
+                #     A declared length larger than the bytes actually remaining is a
+                #     STRUCTURAL defect in the file: detectable from the file alone,
+                #     with no checksum, no dependency and no arbitrary constant, for
+                #     one tell() per record. This module's own docstring already draws
+                #     the line — "FRAMING is checked unconditionally... CHECKSUMS are
+                #     opt-in" — so its absence here was an inconsistency in that rule
+                #     rather than something the flag was meant to cover.
+                #
+                #     `length + 4`, because the format demands a payload AND its
+                #     trailing checksum. `>` and not `>=`: a valid final record has
+                #     exactly that many bytes left.
+                if file_size is not None:
+                    remaining = file_size - f.tell()
+                    if length + 4 > remaining:
+                        raise ValueError(
+                            f"{self.shard_path}: record {record} declares a "
+                            f"{length}-byte payload, but only {remaining} bytes remain "
+                            f"in the file ({length + 4} needed with its checksum). "
+                            f"The length field is unusable — refusing to size a read "
+                            f"from it."
+                        )
+
                 data = self._read_exactly(f, length, 'payload', record)
                 data_crc = self._read_exactly(f, 4, 'payload checksum', record)
 
                 if self.verify_crc:
-                    self._check(header, length_crc, 'length', record)
                     self._check(data, data_crc, 'payload', record)
 
                 yield data

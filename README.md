@@ -18,7 +18,7 @@ Interactive docs at `/docs`.
 | Endpoint | Returns |
 |---|---|
 | `GET /health` | Liveness, including a real database round-trip and the PostGIS version |
-| `GET /stats` | Corpus counts — total, stress-tested, collisions found, robustly safe |
+| `GET /stats` | Corpus counts — total, stress-tested, collisions found, searches that found nothing, replays refused, and the fragility range |
 | `GET /scenarios` | Ranked by fragility, most fragile first. Keyset-paginated via `limit`, `cursor`, `stress_tested_only` |
 | `GET /scenarios/{id}` | One scenario, including its raw 4-D perturbation vector |
 | `GET /scenarios/{id}/trajectories` | Every agent's logged path, with per-vertex timesteps and headings |

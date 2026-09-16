@@ -89,11 +89,16 @@ coherent by construction rather than by a careful reader cross-checking run ids.
 So: `stress_outcome` tells you what the stored result IS. `last_attempt_outcome` tells
 you what just happened.
 
-This is also precisely why Phase 5 stored NULL rather than infinity for the
-robustly-safe case (see db.py's update_stress_results): **JSON has no infinity
-literal**. `float('inf')` is not valid JSON — serializers either emit the
+This is also precisely why Phase 5 stored NULL rather than infinity for a search
+that COMPLETED AND FOUND NOTHING (see db.py's update_stress_results): **JSON has no
+infinity literal**. `float('inf')` is not valid JSON — serializers either emit the
 non-standard bare token `Infinity`, which a strict parser rejects, or crash. NULL
 is the only honest representation that survives the trip to a browser.
+
+(That clause used to read "for the robustly-safe case", which is the very conflation
+the forty lines above it exist to undo — a completed search named after a conclusion
+it does not support. It survived two audits because it is hyphenated and both sweeps
+looked for the spaced form; found by the exhaustive sweep in Batch 10, audit R08/A09.)
 
 That wrinkle is now gone: `update_stress_results` used to write rows only for
 results whose status was 'ok', so a pass ending in 'no_challenger' or 'error' left no

@@ -262,6 +262,75 @@ def test_a_batch2_era_row_with_provenance_but_no_parameterization_key(conn, clie
 
 
 @requires_db
+@pytest.mark.parametrize('break_path', ['absent', 'stale'])
+def test_agent_type_is_reachable_without_the_perturbed_path(conn, client, break_path):
+    """
+    BATCH 10: priority 2 no longer depends on perturbed_paths.
+
+    _resolve_delta_labels' agent-type fallback reads scenario_agents, but the read was
+    nested inside `if pert_row is not None` and indexed by pert_row['target_idx'] — so
+    a row with exported geometry lost its labels whenever the perturbed path was
+    missing or stale, for a reason that has nothing to do with which units a delta
+    carries. R06 put target_idx on scenario_scores, which makes the agent reachable
+    directly.
+
+    Both ways the path goes away, because they are different SQL:
+
+      absent  the row is gone — update_stress_results deletes it when a new result
+              lands, so this is the window between a re-run Pass 2 and the Pass 3 that
+              has not caught up
+      stale   the row is there with a different stress_run_id, so B14's
+              IS NOT DISTINCT FROM join declines to serve it
+
+    The row is a PEDESTRIAN, so a wrong answer here is not a near miss: the vehicle
+    labels would present metres per second as radians, which is B13 exactly.
+    """
+    states, validity, types = _pedestrian_scene()
+    _seed(conn)
+    _stress_and_store(conn, states, validity, types)
+    export_scenario_agents(conn, 'scene', states, validity, types, 0)
+    export_perturbed_path(conn, 'scene', states, validity, 1)
+
+    with conn.cursor() as cur:
+        # Make the row legacy: a delta with no provenance, which is the only state in
+        # which priority 2 is consulted at all.
+        cur.execute("UPDATE scenario_scores SET search_provenance = NULL "
+                    "WHERE scenario_id = 'scene'")
+        if break_path == 'absent':
+            cur.execute("DELETE FROM perturbed_paths WHERE scenario_id = 'scene'")
+        else:
+            cur.execute("UPDATE perturbed_paths SET stress_run_id = 'deadbeefdeadbeef' "
+                        "WHERE scenario_id = 'scene'")
+        cur.execute("SELECT target_idx FROM scenario_scores WHERE scenario_id='scene'")
+        target_idx = cur.fetchone()[0]
+    conn.commit()
+
+    assert target_idx == 1, (
+        'fixture regressed: target_idx must be on the score row for this to be '
+        'reachable at all'
+    )
+
+    data = client.get('/scenarios/scene/perturbed').json()
+
+    assert data['perturbed'] is None, (
+        f'fixture regressed: the perturbed path should be unreachable ({break_path})'
+    )
+    assert data['delta_labels'] == LINEAR_DELTA_LABELS, (
+        f'a pedestrian delta lost its labels because the PERTURBED PATH was '
+        f'{break_path}: {data["delta_labels"]}'
+    )
+    assert not any('rad' in label for label in data['delta_labels']), data['delta_labels']
+
+    # NOTHING ELSE ABOUT THE RESPONSE MOVES. The narrow fix resolves a label; it does
+    # not start serving a baseline track where none was served before, which is the
+    # broader change it was deliberately scoped away from.
+    assert data['baseline'] is None, (
+        'the label-only lookup started serving a baseline track'
+    )
+    assert data['target_idx'] == 1
+
+
+@requires_db
 def test_unknown_parameterization_returns_null_labels(conn, client):
     """
     A legacy row: a delta, no provenance at all, no exported geometry. Nothing can say
@@ -485,7 +554,7 @@ def test_a_slash_bearing_id_is_unreachable_rather_than_validated(conn, client, r
     The consequence, flagged and not fixed here: if a real WOMD scenario_id ever
     contained a slash it would be unaddressable through this API. Nothing in the corpus
     suggests they do, and inventing a path converter for a hypothetical is exactly the
-    format assumption _reject_control_characters refuses to make.
+    format assumption _reject_unstorable_text refuses to make.
     """
     response = client.get(f'/scenarios/{raw}')
     assert response.status_code == 404, response.status_code
