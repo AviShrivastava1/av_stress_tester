@@ -42,7 +42,7 @@ from src.optimization.selection import keeps_challenger
 
 
 def _score_one(states, validity, scenario_id, sdc_index,
-               shard_name=None, pet_max_pairs=50):
+               shard_name=None, pet_max_pairs=50, types=None):
     """
     Score a single parsed scenario. Pure function of arrays -> record dict.
     Split out from score_shard so it is testable without the Waymo package.
@@ -57,6 +57,20 @@ def _score_one(states, validity, scenario_id, sdc_index,
     record['n_agents'] = int(states.shape[0])
     record['shard'] = shard_name
     record['score_seconds'] = round(time.time() - t0, 3)
+
+    # WHICH SCENE this row describes (audit A02). Pass 1 is where it belongs: the
+    # fingerprint is a property of the parsed INPUT, not of any search, so it is
+    # recorded by the pass that reads the input and is never touched again.
+    #
+    # `types` is optional, and its absence is not an error — a caller that does not
+    # have the agent types records no fingerprint, and NULL means "not recorded", the
+    # same carve-out B14 makes for stress_run_id. Adding it as a required argument
+    # would turn every pre-existing caller into a TypeError for a column that is
+    # allowed to be absent.
+    if types is not None:
+        from src.scoring.db import compute_scene_fingerprint
+        record['scene_fingerprint'] = compute_scene_fingerprint(states, validity, types)
+
     return record
 
 
@@ -144,8 +158,12 @@ def score_shard(
             states = parser.get_agent_states()
             validity = parser.get_agent_validity()
             sdc_index = parser.get_sdc_index()
+            # types is read here ONLY for the scene fingerprint — Pass 1's scoring does
+            # not use it. Parsed in the same breath as the arrays it describes so the
+            # fingerprint covers the scene as this pass actually saw it.
+            types = parser.get_agent_types()
             records.append(_score_one(states, validity, scenario_id, sdc_index,
-                                      shard_name, pet_max_pairs))
+                                      shard_name, pet_max_pairs, types=types))
         except Exception as e:  # noqa: BLE001 — deliberate: isolate per scenario
             errors.append({'index': i, 'scenario_id': scenario_id,
                            'error': f'{type(e).__name__}: {e}'})

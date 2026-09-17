@@ -109,6 +109,47 @@ CREATE INDEX IF NOT EXISTS idx_scenario_scores_fragility_id
 -- scenario_scores.stress_run_id on read, so a path exported from an older delta can
 -- be DETECTED rather than served as evidence for a newer one.
 ALTER TABLE perturbed_paths ADD COLUMN IF NOT EXISTS stress_run_id TEXT;
+
+-- Audit A02: which SCENE this geometry was built from. Symmetric with stress_run_id
+-- above, and for the same reason it exists on both tables: a path can be paired with
+-- a result only if the RUN and the SCENE both agree. stress_run_id alone is not
+-- enough — a re-parsed scene that happens to produce the same optimal delta yields
+-- the same run id, and the join would pair a new result with old-scene geometry.
+ALTER TABLE perturbed_paths ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
+
+-- The same column on the BASELINE side, and it closes a window rather than narrowing
+-- one (audit A02). export_scenario_agents commits and releases its row lock before
+-- export_perturbed_path opens its own transaction, so a concurrent Pass 1 can move
+-- scenario_scores.scene_fingerprint in between. The perturbed half self-guards and
+-- refuses; the baseline half was already committed, and without a fingerprint of its
+-- own nothing on the read side could tell. get_trajectories reads this table with no
+-- other identity check at all, so that stale geometry was being SERVED, not merely
+-- left lying around.
+--
+-- A per-scenario fact on a per-agent table, which is denormalization — accepted for
+-- the same reason perturbed_paths.stress_run_id is, and with a stronger guarantee
+-- behind it: every agent row for a scenario is written in ONE transaction under the
+-- FOR UPDATE lock, so they cannot disagree with each other. That is also what stops
+-- get_trajectories from ever seeing a PARTIALLY matching agent set: the comparison
+-- passes for a whole scenario or fails for a whole scenario, never for some of it.
+--
+-- ── THE MIGRATION CONSEQUENCE, STATED BECAUSE IT AFFECTS LIVE DATA ──────────────
+--
+-- Geometry exported before this column exists carries NULL here. IS NOT DISTINCT FROM
+-- carves out the BOTH-NULL case only — never one-NULL-one-real — exactly as B14
+-- established for stress_run_id. So the first time Pass 1 re-runs and records a
+-- fingerprint on the score row, that pre-existing geometry STOPS SERVING until Pass 3
+-- catches up. Measured on a legacy row:
+--
+--     legacy row, legacy geometry        -> 2 agents served
+--     after Pass 1 re-run, before Pass 3 -> 0 agents served
+--     after Pass 3 catches up            -> 2 agents served
+--
+-- Correct and consistent rather than a defect — serving geometry that cannot be shown
+-- to describe the current scene is the thing this batch exists to stop — but it means
+-- a Pass 1 re-run over an already-exported corpus blanks the dashboard until Pass 3
+-- follows. Run them together, or expect the gap.
+ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
 """
 
 
@@ -139,6 +180,36 @@ def _linestring_m_wkt(xs, ys, ms) -> str:
 
 # ── per-scenario exports ────────────────────────────────────────────────────────
 
+class SceneChangedError(RuntimeError):
+    """
+    The arrays offered for export are not the scene the stored row describes
+    (audit A02).
+
+    A DISTINCT TYPE FROM StaleExportError, and the distinction is the finding rather
+    than taxonomy. StaleExportError means A NEWER RESULT EXISTS: the scene is fine, the
+    perturbation moved on. This means THE INPUT CHANGED UNDERNEATH A STABLE ID: the
+    scenario_id still resolves, the result may be untouched, and the thing the result
+    was computed against is gone. Those call for different responses — one is "re-run
+    Pass 3", the other is "re-run Pass 1 and Pass 2, your result describes a scene that
+    no longer exists" — and one exception type reporting both would assert less than it
+    knows, which is the defect class Batch 2 spent two rounds removing from
+    scenario_scores.
+
+    Carries both fingerprints so the caller can say WHICH scene was refused against
+    WHICH, not merely that something was.
+    """
+
+    def __init__(self, scenario_id, stored_fingerprint, computed_fingerprint):
+        self.scenario_id = scenario_id
+        self.stored_fingerprint = stored_fingerprint
+        self.computed_fingerprint = computed_fingerprint
+        super().__init__(
+            f"refusing to publish geometry for {scenario_id!r}: it was built from "
+            f"scene {computed_fingerprint!r}, but the stored row describes scene "
+            f"{stored_fingerprint!r}"
+        )
+
+
 def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
     """
     Write every agent's logged trajectory for one scenario.
@@ -162,6 +233,65 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
     exportable = []
 
     with conn.cursor() as cur:
+        # ── THE SCENE CHECK, AND IT RUNS BEFORE ANY WRITE (audit A02) ────────────
+        #
+        # This function used to read scenario_scores not at all. It upserted every
+        # agent and called conn.commit() in its own body, and export_shard_geometry
+        # calls it FIRST — so R01's stale-export guard, which lives inside
+        # export_perturbed_path, ran one commit too late. Measured: a refused perturbed
+        # export left a baseline from the wrong scene already committed, 3.7000 ->
+        # 3.2000, and the StaleExportError handler's rollback had nothing left to undo.
+        #
+        # ── WHY `FOR UPDATE` AND NOT R01's SINGLE-STATEMENT PATTERN ──────────────
+        #
+        # R01 guards ONE row with INSERT ... SELECT ... WHERE, so its check and its
+        # write are the same statement and no lock is needed. That is not available
+        # here: this function writes N agent upserts plus two DELETEs, and guarding
+        # each individually gives PER-ROW atomicity, not SET atomicity — agents 0-3
+        # could be admitted under the old fingerprint, a concurrent Pass 1 commits, and
+        # agents 4-9 are silently refused. Checking rowcount per statement and rolling
+        # back narrows the window to "a change committing after the last write but
+        # before COMMIT"; it does not close it.
+        #
+        # FOR UPDATE holds the row lock until COMMIT, so the fingerprint cannot move
+        # between this read and the last write. That closes the window rather than
+        # shrinking it.
+        #
+        # This does NOT contradict export_perturbed_path's comment that the project has
+        # "no precedent for locking primitives". That sentence continues "which
+        # single-statement consistency makes unnecessary HERE". The precedent was never
+        # "do not lock" — it was "do not lock when one statement suffices". One
+        # statement does not suffice for an N-row agent set.
+        #
+        # LOCK ORDER, checked rather than assumed: update_stress_results takes its row
+        # lock via UPDATE scenario_scores and only then touches perturbed_paths; this
+        # locks scenario_scores and only then touches scenario_agents/perturbed_paths.
+        # Scores before geometry in both, so no inversion is possible, and each call
+        # locks exactly one scenario row. The contention this does create is correct:
+        # Pass 2 committing a result while Pass 3 writes that scenario's geometry is
+        # precisely the interleaving that should serialize.
+        cur.execute("""
+            SELECT scene_fingerprint FROM scenario_scores
+             WHERE scenario_id = %s FOR UPDATE
+        """, (scenario_id,))
+        row = cur.fetchone()
+        # No row is NOT an error here. It means this scenario was never scored, and the
+        # foreign key on the INSERT below already refuses it — with a message about the
+        # actual problem. Inventing a SceneChangedError for it would report a scene
+        # mismatch where the truth is a missing scenario.
+        stored_fingerprint = row[0] if row else None
+        if stored_fingerprint is not None:
+            from src.scoring.db import compute_scene_fingerprint
+            computed = compute_scene_fingerprint(states, validity, types)
+            if computed != stored_fingerprint:
+                # Nothing has been written yet, so there is nothing to undo — but the
+                # lock is released and the caller gets a clean transaction either way.
+                conn.rollback()
+                raise SceneChangedError(scenario_id, stored_fingerprint, computed)
+        # NULL means NOT RECORDED, not "mismatch" — the same carve-out B14 makes for
+        # stress_run_id. Rows written before this column keep exporting exactly as they
+        # did, which is what keeps the audit's own B13/B14 fixtures passing unmodified.
+
         for i in range(n_agents):
             ts = _valid_timesteps(validity, i)
             if len(ts) < 2:
@@ -180,23 +310,27 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
             # first valid timestep rather than assuming index 0 was observed.
             t0 = int(ts[0])
 
+            # scene_fingerprint is the value THIS ROW was verified against, taken
+            # from the locked read above rather than recomputed — so a legacy row
+            # (NULL) stamps NULL and keeps serving, the same carve-out everywhere else.
             cur.execute("""
                 INSERT INTO scenario_agents
                     (scenario_id, agent_idx, agent_type, is_sdc,
-                     length_m, width_m, n_points, headings, path)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, 0))
+                     length_m, width_m, n_points, headings, path, scene_fingerprint)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s)
                 ON CONFLICT (scenario_id, agent_idx) DO UPDATE SET
-                    agent_type = EXCLUDED.agent_type,
-                    is_sdc     = EXCLUDED.is_sdc,
-                    length_m   = EXCLUDED.length_m,
-                    width_m    = EXCLUDED.width_m,
-                    n_points   = EXCLUDED.n_points,
-                    headings   = EXCLUDED.headings,
-                    path       = EXCLUDED.path
+                    agent_type        = EXCLUDED.agent_type,
+                    is_sdc            = EXCLUDED.is_sdc,
+                    length_m          = EXCLUDED.length_m,
+                    width_m           = EXCLUDED.width_m,
+                    n_points          = EXCLUDED.n_points,
+                    headings          = EXCLUDED.headings,
+                    path              = EXCLUDED.path,
+                    scene_fingerprint = EXCLUDED.scene_fingerprint
             """, (
                 scenario_id, int(i), int(types[i]), bool(i == sdc_idx),
                 float(states[i, t0, 5]), float(states[i, t0, 6]),
-                len(ts), headings, wkt,
+                len(ts), headings, wkt, stored_fingerprint,
             ))
             written += 1
 
@@ -250,7 +384,8 @@ class StaleExportError(RuntimeError):
 
 
 def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_idx,
-                          stress_run_id=None, delta=None, method=None):
+                          stress_run_id=None, delta=None, method=None,
+                          scene_fingerprint=None):
     """
     Write the challenger's PERTURBED trajectory — the Phase 4 answer, made visible.
 
@@ -270,6 +405,16 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     match, they are simply attached to the wrong content. The verification below then
     compares a value against itself and always passes.
 
+    BATCH 11 UPDATE (audit A12): that warning was not a caveat, it was a live bypass,
+    and it is now closed for any scenario whose scene has been fingerprinted. Measured
+    against a scene displaced 99 m, the 8-argument call refused and the 5-argument call
+    published. A call that supplies neither `delta` nor `scene_fingerprint` is now
+    REFUSED with SceneChangedError whenever the row records a scene_fingerprint —
+    which is every row Pass 1 writes from now on. Rows without one keep exporting, so
+    legacy data and hand-seeded fixtures are unaffected. The paragraph above still
+    describes exactly what the vacuous path DID, and is kept because the reason the
+    signature survives at all is that ten callers depend on its defaults.
+
     With `delta` and `method` supplied, the run id is DERIVED FROM THE CONTENT being
     exported — compute_stress_run_id(scenario_id, target_idx, delta, method), the
     same function and the same four inputs update_stress_results used to stamp the
@@ -281,14 +426,25 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
 
     Args:
         stress_run_id: override the derived/looked-up id. Callers that genuinely know
-                       better may still set it; it is checked like any other.
+                       better may still set it; it is checked like any other. It does
+                       NOT vouch for the scene — supplying it without
+                       `scene_fingerprint` against a fingerprinted row is refused, for
+                       the reason spelled out at the refusal below.
         delta:         the perturbation this trajectory was rebuilt from.
         method:        'de' or 'de+autograd', as recorded on the result.
+        scene_fingerprint: compute_scene_fingerprint of the scene this trajectory was
+                       built from (audit A02). Supplying it is what makes the export
+                       verifiable against a re-parse; omitting it on a fingerprinted
+                       row is refused.
 
     Returns True if a row was written, False if the target had too few valid
     timesteps to form a linestring.
 
     Raises:
+        SceneChangedError: the scene this export was built from is not the scene the
+                          stored row describes, or the caller named no scene for a row
+                          that records one. Nothing is written.
+
         StaleExportError: the run id this export carries is not the one currently
                           stored for the scenario. Nothing is written.
 
@@ -310,12 +466,55 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     if stress_run_id is None and delta is not None:
         from src.scoring.db import compute_stress_run_id
         stress_run_id = compute_stress_run_id(scenario_id, target_idx, delta, method)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT stress_run_id, scene_fingerprint FROM scenario_scores "
+                    "WHERE scenario_id = %s", (scenario_id,))
+        row = cur.fetchone()
+    stored_run_id, stored_scene = (row if row else (None, None))
+
+    # ── THE LEGACY PATH IS NO LONGER A FREE PASS (audit A12) ────────────────────
+    #
+    # Batch 7 kept this signature for backward compatibility and warned the protection
+    # was "vacuous without delta/method". It is worse than a caveat: the run id is read
+    # from scenario_scores and stamped onto whatever trajectory was handed in, so the
+    # WHERE clause below compares a value against itself and ALWAYS passes. Measured
+    # against a scene displaced 99 m: the 8-argument call refused and the 5-argument
+    # call published, stamped with the stored id so every downstream join agreed.
+    #
+    # THE RULE: if the row knows which scene it describes, the caller must say which
+    # scene its geometry came from. Nothing else — not delta, not an explicitly
+    # supplied stress_run_id — vouches for the scene.
+    #
+    #   - A row with NO fingerprint is legacy data or a hand-seeded fixture. NULL means
+    #     "not recorded" and is not evidence of a mismatch, exactly as B14 reasons for
+    #     stress_run_id. These keep exporting. That carve-out is what lets the audit's
+    #     own B13/B14 fixtures pass unmodified — they seed scenario_scores by hand and
+    #     carry no fingerprint, and it was a census of all 26 call sites, not a guess,
+    #     that established every existing legacy caller is in that class.
+    #   - A row Pass 1 fingerprinted is modern data, and publishing geometry against it
+    #     without saying what the geometry was built from is the bypass. Refused.
+    #
+    # NOT CONDITIONED ON WHETHER THE RUN ID WAS DERIVED, and an earlier version of this
+    # was. That version gated the refusal on `derived = stress_run_id is not None or
+    # delta is not None`, which reopened A12 through a different door: a caller passing
+    # stress_run_id= explicitly — a pattern this function's own docstring invites —
+    # skipped the refusal, and the write below then fell back to `stored_scene`, read
+    # from the same row moments earlier, so the scene half of the WHERE compared the
+    # row against ITSELF. The run half stayed sound; the scene half was vacuous, which
+    # is precisely the shape of the finding being fixed.
+    #
+    # A census found zero callers in that state — `stress_run_id=` appears nowhere in
+    # this repository except in this signature — so it was dead in practice and the
+    # contract was still wrong. Same treatment B16 and R05 got: closed because closing
+    # it was cheaper than describing it, and it DELETES a flag rather than adding a
+    # branch.
+    if scene_fingerprint is None and stored_scene is not None:
+        conn.rollback()
+        raise SceneChangedError(scenario_id, stored_scene, None)
+
     if stress_run_id is None:
-        with conn.cursor() as cur:
-            cur.execute("SELECT stress_run_id FROM scenario_scores WHERE scenario_id = %s",
-                        (scenario_id,))
-            row = cur.fetchone()
-            stress_run_id = row[0] if row else None
+        stress_run_id = stored_run_id
 
     xs = perturbed_states[target_idx, ts, 0]
     ys = perturbed_states[target_idx, ts, 1]
@@ -332,22 +531,37 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
         # legacy scenario with NULL on both sides still exports. `=` is NULL rather
         # than true when either operand is NULL, which would refuse every export for a
         # row that predates stress_run_id.
+        # THE SCENE IS CHECKED IN THE SAME STATEMENT AS THE RUN (audit A02), for the
+        # same reason the run is: a SELECT-then-INSERT reintroduces the race. The
+        # scene is stamped onto the row so the read side can pair on both — a result
+        # and a picture belong together only if the RUN and the SCENE agree.
+        #
+        # IS NOT DISTINCT FROM on the scene too, so a caller that supplies nothing and
+        # a row that records nothing still match, which is the legacy carve-out the
+        # refusal above already let through.
         cur.execute("""
             INSERT INTO perturbed_paths
-                (scenario_id, target_idx, n_points, headings, path, stress_run_id)
-            SELECT %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s
+                (scenario_id, target_idx, n_points, headings, path, stress_run_id,
+                 scene_fingerprint)
+            SELECT %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s, ss.scene_fingerprint
             FROM scenario_scores ss
             WHERE ss.scenario_id = %s
               AND ss.stress_run_id IS NOT DISTINCT FROM %s
+              AND ss.scene_fingerprint IS NOT DISTINCT FROM %s
             ON CONFLICT (scenario_id) DO UPDATE SET
-                target_idx    = EXCLUDED.target_idx,
-                n_points      = EXCLUDED.n_points,
-                headings      = EXCLUDED.headings,
-                path          = EXCLUDED.path,
-                stress_run_id = EXCLUDED.stress_run_id,
-                exported_at   = now()
+                target_idx        = EXCLUDED.target_idx,
+                n_points          = EXCLUDED.n_points,
+                headings          = EXCLUDED.headings,
+                path              = EXCLUDED.path,
+                stress_run_id     = EXCLUDED.stress_run_id,
+                scene_fingerprint = EXCLUDED.scene_fingerprint,
+                exported_at       = now()
         """, (scenario_id, int(target_idx), len(ts), headings, wkt, stress_run_id,
-              scenario_id, stress_run_id))
+              scenario_id, stress_run_id,
+              # The caller's scene when it named one; otherwise the row's own, so the
+              # predicate is satisfied by construction and this clause changes nothing
+              # for a caller that legitimately did not supply it.
+              scene_fingerprint if scene_fingerprint is not None else stored_scene))
         published = cur.rowcount
 
     if not published:
@@ -355,10 +569,17 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
         # left clean for the caller either way.
         conn.rollback()
         with conn.cursor() as cur:
-            cur.execute("SELECT stress_run_id FROM scenario_scores WHERE scenario_id = %s",
-                        (scenario_id,))
+            cur.execute("SELECT stress_run_id, scene_fingerprint FROM scenario_scores "
+                        "WHERE scenario_id = %s", (scenario_id,))
             row = cur.fetchone()
-        raise StaleExportError(scenario_id, stress_run_id, row[0] if row else None)
+        current_run, current_scene = (row if row else (None, None))
+        # WHICH refusal this was, reported as the thing it actually is. A scene
+        # mismatch and a superseded result are different situations with different
+        # responses, and collapsing them into StaleExportError would make the caller
+        # re-run the wrong pass.
+        if scene_fingerprint is not None and current_scene != scene_fingerprint:
+            raise SceneChangedError(scenario_id, current_scene, scene_fingerprint)
+        raise StaleExportError(scenario_id, stress_run_id, current_run)
 
     conn.commit()
     return True
@@ -416,6 +637,11 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         'agents_skipped': 0,
         'perturbed_written': 0,
         'perturbed_stale': [],
+        # Scenarios whose parsed arrays are not the scene the stored row describes
+        # (audit A02). RECORDS, NOT A TALLY, matching perturbed_stale beside it and
+        # for Batch 7's reason: an operator looking at a spike needs to know WHICH
+        # scenarios and which two scenes disagreed, and a count answers neither.
+        'scene_changed': [],
         'errors': [],
     }
     t_start = time.time()
@@ -455,9 +681,53 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
             types = parser.get_agent_types()
             sdc_idx = parser.get_sdc_index()
 
-            written, skipped = export_scenario_agents(
-                conn, sid, states, validity, types, sdc_idx
-            )
+            # A scene that no longer matches the stored row is a NORMAL outcome of a
+            # re-parse, not a crash — the same reasoning that makes replay_infeasible a
+            # status and a stale export a recorded refusal. Recorded in full, and the
+            # walk continues. `continue`, not a partial export: the perturbed path
+            # below is built from the same rejected arrays, so publishing it would be
+            # exactly the half-written state the baseline guard exists to prevent.
+            #
+            # ── THE TWO GUARDS ARE SEQUENTIAL, AND THAT WINDOW IS NOW CLOSED ────
+            #
+            # export_scenario_agents commits in its own body, releasing its FOR UPDATE
+            # row lock, and export_perturbed_path then opens a separate transaction. A
+            # concurrent Pass 1 can move scenario_scores.scene_fingerprint in the gap.
+            # Measured before the baseline column existed:
+            #
+            #     baseline committed under fp_old
+            #     concurrent Pass 1: 1d51b8dfabec61a8 -> a35d62644962c405
+            #     perturbed REFUSED (stored=a35d..., attempted=1d51...)
+            #     final: scenario_agents=2 rows from fp_old, perturbed_paths=0 rows
+            #
+            # The perturbed half always self-guarded, so no mismatched PAIR was ever
+            # published. The baseline half was already committed and carried no
+            # fingerprint, and get_trajectories reads that table with no other identity
+            # check — so the stale scene was being SERVED.
+            #
+            # This was briefly written up as an accepted residual. It is not one:
+            # scenario_agents now carries scene_fingerprint too, and get_trajectories
+            # compares it, so the window closes to zero rather than being documented as
+            # narrow. That is R03's precedent applied — binding to an identity already
+            # in hand beat narrowing a race there, and it beats narrowing one here.
+            # Stale rows can still exist in the table after such an interleaving; they
+            # are inert, invisible to every read, and replaced by the next export.
+            try:
+                written, skipped = export_scenario_agents(
+                    conn, sid, states, validity, types, sdc_idx
+                )
+            except SceneChangedError as changed:
+                conn.rollback()
+                summary['scene_changed'].append({
+                    'scenario_id': changed.scenario_id,
+                    'stored_fingerprint': changed.stored_fingerprint,
+                    'computed_fingerprint': changed.computed_fingerprint,
+                })
+                if verbose:
+                    print(f"  [scene changed] {sid}: parsed scene "
+                          f"{changed.computed_fingerprint} does not match the stored "
+                          f"scene {changed.stored_fingerprint}; nothing exported")
+                continue
             summary['exported'] += 1
             summary['agents_written'] += written
             summary['agents_skipped'] += skipped
@@ -484,9 +754,16 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                     # content rather than from whatever is currently on the score row
                     # (audit R01). Without them the protection is vacuous — see
                     # export_perturbed_path's docstring.
+                    # scene_fingerprint comes from the ORIGINAL states, not the
+                    # perturbed ones — apply() rewrites the target's kinematics, so a
+                    # fingerprint taken from `perturbed` would hash (scene, delta)
+                    # entangled and could never match what Pass 1 recorded.
+                    from src.scoring.db import compute_scene_fingerprint
                     written = export_perturbed_path(
                         conn, sid, perturbed, validity, int(result['target_idx']),
                         delta=result['delta'], method=result.get('method'),
+                        scene_fingerprint=compute_scene_fingerprint(
+                            states, validity, types),
                     )
                 except StaleExportError as stale:
                     # A refused export is a NORMAL outcome of a delayed or retried

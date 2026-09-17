@@ -124,7 +124,8 @@ def main():
         built[sid] = (states, validity, types)
         # sdc_idx=0 — these 2-agent fixtures have the SDC as agent 0, so the only
         # pair is an SDC pair and SDC-restricted TTC/PET equal the all-pairs values.
-        rec = _score_one(states, validity, sid, 0, shard_name='synthetic')
+        rec = _score_one(states, validity, sid, 0, shard_name='synthetic',
+                         types=types)
         records.append(rec)
         print(f"  scored {sid}: ttc={rec['min_ttc']:.2f} pet={rec['min_pet']:.2f} "
               f"fragility={rec['fragility_score']:.4f}")
@@ -166,8 +167,15 @@ def main():
 
     space = PerturbationSpace(states, validity, types, 0, int(result['target_idx']))
     perturbed_states = space.apply(np.asarray(result['delta'], dtype=np.float32))
+    # delta/method/scene_fingerprint, not the 5-argument legacy call (audit R01, A02,
+    # A12). This script drives the real pipeline end to end, and Pass 1 above now
+    # records a fingerprint — so the legacy call it used to make is exactly the bypass
+    # A12 closes, and would be refused. Passing what the production path passes.
     export_perturbed_path(conn, top_sid, perturbed_states, validity,
-                          int(result['target_idx']))
+                          int(result['target_idx']),
+                          delta=result['delta'], method=result.get('method'),
+                          scene_fingerprint=db.compute_scene_fingerprint(
+                              states, validity, types))
     print(f"  perturbed path exported for {top_sid}")
 
     conn.close()

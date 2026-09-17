@@ -645,6 +645,24 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
         if not _table_exists(cur, 'scenario_agents'):
             return TrajectoryResponse(scenario_id=scenario_id, agents=[])
 
+        # THE SCENE MUST MATCH (audit A02), and this route is where it matters most,
+        # because it has no other identity check of any kind. get_perturbed at least
+        # gates its baseline read behind a run-id-matched perturbed row; this one reads
+        # scenario_agents directly, so before this predicate a scene re-parsed under a
+        # stable scenario_id was SERVED here as current geometry.
+        #
+        # IS NOT DISTINCT FROM against the score row's own value, matching the join in
+        # get_perturbed and the truth table B14 reasoned about: a legacy scenario with
+        # NULL on both sides still serves everything it always served.
+        #
+        # A MISMATCH DEGRADES TO EMPTY, which is the same shape this route already
+        # returns when Pass 3 has not run. Those two states are genuinely different —
+        # "never exported" and "exported from a scene that no longer exists" — and this
+        # response cannot tell them apart, because TrajectoryResponse has nowhere to say
+        # so and adding a field is an API surface change this batch did not take. Stated
+        # rather than glossed: the client behaviour is identical either way (render an
+        # empty panel), and the distinction is visible in the export summary's
+        # scene_changed bucket and in the table itself.
         cur.execute("""
             SELECT sa.agent_idx, sa.agent_type, sa.is_sdc,
                    sa.length_m, sa.width_m, sa.headings,
@@ -654,8 +672,11 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
                           ORDER BY dp.path) AS measures
             FROM scenario_agents sa
             WHERE sa.scenario_id = %s
+              AND sa.scene_fingerprint IS NOT DISTINCT FROM (
+                    SELECT ss.scene_fingerprint FROM scenario_scores ss
+                     WHERE ss.scenario_id = %s)
             ORDER BY sa.agent_idx
-        """, (scenario_id,))
+        """, (scenario_id, scenario_id))
         rows = cur.fetchall()
 
     agents = [
@@ -687,7 +708,7 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
     with dict_cursor(conn) as cur:
         cur.execute("""
             SELECT min_perturbation, collision_timestep, delta, stress_run_id,
-                   target_idx,
+                   target_idx, scene_fingerprint,
                    search_provenance ->> 'delta_parameterization'
                        AS delta_parameterization
             FROM scenario_scores
@@ -742,6 +763,15 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
             # means "not recorded", and "not recorded" is not evidence of a mismatch.
             # Tested by test_legacy_rows_without_a_run_id_still_serve and
             # test_a_mismatched_run_id_hides_the_perturbed_path.
+            #
+            # THE SCENE IS MATCHED TOO, ON THE SAME TERMS (audit A02). stress_run_id
+            # identifies a PERTURBATION APPLIED TO A SCENE; nothing identified the
+            # scene, so a re-parse under a stable scenario_id that happened to produce
+            # the same optimal delta would produce the same run id and this join would
+            # pair a current result with geometry from a scene that no longer exists.
+            # Both predicates use IS NOT DISTINCT FROM and the truth table above holds
+            # for each independently, so a legacy row — NULL on both sides of both
+            # columns — keeps serving exactly what it always served.
             # MATCHED AGAINST THE RUN ID ALREADY IN HAND, NOT A FRESH READ (audit
             # R03). This used to re-join scenario_scores here, which made the
             # response the product of TWO reads of that table: score_row from the
@@ -769,7 +799,9 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
             FROM perturbed_paths pp
             WHERE pp.scenario_id = %s
               AND pp.stress_run_id IS NOT DISTINCT FROM %s
-            """, (scenario_id, score_row['stress_run_id']))
+              AND pp.scene_fingerprint IS NOT DISTINCT FROM %s
+            """, (scenario_id, score_row['stress_run_id'],
+                  score_row['scene_fingerprint']))
             pert_row = cur.fetchone()
 
         baseline = None

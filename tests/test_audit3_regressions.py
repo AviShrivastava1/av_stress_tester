@@ -227,3 +227,346 @@ def test_A01b_the_zero_delta_replay_preserves_the_logged_heading(logged_heading)
             f'{float(replayed[1, frame, 4])} under a ZERO perturbation'
         )
     assert space.baseline_replay_error == pytest.approx(0.0, abs=1e-9)
+
+
+# ── A02 / A12 / A05: scene identity ─────────────────────────────────────────────
+#
+# One gap, three exploitations. compute_stress_run_id identifies a PERTURBATION
+# APPLIED TO A SCENE; nothing identifies the scene. Every guard this project has
+# built — B14's join, R01's derived id, R03's single-read snapshot — compares
+# identifiers that were never functions of scene content.
+#
+# Reproduced against the UNFIXED tree before any of this was designed:
+#
+#   A02(1) persist a pedestrian collision (delta [-1,0,0,0], frame 9), export, then
+#          re-export the SAME scenario_id with the target shifted 10 m
+#            -> "1 exported, stale=0, errors=0". Baseline frame 9 moved 3.2000 ->
+#               13.2000, perturbed 2.3000 -> 12.3000, run id identical both times
+#               (a0ee7366db2b7331), scenario_scores untouched. The API then serves a
+#               frame-9 collision claim beside geometry 10 m away, every guard green.
+#
+#   A02(2) export a NEW scene + NEW delta, then attempt an export with the OLD pair
+#            -> R01 correctly refused the perturbed path (attempted 626b25afde783cee
+#               against current eb210794893f020a) while agents_written=2 had ALREADY
+#               committed the old baseline: 3.7000 -> 3.2000. export_scenario_agents
+#               calls conn.commit() in its own body and never reads scenario_scores,
+#               and export_shard_geometry calls it FIRST — so R01's guard, which lives
+#               inside export_perturbed_path, runs one commit too late and the
+#               StaleExportError handler's rollback has nothing left to undo.
+#
+#   A12    the same wrong content (scene shifted 99 m) through both signatures
+#            -> 8-arg REFUSED (059e486ac468f9f0 vs 1dc547834b85949c);
+#               5-arg legacy PUBLISHED, path frame 9 x=102.2000, stamped with the
+#               stored id so the B14/R01 read-side join PASSES. A live bypass.
+#
+#   A05    a bit-for-bit identical retry (same delta, method, target)
+#            -> perturbed_paths rows 1 -> 0, stored run id unchanged
+#               (6854242eaa4550ec). Working geometry destroyed for nothing.
+
+requires_db = pytest.mark.skipif(
+    os.environ.get('AV_CLAIMS_DB') != '1',
+    reason='Requires an explicitly-nominated disposable database',
+)
+
+A02_SID = 'syn_scene_identity'
+_RESULT = {'status': 'ok', 'outcome': 'collision_found', 'collision': True,
+           'min_perturbation': 0.5, 'delta': [-1.0, 0.0, 0.0, 0.0],
+           'collision_timestep': 9, 'target_idx': 1, 'method': 'de'}
+
+
+def _pedestrian_scene(shift=0.0):
+    """A vehicle SDC at the origin and a pedestrian walking in, optionally displaced."""
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[0, :, 5:7] = [4.5, 2.0]
+    states[1, :, 5:7] = [0.6, 0.6]
+    states[1, :, 0] = 5.0 - 2.0 * np.arange(10) * 0.1 + shift
+    states[1, :, 2] = -2.0
+    states[1, :, 4] = np.pi
+    return states, np.ones((2, 10), dtype=bool), np.array([1, 2])
+
+
+def _fingerprint(states, validity, types):
+    """
+    The scene fingerprint, resolved only if it exists.
+
+    RETURNS None AGAINST THE UNFIXED TREE, DELIBERATELY. These tests must be able to
+    run before the fix or they prove nothing about it, and importing a function that
+    does not exist yet fails with an ImportError — which demonstrates nothing about
+    scene identity. Batch 7 made exactly this mistake with test_R01 (a TypeError about
+    a new keyword, reported as reproducing a defect it never reached) and Batch 10
+    made the same allowance for _reject_unstorable_text.
+
+    Pre-fix the seeded row therefore carries no fingerprint and the export proceeds —
+    which is the defect, and the assertions below are written against the OBSERVABLE
+    damage (geometry that no longer matches the result it sits beside) rather than
+    against the presence of a column.
+    """
+    from src.scoring import db
+    fn = getattr(db, 'compute_scene_fingerprint', None)
+    return None if fn is None else fn(states, validity, types)
+
+
+def _export_perturbed(conn, sid, states, validity, target, **kw):
+    """
+    export_perturbed_path, with keyword arguments it does not yet accept dropped.
+
+    Same reason _fingerprint resolves defensively, and the mistake was made here first:
+    the initial version of these tests passed scene_fingerprint= unconditionally and
+    six of them failed pre-fix with `TypeError: unexpected keyword argument`, which
+    demonstrates nothing about scene identity. A test that cannot reach the code it
+    names is not testing it, however red it is.
+    """
+    import inspect
+    from src.scoring.export_geometry import export_perturbed_path
+    accepted = inspect.signature(export_perturbed_path).parameters
+    return export_perturbed_path(conn, sid, states, validity, target,
+                                 **{k: v for k, v in kw.items() if k in accepted})
+
+
+@pytest.fixture
+def sconn():
+    from src.scoring import db
+    from src.scoring.export_geometry import init_geometry_schema
+    connection = db.get_connection()
+    with connection.cursor() as cur:
+        cur.execute('DROP TABLE IF EXISTS perturbed_paths, scenario_agents, '
+                    'scenario_scores CASCADE')
+    connection.commit()
+    db.init_schema(connection)
+    init_geometry_schema(connection)
+    yield connection
+    connection.rollback()
+    connection.close()
+
+
+def _seed_scene(conn, states, validity, types, sid=A02_SID, result=None):
+    """Pass 1 + Pass 2, through the real write paths."""
+    from src.scoring import db
+    db.upsert_scores(conn, [dict(scenario_id=sid, shard='synthetic', n_agents=2,
+                                 min_ttc=9.0, min_pet=9.0, fragility_score=1.0,
+                                 scene_fingerprint=_fingerprint(states, validity, types))])
+    db.update_stress_results(conn, {sid: dict(result or _RESULT)})
+
+
+def _frame9_x(conn, table, sid=A02_SID, where=''):
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT ST_X(ST_PointN(path, 10)) FROM {table} "
+                    f"WHERE scenario_id = %s {where}", (sid,))
+        row = cur.fetchone()
+    return None if row is None else row[0]
+
+
+@requires_db
+def test_A02_a_reparsed_scene_cannot_overwrite_geometry_under_a_stable_id(sconn):
+    """
+    THE AUDIT'S REPRO 1, at the function the damage happens in.
+
+    scenario_id is a stable natural key; the arrays behind it are not. A parser fix, a
+    reinterpreted protobuf, or simply a different shard carrying the same id (
+    upsert_scores conflicts on scenario_id alone and overwrites `shard`) produces a
+    genuinely different scene under an unchanged key — and export_scenario_agents
+    upserts it without reading scenario_scores at all.
+    """
+    from src.scoring.export_geometry import export_scenario_agents
+
+    states, validity, types = _pedestrian_scene()
+    _seed_scene(sconn, states, validity, types)
+    export_scenario_agents(sconn, A02_SID, states, validity, types, 0)
+    before = _frame9_x(sconn, 'scenario_agents', where='AND agent_idx = 1')
+
+    moved, v2, t2 = _pedestrian_scene(shift=10.0)
+    try:
+        export_scenario_agents(sconn, A02_SID, moved, v2, t2, 0)
+    except Exception as exc:
+        assert type(exc).__name__ == 'SceneChangedError', f'wrong refusal: {exc!r}'
+        sconn.rollback()
+
+    after = _frame9_x(sconn, 'scenario_agents', where='AND agent_idx = 1')
+    assert after == before, (
+        f'geometry for {A02_SID} moved from {before} to {after} while the stored '
+        f'result still describes the original scene — a re-parse overwrote a scene '
+        f'under a stable id'
+    )
+
+
+@requires_db
+def test_A02_baseline_geometry_is_not_committed_before_the_guard_runs(sconn):
+    """
+    THE AUDIT'S REPRO 2, and the ordering is the finding.
+
+    R01's stale-export guard works — it refuses the perturbed path. But it lives
+    inside export_perturbed_path, and export_shard_geometry commits the baseline
+    first, so the refusal arrives after the damage. Measured pre-fix: perturbed
+    correctly untouched at 1.9000 while the baseline moved 3.7000 -> 3.2000, leaving
+    one committed database holding a baseline from one scene and a path from another.
+    """
+    from src.scoring.export_geometry import (
+        export_scenario_agents, export_perturbed_path, StaleExportError,
+    )
+
+    new_states, nv, nt = _pedestrian_scene(shift=0.5)
+    _seed_scene(sconn, new_states, nv, nt,
+                result=dict(_RESULT, delta=[-2.0, 0.0, 0.0, 0.0], min_perturbation=1.0))
+    export_scenario_agents(sconn, A02_SID, new_states, nv, nt, 0)
+    _export_perturbed(sconn, A02_SID, new_states, nv, 1,
+                      delta=[-2.0, 0.0, 0.0, 0.0], method='de',
+                      scene_fingerprint=_fingerprint(new_states, nv, nt))
+    base_before = _frame9_x(sconn, 'scenario_agents', where='AND agent_idx = 1')
+    pert_before = _frame9_x(sconn, 'perturbed_paths')
+
+    old_states, ov, ot = _pedestrian_scene(shift=0.0)
+    try:
+        export_scenario_agents(sconn, A02_SID, old_states, ov, ot, 0)
+    except Exception as exc:
+        assert type(exc).__name__ == 'SceneChangedError', f'wrong refusal: {exc!r}'
+        sconn.rollback()
+    try:
+        _export_perturbed(sconn, A02_SID, old_states, ov, 1,
+                          delta=_RESULT['delta'], method='de',
+                          scene_fingerprint=_fingerprint(old_states, ov, ot))
+    except (StaleExportError, Exception):
+        sconn.rollback()
+
+    assert _frame9_x(sconn, 'scenario_agents', where='AND agent_idx = 1') == base_before, (
+        'the baseline was overwritten by an export whose perturbed half was refused — '
+        'the guard ran one commit too late'
+    )
+    assert _frame9_x(sconn, 'perturbed_paths') == pert_before, 'the path moved too'
+
+
+@requires_db
+def test_A12_the_legacy_signature_cannot_publish_against_a_fingerprinted_scene(sconn):
+    """
+    Batch 7 kept the 5-argument signature for backward compatibility and warned in the
+    docstring that the stale-export protection is "vacuous without delta/method". The
+    audit shows that warning is a live bypass, not a caveat: the run id is read from
+    scenario_scores and stamped onto whatever trajectory was handed in, so the WHERE
+    clause compares a value against itself and always passes.
+
+    Measured pre-fix with a scene displaced 99 m: the 8-arg call REFUSED and the 5-arg
+    call PUBLISHED, stamped with the stored id, so every downstream join agreed.
+    """
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _pedestrian_scene()
+    _seed_scene(sconn, states, validity, types)
+    export_scenario_agents(sconn, A02_SID, states, validity, types, 0)
+
+    wrong, wv, _ = _pedestrian_scene(shift=99.0)
+    published = None
+    try:
+        published = export_perturbed_path(sconn, A02_SID, wrong, wv, 1)
+    except Exception as exc:
+        assert type(exc).__name__ in ('SceneChangedError', 'StaleExportError'), (
+            f'wrong refusal: {exc!r}'
+        )
+        sconn.rollback()
+        published = False
+
+    assert not published, (
+        'the 5-argument legacy call published geometry built from a scene 99 m away '
+        'from the one the stored result describes'
+    )
+    assert _frame9_x(sconn, 'perturbed_paths') is None, (
+        'a perturbed path from the wrong scene reached the database'
+    )
+
+
+@requires_db
+def test_A12_a_row_without_a_fingerprint_still_exports(sconn):
+    """
+    THE CARVE-OUT, AND THE FIX IS WORTHLESS WITHOUT IT.
+
+    Rows written before this column existed have scene_fingerprint NULL, which means
+    "not recorded" and is not evidence of a mismatch — the same rule B14 applies to
+    stress_run_id and routes.py applies with IS NOT DISTINCT FROM. A fix that refused
+    these would be a fail-closed regression on every legacy row, which this project
+    has repeatedly said is worse than the defect it replaces.
+
+    This is also what keeps the audit's own B13/B14 fixtures passing unmodified: they
+    seed scenario_scores by hand and carry no fingerprint.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _pedestrian_scene()
+    db.upsert_scores(sconn, [dict(scenario_id=A02_SID, shard='synthetic', n_agents=2,
+                                  min_ttc=9.0, min_pet=9.0, fragility_score=1.0)])
+    db.update_stress_results(sconn, {A02_SID: dict(_RESULT)})
+    # Tolerant of the column not existing yet, for the reason _fingerprint and
+    # _export_perturbed are: this test asserts a behaviour that ALREADY HOLDS today
+    # and must keep holding, so it has to be runnable on both sides of the fix. An
+    # UndefinedColumn error here would be an infrastructure failure wearing the
+    # costume of a finding.
+    with sconn.cursor() as cur:
+        cur.execute("SELECT to_regclass('scenario_scores') IS NOT NULL")
+        cur.execute("""SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'scenario_scores'
+                          AND column_name = 'scene_fingerprint'""")
+        has_column = cur.fetchone() is not None
+        if has_column:
+            cur.execute("SELECT scene_fingerprint FROM scenario_scores "
+                        "WHERE scenario_id = %s", (A02_SID,))
+            assert cur.fetchone()[0] is None, (
+                'fixture regressed: this row must carry no fingerprint'
+            )
+
+    export_scenario_agents(sconn, A02_SID, states, validity, types, 0)
+    assert export_perturbed_path(sconn, A02_SID, states, validity, 1) is True, (
+        'a legacy row with no recorded fingerprint was refused — the carve-out closed'
+    )
+
+
+@requires_db
+def test_A05_an_identical_retry_keeps_its_geometry(sconn):
+    """
+    update_stress_results deletes perturbed_paths whenever a pass produced a result,
+    without ever comparing the new identity against the stored one. A bit-for-bit
+    identical retry — same delta, same method, same target, therefore the same
+    stress_run_id by construction — destroys working geometry for nothing.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _pedestrian_scene()
+    _seed_scene(sconn, states, validity, types)
+    export_scenario_agents(sconn, A02_SID, states, validity, types, 0)
+    _export_perturbed(sconn, A02_SID, states, validity, 1,
+                      delta=_RESULT['delta'], method='de',
+                      scene_fingerprint=_fingerprint(states, validity, types))
+    before = _frame9_x(sconn, 'perturbed_paths')
+    assert before is not None, 'fixture regressed: nothing was exported'
+
+    db.update_stress_results(sconn, {A02_SID: dict(_RESULT)})
+
+    assert _frame9_x(sconn, 'perturbed_paths') == before, (
+        'a bit-for-bit identical retry destroyed the exported geometry'
+    )
+
+
+@requires_db
+def test_A05_a_genuinely_new_result_still_invalidates_geometry(sconn):
+    """
+    THE HOLE THE A05 FIX MUST NOT OPEN.
+
+    B14's invalidation exists because a path exported from the PREVIOUS delta must not
+    survive a new result. Making the delete conditional is only correct if the
+    condition still fires whenever the identity actually changed.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _pedestrian_scene()
+    _seed_scene(sconn, states, validity, types)
+    export_scenario_agents(sconn, A02_SID, states, validity, types, 0)
+    _export_perturbed(sconn, A02_SID, states, validity, 1,
+                      delta=_RESULT['delta'], method='de',
+                      scene_fingerprint=_fingerprint(states, validity, types))
+    assert _frame9_x(sconn, 'perturbed_paths') is not None, 'fixture regressed'
+
+    db.update_stress_results(sconn, {A02_SID: dict(_RESULT, delta=[-2.0, 0.0, 0.0, 0.0],
+                                                   min_perturbation=1.0)})
+
+    assert _frame9_x(sconn, 'perturbed_paths') is None, (
+        'a NEW delta left the old geometry in place — the A05 fix reopened B14'
+    )

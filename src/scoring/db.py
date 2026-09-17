@@ -135,6 +135,28 @@ ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS last_attempt_diagnostics JS
 -- infeasibility flip a value instead of editing the API.
 ALTER TABLE scenario_scores
     ADD COLUMN IF NOT EXISTS search_certifies_infeasibility BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Batch 11 (audit A02, A12, A05): WHICH SCENE this row describes.
+--
+-- scenario_id is a stable natural key from WOMD, but the states/validity/types arrays
+-- behind it are not. A parser fix, a reinterpreted protobuf, or simply a different
+-- shard carrying the same id — upsert_scores conflicts on scenario_id ALONE and
+-- overwrites `shard`, so that collision is structural, not hypothetical — produces a
+-- genuinely different scene under an unchanged key. Every identifier this project had
+-- until now (stress_run_id, and the B14 join built on it) is a function of the
+-- PERTURBATION, never of the scene, so none of them could see it.
+--
+-- A THIRD OWNER, and this is the part worth reading twice. Batch 2 established two
+-- column groups on this table: the latest pass, and the last verified result. This
+-- belongs to NEITHER. A fingerprint describes the INPUT, not the search — so it sits
+-- with shard, n_agents and min_ttc: written once by Pass 1 through upsert_scores, and
+-- never touched by update_stress_results. Putting it in the result group would say a
+-- scene is a property of a search, which is backwards, and would make a refused
+-- re-run preserve a fingerprint for a scene it never looked at.
+--
+-- NULL means NOT RECORDED and must not be read as a mismatch, exactly as B14 reasons
+-- about stress_run_id. Rows written before this column keep exporting.
+ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
 """
 
 
@@ -184,6 +206,61 @@ def compute_stress_run_id(scenario_id, target_idx, delta, method) -> str:
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]
 
 
+def compute_scene_fingerprint(states, validity, types) -> str:
+    """
+    A short, deterministic identifier for the SCENE ITSELF (audit A02).
+
+    compute_stress_run_id above identifies a perturbation applied to a scene. Nothing
+    identified the scene, so a re-parse under a stable scenario_id could produce a
+    matching run id against different content — the id was never a function of content
+    in the first place. This closes that: geometry is published only if the arrays it
+    was built from are the arrays the stored result was computed against.
+
+    WHAT IS HASHED: the whole scenario, every agent. Narrower options exist — the SDC
+    and target are the only two the collision check reads — but the question this
+    answers is "is this the same scene", and scenario_agents exports EVERY agent, so
+    the baseline the dashboard draws genuinely depends on all of them. A corrected
+    bystander coordinate does therefore invalidate a result that never touched that
+    agent; that is deliberate, and it surfaces as an explicit refusal rather than being
+    silently decided either way.
+
+    WHAT IS NOT HASHED: anything recomputed. Hashing PerturbationSpace.apply output
+    would let export_perturbed_path verify the target's own kinematics from its
+    mandatory arguments, which would close the legacy-signature gap completely — but it
+    would compare floating-point results recomputed on two platforms, and this project
+    runs Pass 2 on Colab's Python 3.8 and everything else on 3.11. A check that fails
+    closed on valid input is worse than the defect it replaces (R10, R11). Raw parsed
+    input only.
+
+    CANONICALIZATION, and every part of it is load-bearing:
+
+      - dtypes and BYTE ORDER are forced ('<f4', 'bool', '<i4'). The same scene must
+        fingerprint identically on the Colab half and the local half of this project's
+        documented split, and tobytes() is byte-order-dependent.
+      - ascontiguousarray, so a view or a transposed-then-restored array hashes as the
+        array it represents rather than as its memory layout.
+      - shapes are hashed alongside the bytes, so a reshape cannot collide with a
+        genuinely different scene that happens to share a byte string.
+      - a version prefix, so this algorithm can change without a new value silently
+        colliding with an old one.
+
+    sha256 truncated to 16 hex, matching compute_stress_run_id: 64 bits is far beyond
+    what accidental change requires, and the adversarial case is not the threat model.
+
+    -0.0 and 0.0 are numerically equal and hash differently. Left alone deliberately:
+    normalizing would mean rewriting the array before hashing it, and a parser that
+    starts emitting negative zero HAS changed its output.
+    """
+    import numpy as np
+
+    parts = [b'scenefp1']
+    for array, dtype in ((states, '<f4'), (validity, 'bool'), (types, '<i4')):
+        canonical = np.ascontiguousarray(np.asarray(array), dtype=dtype)
+        parts.append(repr(canonical.shape).encode('ascii'))
+        parts.append(canonical.tobytes())
+    return hashlib.sha256(b'|'.join(parts)).hexdigest()[:16]
+
+
 def get_connection(dbname=None, user=None, password=None, host=None, port=None):
     """
     Open a connection. Falls back to PG* environment variables, then defaults.
@@ -213,15 +290,20 @@ def upsert_scores(conn, records):
     """
     if not records:
         return 0
+    # scene_fingerprint joins the SCENARIO-OWNED columns here (audit A02), not the
+    # result or attempt groups — it describes the input Pass 1 read, so Pass 1 writes
+    # it and update_stress_results never touches it. r.get(), not r[...], so a caller
+    # that predates the column still writes a row; NULL means "not recorded".
     rows = [(r['scenario_id'], r.get('shard'), r.get('n_agents'),
              r['min_ttc'], r['min_pet'], r['fragility_score'],
-             r.get('min_ttc_all_pairs'), r.get('min_pet_all_pairs'))
+             r.get('min_ttc_all_pairs'), r.get('min_pet_all_pairs'),
+             r.get('scene_fingerprint'))
             for r in records]
     with conn.cursor() as cur:
         execute_values(cur, """
             INSERT INTO scenario_scores
                 (scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score,
-                 min_ttc_all_pairs, min_pet_all_pairs)
+                 min_ttc_all_pairs, min_pet_all_pairs, scene_fingerprint)
             VALUES %s
             ON CONFLICT (scenario_id) DO UPDATE SET
                 shard             = EXCLUDED.shard,
@@ -231,6 +313,12 @@ def upsert_scores(conn, records):
                 fragility_score   = EXCLUDED.fragility_score,
                 min_ttc_all_pairs = EXCLUDED.min_ttc_all_pairs,
                 min_pet_all_pairs = EXCLUDED.min_pet_all_pairs,
+                -- COALESCE, not a bare overwrite: a re-score by a caller that does
+                -- not compute a fingerprint must not ERASE one that was recorded.
+                -- Dropping it would silently reopen the carve-out for that row and
+                -- make every later export unguarded.
+                scene_fingerprint = COALESCE(EXCLUDED.scene_fingerprint,
+                                             scenario_scores.scene_fingerprint),
                 scored_at         = now()
         """, rows)
     conn.commit()
@@ -462,8 +550,33 @@ def update_stress_results(conn, results):
                 # stress_run_id, so the read-side join continues to pair them
                 # correctly. Deleting here would strand the preserved result without
                 # its picture for no gain.
-                cur.execute("DELETE FROM perturbed_paths WHERE scenario_id = %s",
-                            (sid,))
+                #
+                # CONDITIONAL, NOT UNCONDITIONAL (audit A05). This used to delete
+                # whenever a search ran, without ever asking whether the new identity
+                # DIFFERED from the stored one — so a bit-for-bit identical retry (same
+                # delta, same method, same target, therefore the same run id by
+                # construction) destroyed working geometry for nothing. Measured: rows
+                # 1 -> 0 with the stored run id unchanged at 6854242eaa4550ec.
+                #
+                # BOTH IDENTITIES, AND THE FINGERPRINT IS NOT DECORATIVE HERE. A
+                # re-parsed scene that happens to yield the SAME optimal delta produces
+                # the SAME stress_run_id, so a run-id-only comparison would preserve a
+                # path built from the old scene and the read-side join would serve it —
+                # fixing A05 by reopening A02 one table over. The scene is read from the
+                # row in the same statement rather than passed in, because Pass 1 owns
+                # that column and this function must not take a second opinion on it.
+                #
+                # IS DISTINCT FROM is the exact inverse of the IS NOT DISTINCT FROM the
+                # read side uses, so the NULL semantics are the ones B14 reasoned about:
+                # a legacy path (NULL) against a new run still deletes, as it does today.
+                cur.execute("""
+                    DELETE FROM perturbed_paths pp
+                     WHERE pp.scenario_id = %s
+                       AND (pp.stress_run_id IS DISTINCT FROM %s
+                            OR pp.scene_fingerprint IS DISTINCT FROM (
+                                SELECT ss.scene_fingerprint FROM scenario_scores ss
+                                 WHERE ss.scenario_id = %s))
+                """, (sid, run_id, sid))
     conn.commit()
     return n
 
