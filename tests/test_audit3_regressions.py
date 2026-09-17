@@ -43,6 +43,9 @@ Run:
     ./venv/bin/python -m pytest tests/test_audit3_regressions.py -q
 """
 
+import contextlib
+import io
+import json
 import os
 import sys
 
@@ -902,4 +905,380 @@ def test_A07_de_provenance_survives_an_accepted_refinement():
     assert provenance['de_archive_covered_all_evaluations'] is not None
     assert provenance['selected_stage'] == 'de+autograd', (
         'which stage actually won is not stated'
+    )
+
+
+# ── A04 / A13 / A14: the notebook's own defects ─────────────────────────────────
+#
+# Three independent findings that happen to share one file. Stated that way rather than
+# given a shared invariant: A04 is a crash, A13 is a measurement that answers the wrong
+# question, A14 is a namespace collision.
+#
+# Reproduced against the UNFIXED tree, through the real pipeline rather than injected
+# dicts wherever the finding is about end-to-end behaviour:
+#
+#   A04  SDC with ten valid frames, challenger valid ONLY at frame 0. B15 skips an
+#        agent with fewer than two valid timesteps, so it is never exported — but R06
+#        persists target_idx on scenario_scores regardless. Measured:
+#          export_scenario_agents: written=1 skipped=1   exported agent set: [0]
+#          scenario_scores.target_idx = 1
+#          /perturbed  target_idx=1  perturbed=None  delta=[-0.7056..., ...]
+#        and the round-trip cell's guard, which fires only on target_idx IS None, does
+#        not fire — so its bare next(...) raises StopIteration. Confirmed under BOTH
+#        triggers, the second through a real DE search rather than assumed:
+#          collision     outcome=collision_found     t_hit=0     -> StopIteration
+#          no-collision  outcome=no_collision_found  t_hit=None  -> StopIteration
+#
+#        NOTE delta is PRESENT in both. update_stress_results stores it whenever a
+#        search ran, so the API cell's "(null above is EXPECTED — no collision was
+#        found)" is wrong about which fields are absent: only collision_timestep and
+#        min_perturbation are.
+#
+#   A13  on B06's canonical fixture, visits_a=[(0,1),(5,6)] visits_b=[(3,3)]:
+#          corrected (min over pairs) = +0.2000   winners = [(0,0),(1,0)]
+#          merged-span (pre-B06)      = -0.3000
+#          sign flip: True   magnitude: 0.5000 s
+#          n_multi_visit_decisive += 0
+#        Both pairings tie, so pair one is AMONG the winners and the counter reports
+#        that separate visits never decided anything — on the exact fixture it exists
+#        to catch.
+#
+#   A14  cell binding rho for the all-pairs-vs-SDC ranking correlation, and the cell
+#        binding rho for the old-vs-new TTC correlation, are different experiments
+#        sharing one bare global. The summary reads rho under the FIRST experiment's
+#        label and gets whichever ran last.
+
+def _notebook_cells():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'notebooks', 'colab_validation_run.ipynb')
+    return json.load(open(path))['cells']
+
+
+def _cell_by_content(*required):
+    """
+    Located by CONTENT, never by index — the rule this project adopted after the
+    fourth index-drift incident. Cells 24-31 and 39-40 of this notebook carry no `id`
+    at all, so even id-based location would be partial.
+    """
+    hits = [''.join(c['source']) for c in _notebook_cells()
+            if c['cell_type'] == 'code'
+            and all(token in ''.join(c['source']) for token in required)]
+    assert len(hits) == 1, f'expected exactly one cell matching {required}, got {len(hits)}'
+    return hits[0]
+
+
+def _one_frame_challenger(lateral):
+    """SDC fully observed; challenger observed ONLY at its first frame."""
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[:, :, 5:7] = [4.5, 2.0]
+    states[1, :, 1] = lateral
+    validity = np.ones((2, 10), dtype=bool)
+    validity[1, 1:] = False
+    return states, validity, np.array([1, 1])
+
+
+def _fully_observed(lateral):
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[:, :, 5:7] = [4.5, 2.0]
+    states[1, :, 1] = lateral
+    return states, np.ones((2, 10), dtype=bool), np.array([1, 1])
+
+
+def _run_pipeline(conn, sid, scene, de_kwargs=None):
+    """Pass 2 + Pass 3 through the REAL functions, then the REAL API."""
+    from src.scoring import db
+    from src.scoring.export_geometry import init_geometry_schema, export_scenario_agents
+    from src.scoring.batch_scorer import _stress_one
+
+    states, validity, types = scene
+    with conn.cursor() as cur:
+        cur.execute('DROP TABLE IF EXISTS perturbed_paths, scenario_agents, '
+                    'scenario_scores CASCADE')
+    conn.commit()
+    db.init_schema(conn)
+    init_geometry_schema(conn)
+
+    result = _stress_one(states, validity, types, 0,
+                         de_kwargs=de_kwargs or {'popsize': 4, 'maxiter': 3, 'seed': 0})
+    db.upsert_scores(conn, [dict(
+        scenario_id=sid, shard='synthetic', n_agents=int(states.shape[0]),
+        min_ttc=9.0, min_pet=9.0, fragility_score=1.0,
+        scene_fingerprint=db.compute_scene_fingerprint(states, validity, types))])
+    db.update_stress_results(conn, {sid: result})
+    export_scenario_agents(conn, sid, states, validity, types, 0)
+    return result
+
+
+def _real_httpx(client, sid):
+    """
+    An httpx-shaped shim over the REAL TestClient, so the notebook cell sees exactly
+    what the API returns rather than a hand-written dict. The finding is about a state
+    the pipeline produces; a fake response could assert that state into existence.
+    """
+    import types as _types
+
+    def get(url, params=None):
+        path = url.split('http://x')[-1] if url.startswith('http://x') else url
+        return client.get(path, params=params)
+    return _types.SimpleNamespace(get=get)
+
+
+def _real_dump_points_m(conn):
+    """cell 13's helper, against the real database."""
+    def dump(connection, table, scenario_id, agent_idx=None):
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT n_points, ARRAY(SELECT ST_M(dp.geom)
+                                         FROM ST_DumpPoints(path) dp ORDER BY dp.path)
+                  FROM {table} WHERE scenario_id = %s AND agent_idx = %s
+            """, (scenario_id, agent_idx))
+            row = cur.fetchone()
+        assert row is not None, f'no {table} row for agent {agent_idx}'
+        return None, row[0], None, row[1]
+    return dump
+
+
+def _exec_api_cells(conn, client, sid, result):
+    """Run the notebook's two API cells against real responses."""
+    import types as _types
+
+    env = {
+        'httpx': _real_httpx(client, sid), 'base': 'http://x', 'np': np,
+        'stress_results': {sid: result}, 'ids_to_test': [sid],
+        'dump_points_m': _real_dump_points_m(conn), 'conn': conn,
+        'server': _types.SimpleNamespace(should_exit=False),
+    }
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(compile(_cell_by_content('stress_tested_sid', 'GET /health'), 'api', 'exec'), env)
+        exec(compile(_cell_by_content('http_timesteps'), 'roundtrip', 'exec'), env)
+    return env, out.getvalue()
+
+
+@requires_db
+@pytest.mark.parametrize('label,lateral', [('collision', 2.1), ('no_collision', 40.0)])
+def test_A04_a_challenger_without_geometry_does_not_crash_the_round_trip(
+        pconn, label, lateral):
+    """
+    R09 closed the door where target_idx was None. This is a DIFFERENT door that R09's
+    fixture could not produce: R06 makes target_idx persist even when B15 declined to
+    export that agent, so the guard does not fire and the bare next(...) has no default.
+
+    BOTH TRIGGERS, because the audit states both and the collision case runs a real DE
+    search rather than being asserted into existence.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+
+    result = _run_pipeline(pconn, 'a04', _one_frame_challenger(lateral))
+    expected = 'collision_found' if label == 'collision' else 'no_collision_found'
+    assert result['outcome'] == expected, f"fixture regressed: {result['outcome']}"
+
+    with TestClient(app) as client:
+        traj = client.get('/scenarios/a04/trajectories').json()
+        pert = client.get('/scenarios/a04/perturbed').json()
+    assert pert['target_idx'] == 1, 'fixture regressed: R06 must persist the target'
+    assert all(a['agent_idx'] != 1 for a in traj['agents']), (
+        'fixture regressed: the target must NOT be among the exported agents'
+    )
+
+    with TestClient(app) as client:
+        env, printed = _exec_api_cells(pconn, client, 'a04', result)
+
+    assert 'CONFIRMED: HTTP timesteps == Postgres M values' in printed, printed
+    assert env['target_idx_api'] in {a['agent_idx'] for a in env['traj']['agents']}, (
+        'the round trip selected an agent that is not in the exported set'
+    )
+
+
+@requires_db
+def test_A04_the_round_trip_still_prefers_the_real_challenger(pconn):
+    """
+    The fix must not trade a crash for a wrong agent. When the target IS exported, the
+    round trip must still close on it rather than falling back to agent 0 — otherwise
+    the assertion silently stops describing the challenger the result is about.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+    from src.scoring.export_geometry import export_perturbed_path
+    from src.scoring import db
+
+    scene = _fully_observed(2.1)
+    result = _run_pipeline(pconn, 'a04ok', scene)
+    assert result.get('collision'), 'fixture regressed: need a collision'
+    states, validity, types = scene
+    from src.optimization.perturbation_space import PerturbationSpace
+    space = PerturbationSpace(states, validity, types, 0, int(result['target_idx']))
+    export_perturbed_path(pconn, 'a04ok',
+                          space.apply(np.asarray(result['delta'], dtype=np.float32)),
+                          validity, int(result['target_idx']),
+                          delta=result['delta'], method=result.get('method'),
+                          scene_fingerprint=db.compute_scene_fingerprint(*scene))
+
+    with TestClient(app) as client:
+        env, printed = _exec_api_cells(pconn, client, 'a04ok', result)
+
+    assert env['target_idx_api'] == result['target_idx'], (
+        'the round trip fell back to another agent although the target WAS exported'
+    )
+    assert 'CONFIRMED: HTTP timesteps == Postgres M values' in printed
+
+
+@requires_db
+def test_A04_a_completed_search_still_reports_its_delta(pconn):
+    """
+    The API cell's smaller error, independent of the crash. It prints
+    "(null above is EXPECTED — no collision was found for this scenario)" beneath a
+    line showing BOTH delta and collision_timestep — but update_stress_results stores
+    the delta whenever a search ran, so a completed unsuccessful search exports a
+    candidate delta. Only collision_timestep and min_perturbation are absent.
+
+    Asserted against the pipeline rather than against the prose, so the claim is
+    checked where it is made false rather than where it is written.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+
+    result = _run_pipeline(pconn, 'a04nc', _fully_observed(40.0))
+    assert result['outcome'] == 'no_collision_found', result['outcome']
+
+    with TestClient(app) as client:
+        pert = client.get('/scenarios/a04nc/perturbed').json()
+
+    assert pert['delta'] is not None, (
+        'fixture regressed: a completed search must store its candidate delta'
+    )
+    assert pert['collision_timestep'] is None
+    assert pert['min_perturbation'] is None
+
+    cell = _cell_by_content('stress_tested_sid', 'GET /health')
+    assert 'null above is EXPECTED — no collision was found' not in cell, (
+        'the cell still claims the delta is null for a completed search; measured, it '
+        f'is {pert["delta"]!r}'
+    )
+
+
+def _b06_tie_scene():
+    """
+    A REAL scene whose occupancy visits reproduce B06's canonical fixture exactly —
+    including the tie that makes the old counter blind.
+
+    Agent 0 nudges along x and is observed with a validity gap, so it enters the shared
+    zone twice. Agent 1 is observed at two frames, only ONE of which is inside the zone
+    (the other is 20 m away), which is what makes its visit list a single (3, 3) span
+    rather than (3, 4) — and that single span is what makes both pairings tie.
+
+    Verified to produce, through the real pet_engine:
+        visits_a = [(0, 1), (5, 6)]   visits_b = [(3, 3)]
+        pair (0,0) -> +0.2   pair (1,0) -> +0.2   winners = both, so (0,0) IS a winner
+        merged-span (pre-B06) = -0.3
+    """
+    T = 7
+    states = np.zeros((2, T, 7), dtype=np.float32)
+    states[:, :, 5:7] = [4.5, 2.0]
+    states[0, :, 0] = np.linspace(-1, 1, T)
+    states[1, :, 0] = 0.0
+    states[1, :, 1] = [20.0, 20.0, 20.0, 0.0, 20.0, 20.0, 20.0]
+    validity = np.zeros((2, T), dtype=bool)
+    validity[0] = [1, 1, 0, 0, 0, 1, 1]
+    validity[1] = [0, 0, 0, 1, 0, 0, 1]
+    return states, validity
+
+
+def test_A13_the_before_after_measure_sees_a_sign_flip():
+    """
+    n_multi_visit_decisive increments only when the winning visit pair is not (0,0) —
+    "did we need to look past pair one", which is not "did separate visits change the
+    answer". On B06's own fixture both pairings TIE, so pair one is among the winners
+    and the counter reports zero for a change of half a second that flips sign.
+
+    THE CELL IS EXECUTED, NOT GREPPED. An earlier version of this test asserted that
+    the string "merged" appeared in the cell, and it PASSED against the unfixed code —
+    because the cell's comments already discuss merged spans at length. A substring
+    check cannot tell prose from computation, which is the same "a test that cannot
+    reach what it names" failure this project keeps finding.
+    """
+    from src.danger.pet_engine import get_path_polygon, _occupancy_visits, DT
+
+    states, validity = _b06_tie_scene()
+    path_a = get_path_polygon(states, 0, validity)
+    path_b = get_path_polygon(states, 1, validity)
+    zone = path_a.intersection(path_b)
+    visits_a = _occupancy_visits(states, validity, 0, zone)
+    visits_b = _occupancy_visits(states, validity, 1, zone)
+
+    scored = [(max(eb - xa, ea - xb) * DT, i_a, i_b)
+              for i_a, (ea, xa) in enumerate(visits_a)
+              for i_b, (eb, xb) in enumerate(visits_b)]
+    corrected = min(v for v, _, _ in scored)
+    winners = [(i_a, i_b) for v, i_a, i_b in scored if v == corrected]
+    merged = max(visits_b[0][0] - visits_a[-1][1],
+                 visits_a[0][0] - visits_b[-1][1]) * DT
+
+    assert len(visits_a) > 1, f'fixture regressed: visits_a={visits_a}'
+    assert (merged < 0) != (corrected < 0), (
+        f'fixture regressed: no sign flip ({merged} -> {corrected})'
+    )
+    assert (0, 0) in winners, (
+        'fixture regressed: pair one must be AMONG the winners, or the old counter '
+        'would already catch this and there would be nothing to fix'
+    )
+
+    env = {'diag_cache': [{'states': states, 'validity': validity, 'sdc_idx': 0,
+                           'scenario_id': 'b06_tie'}],
+           'np': np}
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(compile(_cell_by_content('audit B06 — did separate visits'),
+                     'pet_cell', 'exec'), env)
+    printed = out.getvalue()
+
+    assert 'never decides the result' not in printed, (
+        f'the cell reports that multi-visit never decided anything, on a fixture where '
+        f'the pre-B06 answer was {merged:+.2f} s and the corrected answer is '
+        f'{corrected:+.2f} s:\n{printed}'
+    )
+    assert f'{merged:+.2f}' in printed or f'{merged:.2f}' in printed, (
+        f'the cell never reports the pre-B06 merged-span answer ({merged:+.4f}), so it '
+        f'cannot be comparing against it:\n{printed}'
+    )
+
+
+def test_A14_the_summary_reads_a_name_no_later_cell_rebinds():
+    """
+    The ranking-correlation cell and the TTC-correlation cell are different
+    experiments; both bound a bare `rho`; the summary reads `rho` under the FIRST
+    experiment's label and gets whichever ran last.
+
+    Asserted STRUCTURALLY rather than by executing three heavyweight cells: the defect
+    is that a name the summary depends on is bound in more than one place, which is a
+    property of the notebook's namespace and not of any particular run's numbers.
+    """
+    import ast as _ast
+
+    cells = [(i, ''.join(c['source'])) for i, c in enumerate(_notebook_cells())
+             if c['cell_type'] == 'code']
+    summary = next(src for _, src in cells if 'COLAB VALIDATION RUN — SUMMARY' in src)
+
+    # the name the summary prints beside the ranking-experiment label
+    ranking_line = next(l for l in summary.splitlines() if 'Spearman rho=' in l)
+    name = ranking_line.split('{')[1].split(':')[0].split('}')[0].strip()
+
+    binders = []
+    for index, src in cells:
+        try:
+            tree = _ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Assign):
+                for target in node.targets:
+                    for leaf in _ast.walk(target):
+                        if isinstance(leaf, _ast.Name) and leaf.id == name:
+                            binders.append(index)
+    binders = sorted(set(binders))
+
+    assert len(binders) == 1, (
+        f'the summary reads {name!r}, which is bound by {len(binders)} different cells '
+        f'{binders} — it prints whichever ran last under one experiment\'s label'
     )

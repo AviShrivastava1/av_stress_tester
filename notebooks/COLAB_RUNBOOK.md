@@ -146,8 +146,19 @@ None of these have ever executed. All depend on `diag_cache` from step 3.
 **7d** is the one with a known history: until Batch 4 this cell verified negative PETs
 against *merged* occupancy spans, which meant it would have **certified the exact defect
 B06 fixes** — fed the audit's B06 scene it reported no regression. It now requires an
-overlapping *visit pair*. Two new counters: `n_multi_visit_pairs` (did B06's condition ever
-arise on real data) and `n_multi_visit_decisive` (did it ever change the answer).
+overlapping *visit pair*. `n_multi_visit_pairs` says whether B06's condition ever arose on
+real data.
+
+**Whether it ever CHANGED the answer is measured directly (audit A13).** The cell computes
+the pre-B06 merged-span PET on the same visits and compares it against the corrected
+engine's value, reporting `n_multi_visit_changed`, `n_multi_visit_signflip` and the largest
+change in seconds. It used to infer this from `n_multi_visit_decisive` — "did the minimum
+come from a pair other than the first" — which is a proxy that fails on B06's own canonical
+fixture: with `visits_a=[(0,1),(5,6)]` and `visits_b=[(3,3)]` both pairings score `+0.2`, so
+the first pair is *among* the winners and the proxy reported zero, while the merged-span
+answer for that fixture is `-0.3`. A half-second change that flips sign, reported as "never
+decided anything". That counter survives as `n_multi_visit_later_pair`, printed separately,
+because how often the minimum comes from a later pair is a real but different fact.
 
 Compare against Block 3 v3's recorded numbers, printed inline as `[v3 measured X]`:
 100/100 all-pairs saturation, 70/100 SDC-restricted, 56% negative PET pairs.
@@ -161,7 +172,9 @@ Compare against Block 3 v3's recorded numbers, printed inline as `[v3 measured X
   at all.
 - **7f's Spearman rho** says whether B07 was a correctness footnote or a change to which
   scenarios Phase 4 ever saw.
-- **7d's `n_multi_visit_decisive`** says the same for B06.
+- **7d's `n_multi_visit_changed` / `n_multi_visit_signflip`** say the same for B06. Not
+  `n_multi_visit_later_pair`, which is printed beside them and answers a different
+  question — see the A13 note above.
 
 ---
 
