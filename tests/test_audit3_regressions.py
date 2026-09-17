@@ -570,3 +570,336 @@ def test_A05_a_genuinely_new_result_still_invalidates_geometry(sconn):
     assert _frame9_x(sconn, 'perturbed_paths') is None, (
         'a NEW delta left the old geometry in place — the A05 fix reopened B14'
     )
+
+
+# ── A03 / A06 / A07: what survives persistence when things go wrong ─────────────
+#
+# A looser family than A02/A05/A12 were, and the file says so rather than inventing a
+# tighter story: three findings about what update_stress_results and _stress_one keep
+# when a result is malformed, generic, or superseded internally.
+#
+# Reproduced against the UNFIXED tree before any of it was designed:
+#
+#   A03  json.dumps(float('inf')) emits the non-standard token Infinity, which
+#        PostgreSQL's JSONB parser correctly rejects:
+#          psycopg2.errors.InvalidTextRepresentation: invalid input syntax for type json
+#        AND — the part that makes it more than one lost row — update_stress_results
+#        commits ONCE after its loop, so three results in one call all came back
+#        last_attempt_outcome=None.
+#
+#        THAT THE ALREADY-WRITTEN ROW WAS DISCARDED, RATHER THAN NEVER REACHED, IS A
+#        SEPARATE MEASUREMENT AND NOT SOMETHING THE TEST BELOW CAN SHOW. A statement
+#        error aborts the transaction, so the test MUST roll back before it can query
+#        anything — and a rollback reverts to the last commit, which makes "its UPDATE
+#        ran and was undone" and "its UPDATE never ran" observationally identical.
+#        Replicating the pre-fix loop by hand and observing INSIDE the transaction:
+#
+#            good_a UPDATE rowcount = 1            <- it really executed
+#            good_a IN-TRANSACTION value = 'no_challenger'
+#            bad UPDATE raised InvalidTextRepresentation
+#            good_a AFTER rollback = None          <- the work was discarded
+#
+#        Recorded here rather than asserted there, because a docstring on a test
+#        should claim what that test demonstrates.
+#
+#   A06  a target with zero length/width raises out of _stress_one
+#        ("ValueError: agent 1 has unusable length=0.0 at its first valid frame 0"),
+#        stress_test_scenarios turns it into {'status':'error','error': <fused str>},
+#        and the row persists as last_attempt_outcome='error' with
+#        last_attempt_diagnostics=None. The outcome is recorded; the reason is not.
+#
+#   A07  _stress_one(..., use_autograd=True, de_kwargs={'popsize':4,'maxiter':0,
+#        'seed':0}) on two vehicles 2.1 m apart: refinement wins, `result = refined`
+#        replaces the dict, and the provenance built afterwards reads DE's keys off a
+#        dict that no longer has them — de_n_iter=None, de_n_eval=None.
+#
+# THE AUDIT'S OWN A03 TRIGGER DOES NOT FIRE, and this is recorded because the next
+# reader will otherwise re-derive it. _measure_baseline_replay does set
+# error = float('inf') when the rollout is non-finite (confirmed at drift >= 1e22 with
+# the collision check neutralised) — but it then calls check_collision_trajectory on
+# that same non-finite trajectory two lines later, and Shapely raises GEOSException
+# before the function can return. The condition that sets inf is the condition that
+# breaks the collision check, so inf never escapes as a ReplayFidelityError. A blown-up
+# rollout lands in status='error' instead, which is A06's defect — and is the trigger
+# test_A06_a_blown_up_rollout_is_diagnosable pins.
+
+def _ped_error_scene():
+    """A target with zero length/width — B02's fail-loud path, A06's own fixture."""
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[0, :, 5:7] = [4.5, 2.0]
+    states[1, :, 0] = 8.0
+    states[1, :, 5:7] = [0.0, 0.0]
+    return states, np.ones((2, 10), dtype=bool), np.array([1, 1])
+
+
+def _blown_rollout_scene(vx=1e22):
+    """
+    Pickable AND explosive: the challenger sits next to the SDC so
+    pick_nearest_challenger selects it, then moves at a speed that overflows the
+    rollout. An earlier version put it far away and got no_challenger instead — the
+    scene never reached the code it was written to exercise.
+    """
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[:, :, 5:7] = [4.5, 2.0]
+    states[1, :, 0] = 8.0 + np.arange(10) * 0.1 * vx
+    states[1, :, 2] = vx
+    return states, np.ones((2, 10), dtype=bool), np.array([1, 1])
+
+
+def _write_shard(path, payloads):
+    import struct
+    from src.data.loader import _masked_crc32c
+    blob = b''
+    for payload in payloads:
+        header = struct.pack('<Q', len(payload))
+        blob += (header + struct.pack('<I', _masked_crc32c(header))
+                 + payload + struct.pack('<I', _masked_crc32c(payload)))
+    path.write_bytes(blob)
+    return str(path)
+
+
+def _install_parser(scenes):
+    """Substitute src.data.parser, the technique Batch 2's B05 substitutes established."""
+    import types as _types
+    module = _types.ModuleType('src.data.parser')
+
+    class ScenarioParser:
+        def __init__(self, raw):
+            self.sid = raw.decode()
+
+        def get_scenario_id(self):
+            return self.sid
+
+        def get_agent_states(self):
+            return scenes[self.sid][0]
+
+        def get_agent_validity(self):
+            return scenes[self.sid][1]
+
+        def get_agent_types(self):
+            return scenes[self.sid][2]
+
+        def get_sdc_index(self):
+            return 0
+
+    module.ScenarioParser = ScenarioParser
+    sys.modules['src.data.parser'] = module
+    return module
+
+
+_INF_REFUSAL = {'status': 'replay_infeasible', 'outcome': 'replay_infeasible',
+                'target_idx': 1, 'baseline_replay_error': float('inf'),
+                'baseline_replay_collides': False, 'reason': 'drift',
+                'challengers_total': 2, 'challengers_searched': 0}
+_NO_CHALLENGER = {'status': 'no_challenger', 'outcome': 'no_challenger',
+                  'challengers_total': 0, 'challengers_searched': 0}
+
+
+@pytest.fixture
+def pconn():
+    from src.scoring import db
+    connection = db.get_connection()
+    with connection.cursor() as cur:
+        cur.execute('DROP TABLE IF EXISTS perturbed_paths, scenario_agents, '
+                    'scenario_scores CASCADE')
+    connection.commit()
+    db.init_schema(connection)
+    yield connection
+    connection.rollback()
+    connection.close()
+
+
+@requires_db
+def test_A03_a_non_finite_diagnostic_does_not_kill_the_batch(pconn):
+    """
+    THE BLAST RADIUS: A FAILURE ANYWHERE IN THE CALL DISCARDS EVERY ROW'S OUTCOME
+    FROM THAT SAME CALL, VALID OR NOT, REGARDLESS OF PROCESSING ORDER.
+
+    That is exactly what this test demonstrates, and deliberately no more. The
+    `except: rollback()` below is not cleanup — it is structurally required, because a
+    statement error aborts the transaction and every later query, including the
+    fetch_scenario calls the assertions depend on, would raise
+    InFailedSqlTransaction without it. So the state observed here is POST-rollback,
+    which cannot separate "good_a's UPDATE ran and was undone" from "good_a was never
+    reached": both leave the row at its seeded value. The ordering claim is true and
+    was measured separately — see the file header — but not by this.
+
+    What this DOES discriminate is the thing that matters: post-fix each row persists
+    its own outcome through its own savepoint regardless of its neighbours, and
+    pre-fix none of them do. R02's rule — one bad record must never kill the batch —
+    applied to the stage that never got it. Pass 1 and Pass 2 got it in Batch 5; Pass 3
+    has had it from the start; persistence, the one loop whose failure discards work
+    that has already been COMPUTED, had none.
+    """
+    from src.scoring import db
+
+    db.upsert_scores(pconn, [dict(scenario_id=s, shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0)
+                             for s in ('good_a', 'bad', 'good_b')])
+
+    results = {'good_a': dict(_NO_CHALLENGER),
+               'bad': dict(_INF_REFUSAL),
+               'good_b': dict(_NO_CHALLENGER)}
+    assert list(results) == ['good_a', 'bad', 'good_b'], 'ordering is the fixture'
+
+    try:
+        db.update_stress_results(pconn, results)
+    except Exception:
+        pconn.rollback()
+
+    assert db.fetch_scenario(pconn, 'good_a')['last_attempt_outcome'] == 'no_challenger', (
+        'a valid result that had already been written was rolled back by an unrelated '
+        "row's serialization failure"
+    )
+    assert db.fetch_scenario(pconn, 'good_b')['last_attempt_outcome'] == 'no_challenger', (
+        'a valid result after the bad one was never written'
+    )
+
+
+@requires_db
+def test_A03_a_non_finite_value_is_recorded_as_such_not_dropped(pconn):
+    """
+    NULL, PLUS A RECORD OF WHY — because null already means something else.
+
+    Project doctrine is that JSON has no infinity literal, so the value cannot persist
+    as a number (Block 6 Concept 24, the same rule min_perturbation follows). But a
+    bare null is indistinguishable from "this attempt recorded no such diagnostic",
+    which _attempt_diagnostics' own docstring is careful about. So the field goes null
+    AND one extra key names what was dropped and which non-finite value it held.
+    """
+    from src.scoring import db
+
+    db.upsert_scores(pconn, [dict(scenario_id='bad', shard='x', n_agents=2,
+                                  min_ttc=9.0, min_pet=9.0, fragility_score=1.0)])
+    try:
+        db.update_stress_results(pconn, {'bad': dict(_INF_REFUSAL)})
+    except Exception:
+        pconn.rollback()
+
+    row = db.fetch_scenario(pconn, 'bad')
+    assert row['last_attempt_outcome'] == 'replay_infeasible', 'the row was not written'
+    diagnostics = row['last_attempt_diagnostics']
+    assert diagnostics is not None, 'the refusal persisted no diagnostics at all'
+    assert diagnostics['reason'] == 'drift', 'the finite fields must survive intact'
+    assert diagnostics['baseline_replay_error'] is None, (
+        'a non-finite value was stored as a number'
+    )
+    assert diagnostics.get('nonfinite_fields') == {'baseline_replay_error': 'inf'}, (
+        'the null is indistinguishable from "not recorded": '
+        f'{diagnostics.get("nonfinite_fields")!r}'
+    )
+
+
+@requires_db
+def test_A06_a_generic_exception_keeps_its_type_and_message(pconn, tmp_path):
+    """
+    _ATTEMPT_DIAGNOSTIC_FIELDS was built around what ReplayFidelityError carries, so
+    the 'error' outcome — the catch-all for everything unexpected — had nothing in the
+    allowlist and was silently dropped the moment the in-memory dict went out of scope.
+    The row said 'error' and could not say why.
+
+    TYPE AND MESSAGE SEPARATELY, because today they are neither separate nor absent:
+    stress_test_scenarios builds f'{type(e).__name__}: {e}', fusing both into one
+    string that the notebook then takes apart again with .split(':')[0].
+    """
+    from src.scoring import db
+    from src.scoring.batch_scorer import stress_test_scenarios
+
+    _install_parser({'errscene': _ped_error_scene()})
+    shard = _write_shard(tmp_path / 'err.tfrecord', [b'errscene'])
+    results = stress_test_scenarios(shard, ['errscene'], verbose=False)
+    assert results['errscene']['status'] == 'error', 'fixture regressed'
+
+    db.upsert_scores(pconn, [dict(scenario_id='errscene', shard='x', n_agents=2,
+                                  min_ttc=9.0, min_pet=9.0, fragility_score=1.0)])
+    db.update_stress_results(pconn, results)
+
+    row = db.fetch_scenario(pconn, 'errscene')
+    assert row['last_attempt_outcome'] == 'error'
+    diagnostics = row['last_attempt_diagnostics']
+    assert diagnostics is not None, (
+        'the outcome was recorded and the reason was not — the row says "error" and '
+        'cannot say why'
+    )
+    assert diagnostics['error_type'] == 'ValueError', diagnostics
+    assert 'unusable length' in diagnostics['error_message'], diagnostics
+    assert ':' not in diagnostics['error_type'], (
+        'the type still carries the fused message'
+    )
+
+
+@requires_db
+def test_A06_a_blown_up_rollout_is_diagnosable(pconn, tmp_path):
+    """
+    THE TRIGGER FOUND WHILE DISPROVING A03'S, AND IT BELONGS HERE.
+
+    _measure_baseline_replay sets error = float('inf') for a non-finite rollout, but
+    calls check_collision_trajectory on that same trajectory before returning, and
+    Shapely raises GEOSException first. So the audit's A03 narrative never fires: a
+    blown-up rollout arrives as status='error', whose message A06 is about.
+
+    GEOSException subclasses Exception (MRO checked), so R02's guarantee holds and the
+    batch survives — asserted here too, since "one bad record must never kill the
+    batch" is the property that makes this merely undiagnosable rather than fatal.
+    """
+    from src.scoring import db
+    from src.scoring.batch_scorer import stress_test_scenarios
+
+    fine = np.zeros((2, 10, 7), dtype=np.float32)
+    fine[:, :, 5:7] = [4.5, 2.0]
+    fine[1, :, 0] = 8.0
+    _install_parser({'blown': _blown_rollout_scene(),
+                     'fine': (fine, np.ones((2, 10), dtype=bool), np.array([1, 1]))})
+    shard = _write_shard(tmp_path / 'blown.tfrecord', [b'blown', b'fine'])
+
+    results = stress_test_scenarios(shard, ['blown', 'fine'], verbose=False,
+                                    de_kwargs={'popsize': 4, 'maxiter': 1, 'seed': 0})
+    assert results['blown']['status'] == 'error', 'fixture regressed'
+    assert results['fine']['status'] != 'error', (
+        'the pathological scenario took its neighbour down — R02 is broken'
+    )
+
+    db.upsert_scores(pconn, [dict(scenario_id=s, shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0)
+                             for s in ('blown', 'fine')])
+    db.update_stress_results(pconn, results)
+
+    diagnostics = db.fetch_scenario(pconn, 'blown')['last_attempt_diagnostics']
+    assert diagnostics is not None, 'a blown-up rollout persisted no reason'
+    assert diagnostics['error_type'] == 'GEOSException', diagnostics
+
+
+def test_A07_de_provenance_survives_an_accepted_refinement():
+    """
+    `result = refined` replaces the whole dict, and the provenance built afterwards
+    reads DE's keys off it — so accepting a refinement erased the record of the search
+    that produced its warm start. maxiter=0 makes DE's own numbers small and definite
+    (one evaluation of the initial population) rather than incidental.
+
+    candidate_source and archive_covered_all_evaluations have existed in
+    optimize_scenario's return since Batch 6 and were NEVER persisted, so those two are
+    new coverage rather than something being restored.
+    """
+    from src.scoring.batch_scorer import _stress_one
+
+    states = np.zeros((2, 10, 7), dtype=np.float32)
+    states[:, :, 5:7] = [4.5, 2.0]
+    states[1, :, 1] = 2.1
+    result = _stress_one(states, np.ones((2, 10), dtype=bool), np.array([1, 1]), 0,
+                         use_autograd=True,
+                         de_kwargs={'popsize': 4, 'maxiter': 0, 'seed': 0})
+
+    assert result['method'] == 'de+autograd', 'fixture regressed: refinement must win'
+    provenance = result['search_provenance']
+
+    assert provenance['de_n_eval'] is not None, (
+        "DE's evaluation count was erased by the refinement that used its answer"
+    )
+    assert provenance['de_n_iter'] is not None, "DE's iteration count was erased"
+    assert provenance['de_candidate_source'] is not None, (
+        "Batch 6's two-stage selection outcome is not recorded"
+    )
+    assert provenance['de_archive_covered_all_evaluations'] is not None
+    assert provenance['selected_stage'] == 'de+autograd', (
+        'which stage actually won is not stated'
+    )

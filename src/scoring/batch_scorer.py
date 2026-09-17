@@ -244,9 +244,32 @@ def _stress_one(states, validity, types, sdc_idx,
     result['target_idx'] = int(tgt)
     result['method'] = 'de'
 
+    # DE'S OWN NUMBERS, CAPTURED BEFORE ANYTHING CAN OVERWRITE THEM (audit A07).
+    #
+    # `result = refined` below replaces the WHOLE dict, and search_provenance is built
+    # after that — so it was reading DE's keys off a dict that no longer had DE's
+    # shape, and an accepted refinement erased the record of the search that produced
+    # its own warm start. Measured with popsize=4, maxiter=0: de_n_iter and de_n_eval
+    # both came back None.
+    #
+    # CAPTURED, NOT READ LATER. Patching the read would leave the same trap for the
+    # next stage anybody adds; a local bound here cannot be reassigned by a later
+    # branch, whatever that branch decides to do with `result`.
+    de_search = {
+        'de_n_iter': result.get('n_iter'),
+        'de_n_eval': result.get('n_eval'),
+        # Present in optimize_scenario's return since Batch 6 and NEVER persisted, so
+        # these two are new coverage rather than something being restored: which of the
+        # two-stage candidates won, and whether the archive saw every evaluation.
+        'de_candidate_source': result.get('candidate_source'),
+        'de_archive_covered_all_evaluations': result.get('archive_covered_all_evaluations'),
+    }
+    refine_n_iters = None
+
     if use_autograd and space.is_vehicle:
         from src.optimization.autograd_optimizer import refine_scenario
         refined = refine_scenario(space, delta_init=result['delta'])
+        refine_n_iters = refined.get('n_iters')      # note: n_iters, not DE's n_iter
         # Keep whichever exact-verified collision has the smaller norm — THE SAME
         # FUNCTION OBJECT the DE archive and the refiner's own iterate loop call, not
         # a transcription of it (Batch 10). This was an inline expression held equal
@@ -284,8 +307,15 @@ def _stress_one(states, validity, types, sdc_idx,
         'de_maxiter': de_kwargs.get('maxiter', 200),
         'de_tol': de_kwargs.get('tol', 1e-3),
         'de_seed': de_kwargs.get('seed', 0),
-        'de_n_iter': result.get('n_iter'),
-        'de_n_eval': result.get('n_eval'),
+        # Unpacked from the capture taken before any reassignment, not read off
+        # `result` — see de_search above.
+        **de_search,
+        'refine_n_iters': refine_n_iters,
+        # Which stage's answer every other field describes. Derivable from
+        # stress_method today, and recorded anyway for the reason
+        # baseline_replay_collides is: a reader should not have to learn that a
+        # derivation exists, nor notice when it stops being two-way.
+        'selected_stage': result['method'],
         'baseline_replay_error': float(space.baseline_replay_error),
         'target_has_interior_gap': bool(space.has_interior_gap),
         # How near-stationary this challenger actually was (audit A01). Recorded on
@@ -314,6 +344,17 @@ def _stress_one(states, validity, types, sdc_idx,
                                 else float(space.heading_speed_floor)),
     }
     return result
+
+
+_MAX_ERROR_MESSAGE_LEN = 2000
+
+
+def _bounded(message: str) -> str:
+    """An exception message, truncated visibly rather than silently (audit A06)."""
+    if len(message) <= _MAX_ERROR_MESSAGE_LEN:
+        return message
+    return (message[:_MAX_ERROR_MESSAGE_LEN]
+            + f'... [truncated, {len(message)} chars total]')
 
 
 def _describe_outcome(r) -> str:
@@ -469,6 +510,20 @@ def stress_test_scenarios(
                 print(f"    {_describe_outcome(results[sid])}")
         except Exception as e:  # noqa: BLE001
             detail = f'{type(e).__name__}: {e}'
+            # TYPE AND MESSAGE AS THEIR OWN FIELDS (audit A06). `detail` fuses both
+            # into one string, and the fused form is KEPT because two consumers read
+            # it: _describe_outcome above, and the validation notebook, which recovers
+            # the type with e['error'].split(':')[0] — string surgery that is both the
+            # argument for separate fields and the reason the fused key cannot go.
+            #
+            # THE MESSAGE IS BOUNDED. str(e) is unbounded in principle: an exception
+            # carrying a numpy repr can be megabytes, and this lands in a JSONB column
+            # beside four small fixed-shape fields. Observed messages on the two
+            # reachable triggers are 93 and 102 characters, so 2000 is ~20x headroom
+            # and truncation should never fire in practice — a resource guard, not a
+            # format assumption, the same reasoning as _MAX_SCENARIO_ID_LEN in
+            # api/routes.py. Truncation is MARKED so a reader can tell a message ends
+            # because it ended, not because it was cut.
             if sid is None:
                 # The record never yielded an id, so there is no scenario to attribute
                 # this to. It goes in the separate error list against its record
@@ -480,7 +535,9 @@ def stress_test_scenarios(
                     print(f"  [error] record {record_index} (unidentified): {e}")
             else:
                 results[sid] = {'status': 'error', 'outcome': 'error',
-                                'error': detail}
+                                'error': detail,
+                                'error_type': type(e).__name__,
+                                'error_message': _bounded(str(e))}
                 if verbose:
                     print(f"  [error] {sid}: {e}")
 

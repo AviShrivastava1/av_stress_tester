@@ -367,7 +367,133 @@ _ATTEMPT_DIAGNOSTIC_FIELDS = (
     # Which challenger THIS attempt selected, which is not necessarily the one the
     # stored result describes — see the target_idx column comment.
     'target_idx',
+    # WHY THE ATTEMPT FAILED, when it failed for a reason this project did not
+    # anticipate (audit A06). This tuple was built around what ReplayFidelityError
+    # carries, so the 'error' outcome — the catch-all for everything unexpected — had
+    # nothing in the allowlist and was dropped the moment the in-memory dict went out
+    # of scope. The row said 'error' and could not say why, which is the one outcome
+    # where "why" is the entire content.
+    #
+    # TWO FIELDS, NOT ONE. stress_test_scenarios has always built
+    # f'{type(e).__name__}: {e}', fusing both facts into a string the notebook then
+    # takes apart again with .split(':')[0]. A type is a category you can GROUP BY; a
+    # message is prose. Storing them separately is what makes the first possible.
+    'error_type',
+    'error_message',
 )
+
+
+class UpdateReport(int):
+    """
+    How many rows were updated, plus which scenarios could not be written.
+
+    AN int SUBCLASS, so every existing caller is untouched (audit A03). Forty-five
+    call sites take this return value; exactly one asserts on it
+    (test_claims_contract.py's `== 1`) and one assigns it (the notebook's n_updated).
+    Both keep working because this IS an int — the same trick StressResults used in
+    Batch 5, and for the same reason: a richer return that breaks its callers is a
+    second defect, not a fix.
+
+    `.failures` is a list of {scenario_id, error} records rather than a count, matching
+    export_shard_geometry's perturbed_stale and Block 5 Concept 19: an operator looking
+    at a spike needs to know WHICH scenarios and why, and a tally answers neither.
+    """
+
+    def __new__(cls, count, failures=()):
+        report = super().__new__(cls, count)
+        report.failures = list(failures)
+        return report
+
+
+_NONFINITE_KEY = 'nonfinite_fields'
+
+
+def _describe_nonfinite(value: float) -> str:
+    """'inf', '-inf' or 'nan' — the three things JSON cannot spell."""
+    if value != value:
+        return 'nan'
+    return 'inf' if value > 0 else '-inf'
+
+
+def _sanitize_for_json(value, path=''):
+    """
+    Replace every non-finite float with None, and report what was replaced.
+
+    Returns (cleaned, {dotted_path: 'inf'|'-inf'|'nan'}).
+
+    WHY THIS EXISTS AT THE BOUNDARY RATHER THAN PER FIELD (audit A03). Python's
+    json.dumps emits the non-standard tokens Infinity / -Infinity / NaN, which
+    PostgreSQL's JSONB parser correctly rejects:
+
+        psycopg2.errors.InvalidTextRepresentation: invalid input syntax for type json
+
+    This project has met that twice already and fixed it pointwise both times: Block 6
+    Concept 24 established NULL-not-infinity for min_perturbation, and Batch 9 wrapped
+    target_min_speed in np.isfinite for exactly this reason. Both are correct and both
+    are per-field vigilance, which does not generalise to the next field somebody adds
+    — and A06 adds two in this same batch. This is the same decision made once, at the
+    only place every JSONB value must pass through.
+
+    Recursive over dicts and lists because search_provenance is not flat all the way
+    down: `bounds` is a list of [lo, hi] pairs, and a non-finite bound would be just as
+    unstorable as a scalar.
+
+    bool is checked BEFORE float. In Python bool is a subclass of int, not float, so it
+    would not be caught here anyway — but isinstance(True, int) surprises people, and
+    the explicit skip stops a later edit from "simplifying" this into a numeric check
+    that silently rewrites booleans.
+    """
+    import math
+
+    if isinstance(value, dict):
+        cleaned, report = {}, {}
+        for key, item in value.items():
+            sub, sub_report = _sanitize_for_json(item, f'{path}.{key}' if path else str(key))
+            cleaned[key] = sub
+            report.update(sub_report)
+        return cleaned, report
+
+    if isinstance(value, (list, tuple)):
+        cleaned, report = [], {}
+        for index, item in enumerate(value):
+            sub, sub_report = _sanitize_for_json(item, f'{path}.{index}' if path else str(index))
+            cleaned.append(sub)
+            report.update(sub_report)
+        return cleaned, report
+
+    if isinstance(value, bool):
+        return value, {}
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return None, {path: _describe_nonfinite(value)}
+
+    return value, {}
+
+
+def _json_safe(blob):
+    """
+    A JSONB-storable version of `blob`, with any non-finite value replaced by null and
+    ONE extra key naming what was replaced (audit A03).
+
+    NULL PLUS A RECORD, NOT A BARE NULL, and the distinction is the whole point. The
+    value cannot persist as a number — JSON has no infinity literal — but a bare null
+    is indistinguishable from "this attempt recorded no such diagnostic", which
+    _attempt_diagnostics' own docstring is careful to mean. So:
+
+        {'baseline_replay_error': None,
+         'nonfinite_fields': {'baseline_replay_error': 'inf'}}
+
+    One key however many fields were affected, purely additive so no existing reader
+    changes, and the numeric fields stay numeric-or-null rather than sometimes-a-string
+    — the notebook's drift-distribution study reads baseline_replay_error and should
+    not have to type-check it.
+    """
+    if blob is None:
+        return None
+    cleaned, report = _sanitize_for_json(blob)
+    if report and isinstance(cleaned, dict):
+        cleaned[_NONFINITE_KEY] = report
+    return cleaned
 
 
 def _attempt_diagnostics(result) -> dict:
@@ -420,6 +546,7 @@ def update_stress_results(conn, results):
         number of rows updated.
     """
     n = 0
+    failures = []
     with conn.cursor() as cur:
         # Checked ONCE, up front, and not inside the DELETE. A guard in the DELETE's
         # WHERE clause would not help: Postgres resolves table names when it parses
@@ -430,155 +557,199 @@ def update_stress_results(conn, results):
         geometry_exists = bool(cur.fetchone()[0])
 
         for sid, r in results.items():
-            outcome = resolve_outcome(r)
-            search_ran = outcome in OUTCOMES_SEARCH_RAN
+            # ── PER-SCENARIO ISOLATION (audit A03) ──────────────────────────────
+            #
+            # R02's rule — one bad record must never kill the batch — applied to the
+            # stage that never got it. Pass 1 and Pass 2 got it in Batch 5 and Pass 3
+            # has had it from the start; persistence, the ONE loop whose failure
+            # discards work that has already been COMPUTED, had none. Measured before
+            # this savepoint existed: three results in one call, one unserializable,
+            # and all three came back last_attempt_outcome=None — including the valid
+            # one processed FIRST, whose UPDATE had already executed.
+            #
+            # A SAVEPOINT and not a commit-per-row. Committing inside the loop would
+            # give up the property that a call either advances a scenario or leaves it
+            # alone, and would multiply fsyncs across a shard-sized batch. ROLLBACK TO
+            # SAVEPOINT discards one scenario's statements and leaves the surrounding
+            # transaction usable, which is exactly the granularity wanted.
+            #
+            # THE SAVEPOINT IS TAKEN BEFORE THE PARAMETERS ARE BUILT, AND THE HANDLER
+            # CATCHES Exception RATHER THAN psycopg2.Error. The first version did
+            # neither, and this batch's own isolation test caught it: a delta of
+            # ['not','a','number'] raises ValueError inside [float(x) for x in
+            # r['delta']] — Python-level, before any SQL reaches the database — so a
+            # narrow handler wrapped around the statements alone let a malformed
+            # result dict kill the batch exactly as before. "A malformed result" is
+            # the category this finding is about, so the isolation has to cover the
+            # whole per-scenario body. score_shard and export_shard_geometry already
+            # catch Exception here with the same deliberate breadth.
+            #
+            # The sanitizer above stops the trigger this was found through; this stops
+            # the CLASS. That distinction earns its keep in this very batch: A06 is
+            # adding arbitrary exception text to the same JSONB blob.
+            cur.execute('SAVEPOINT scenario_write')
+            try:
+                outcome = resolve_outcome(r)
+                search_ran = outcome in OUTCOMES_SEARCH_RAN
 
-            min_pert = r.get('min_perturbation') if search_ran else None
-            # store NULL (not +inf) when no collision was found — SQL has no inf
-            if min_pert is not None and min_pert == float('inf'):
-                min_pert = None
-            min_pert = None if min_pert is None else float(min_pert)
+                min_pert = r.get('min_perturbation') if search_ran else None
+                # store NULL (not +inf) when no collision was found — SQL has no inf
+                if min_pert is not None and min_pert == float('inf'):
+                    min_pert = None
+                min_pert = None if min_pert is None else float(min_pert)
 
-            delta = ([float(x) for x in r['delta']]
-                     if search_ran and r.get('delta') is not None else None)
-            t_hit = r.get('collision_timestep') if search_ran else None
-            t_hit = None if t_hit is None or t_hit < 0 else int(t_hit)
-            method = r.get('method') if search_ran else None
-            target_idx = r.get('target_idx')
+                delta = ([float(x) for x in r['delta']]
+                         if search_ran and r.get('delta') is not None else None)
+                t_hit = r.get('collision_timestep') if search_ran else None
+                t_hit = None if t_hit is None or t_hit < 0 else int(t_hit)
+                method = r.get('method') if search_ran else None
+                target_idx = r.get('target_idx')
 
-            run_id = (compute_stress_run_id(sid, target_idx, delta, method)
-                      if search_ran and target_idx is not None else None)
+                run_id = (compute_stress_run_id(sid, target_idx, delta, method)
+                          if search_ran and target_idx is not None else None)
 
-            provenance = r.get('search_provenance')
-            diagnostics = _attempt_diagnostics(r)
+                # Sanitized at the ONE place every JSONB value passes through (audit
+                # A03), rather than trusting each producer to have remembered.
+                provenance = _json_safe(r.get('search_provenance'))
+                diagnostics = _json_safe(_attempt_diagnostics(r))
 
-            # Two groups of columns, with two different owners.
-            #
-            # THE LATEST PASS (always written): last_attempt_outcome,
-            # stress_attempted_at, last_attempt_diagnostics.
-            #
-            # THE LAST VERIFIED RESULT (written only by a pass that PRODUCED one):
-            # min_perturbation, delta, collision_timestep, stress_method,
-            # stress_run_id, search_provenance, stress_outcome, stress_tested_at,
-            # target_idx, challengers_total, challengers_searched.
-            #
-            # target_idx joined the second group in Batch 7 (audit R06) because it is
-            # an input to compute_stress_run_id beside delta and stress_method, which
-            # are already there. last_attempt_diagnostics joined the first (audit R07)
-            # and is written on EVERY pass, NULL included — a diagnostic left behind
-            # by an earlier refusal sitting beside a later successful attempt is the
-            # same juxtaposition this grouping exists to prevent.
-            #
-            # challengers_total/searched are in the second group because they are part
-            # of the SAME concept as search_provenance — "how was the stored result
-            # searched", i.e. 1 challenger out of N. They began in the first group,
-            # which split one concept across both owners and would have nulled them out
-            # on an errored re-run (_stress_one returns neither field for 'error')
-            # while min_perturbation beside them was being carefully preserved.
-            #
-            # stress_outcome and stress_tested_at sit in the SECOND group deliberately.
-            # An earlier version of this function put them in the first, which made a
-            # refused re-run produce a row reading stress_outcome='replay_infeasible'
-            # beside min_perturbation=0.11 — the outcome field and the score fields
-            # describing two different runs, asserting something false by juxtaposition.
-            # That is the robustly_safe defect (B04) with different field names, and
-            # traceability via stress_run_id is not a defence: the invariant is that no
-            # field asserts more than its method established, not that a careful reader
-            # can reconstruct the truth. Grouped this way the row is coherent BY
-            # CONSTRUCTION — stress_outcome always describes exactly the run that
-            # min_perturbation and delta came from.
-            #
-            # The preservation rule itself is Block 5 section 22's column ownership,
-            # applied to the case it did not originally anticipate. That rule keeps
-            # Pass 1 from wiping out stress results that cost hours of optimizer time;
-            # the same principle says a later Pass 2 that could not run a search has
-            # not superseded an earlier one that did, and must not destroy it. A
-            # scenario that succeeded today and is refused tomorrow by a stricter
-            # max_baseline_drift would otherwise lose the only successful result it
-            # ever produced, silently.
-            #
-            # Retaining it misrepresents nothing, which is the other half of the trade:
-            # last_attempt_outcome and stress_attempted_at report the refusal in full,
-            # so the row says "here is a verified result, and here is what the most
-            # recent pass concluded" rather than conflating the two. An overwrite would
-            # make the result unrecoverable AND erase the difference between "re-
-            # verified as no longer true" and "we failed to check this time".
-            #
-            # stress_tested_at belongs to the result for the same reason: an earlier
-            # version cleared it, which silently dropped a real, persisted,
-            # exact-SAT-verified collision out of /stats' collisions_found the moment
-            # an unrelated later pass failed. It timestamps the stored result, so it
-            # travels with the stored result.
-            cur.execute("""
-                UPDATE scenario_scores SET
-                    min_perturbation     = CASE WHEN %s THEN %s ELSE min_perturbation END,
-                    delta                = CASE WHEN %s THEN %s ELSE delta END,
-                    collision_timestep   = CASE WHEN %s THEN %s ELSE collision_timestep END,
-                    stress_method        = CASE WHEN %s THEN %s ELSE stress_method END,
-                    stress_run_id        = CASE WHEN %s THEN %s ELSE stress_run_id END,
-                    search_provenance    = CASE WHEN %s THEN %s ELSE search_provenance END,
-                    target_idx           = CASE WHEN %s THEN %s ELSE target_idx END,
-                    stress_outcome       = CASE WHEN %s THEN %s ELSE stress_outcome END,
-                    challengers_total    = CASE WHEN %s THEN %s ELSE challengers_total END,
-                    challengers_searched = CASE WHEN %s THEN %s ELSE challengers_searched END,
-                    stress_tested_at     = CASE WHEN %s THEN now() ELSE stress_tested_at END,
-                    last_attempt_outcome = %s,
-                    last_attempt_diagnostics = %s,
-                    stress_attempted_at  = now()
-                WHERE scenario_id = %s
-            """, (search_ran, min_pert,
-                  search_ran, delta,
-                  search_ran, t_hit,
-                  search_ran, method,
-                  search_ran, run_id,
-                  search_ran, Json(provenance) if provenance is not None else None,
-                  search_ran, None if target_idx is None else int(target_idx),
-                  search_ran, outcome,
-                  search_ran, r.get('challengers_total'),
-                  search_ran, r.get('challengers_searched'),
-                  search_ran,
-                  outcome,
-                  Json(diagnostics) if diagnostics is not None else None,
-                  sid))
-            updated = cur.rowcount
-            n += updated
-
-            if updated and search_ran and geometry_exists:
-                # Only a pass that produced a NEW result invalidates the geometry, for
-                # the same reason. A refused re-run supersedes nothing, so the
-                # preserved result keeps its matching path — they still share a
-                # stress_run_id, so the read-side join continues to pair them
-                # correctly. Deleting here would strand the preserved result without
-                # its picture for no gain.
+                # Two groups of columns, with two different owners.
                 #
-                # CONDITIONAL, NOT UNCONDITIONAL (audit A05). This used to delete
-                # whenever a search ran, without ever asking whether the new identity
-                # DIFFERED from the stored one — so a bit-for-bit identical retry (same
-                # delta, same method, same target, therefore the same run id by
-                # construction) destroyed working geometry for nothing. Measured: rows
-                # 1 -> 0 with the stored run id unchanged at 6854242eaa4550ec.
+                # THE LATEST PASS (always written): last_attempt_outcome,
+                # stress_attempted_at, last_attempt_diagnostics.
                 #
-                # BOTH IDENTITIES, AND THE FINGERPRINT IS NOT DECORATIVE HERE. A
-                # re-parsed scene that happens to yield the SAME optimal delta produces
-                # the SAME stress_run_id, so a run-id-only comparison would preserve a
-                # path built from the old scene and the read-side join would serve it —
-                # fixing A05 by reopening A02 one table over. The scene is read from the
-                # row in the same statement rather than passed in, because Pass 1 owns
-                # that column and this function must not take a second opinion on it.
+                # THE LAST VERIFIED RESULT (written only by a pass that PRODUCED one):
+                # min_perturbation, delta, collision_timestep, stress_method,
+                # stress_run_id, search_provenance, stress_outcome, stress_tested_at,
+                # target_idx, challengers_total, challengers_searched.
                 #
-                # IS DISTINCT FROM is the exact inverse of the IS NOT DISTINCT FROM the
-                # read side uses, so the NULL semantics are the ones B14 reasoned about:
-                # a legacy path (NULL) against a new run still deletes, as it does today.
+                # target_idx joined the second group in Batch 7 (audit R06) because it is
+                # an input to compute_stress_run_id beside delta and stress_method, which
+                # are already there. last_attempt_diagnostics joined the first (audit R07)
+                # and is written on EVERY pass, NULL included — a diagnostic left behind
+                # by an earlier refusal sitting beside a later successful attempt is the
+                # same juxtaposition this grouping exists to prevent.
+                #
+                # challengers_total/searched are in the second group because they are part
+                # of the SAME concept as search_provenance — "how was the stored result
+                # searched", i.e. 1 challenger out of N. They began in the first group,
+                # which split one concept across both owners and would have nulled them out
+                # on an errored re-run (_stress_one returns neither field for 'error')
+                # while min_perturbation beside them was being carefully preserved.
+                #
+                # stress_outcome and stress_tested_at sit in the SECOND group deliberately.
+                # An earlier version of this function put them in the first, which made a
+                # refused re-run produce a row reading stress_outcome='replay_infeasible'
+                # beside min_perturbation=0.11 — the outcome field and the score fields
+                # describing two different runs, asserting something false by juxtaposition.
+                # That is the robustly_safe defect (B04) with different field names, and
+                # traceability via stress_run_id is not a defence: the invariant is that no
+                # field asserts more than its method established, not that a careful reader
+                # can reconstruct the truth. Grouped this way the row is coherent BY
+                # CONSTRUCTION — stress_outcome always describes exactly the run that
+                # min_perturbation and delta came from.
+                #
+                # The preservation rule itself is Block 5 section 22's column ownership,
+                # applied to the case it did not originally anticipate. That rule keeps
+                # Pass 1 from wiping out stress results that cost hours of optimizer time;
+                # the same principle says a later Pass 2 that could not run a search has
+                # not superseded an earlier one that did, and must not destroy it. A
+                # scenario that succeeded today and is refused tomorrow by a stricter
+                # max_baseline_drift would otherwise lose the only successful result it
+                # ever produced, silently.
+                #
+                # Retaining it misrepresents nothing, which is the other half of the trade:
+                # last_attempt_outcome and stress_attempted_at report the refusal in full,
+                # so the row says "here is a verified result, and here is what the most
+                # recent pass concluded" rather than conflating the two. An overwrite would
+                # make the result unrecoverable AND erase the difference between "re-
+                # verified as no longer true" and "we failed to check this time".
+                #
+                # stress_tested_at belongs to the result for the same reason: an earlier
+                # version cleared it, which silently dropped a real, persisted,
+                # exact-SAT-verified collision out of /stats' collisions_found the moment
+                # an unrelated later pass failed. It timestamps the stored result, so it
+                # travels with the stored result.
                 cur.execute("""
-                    DELETE FROM perturbed_paths pp
-                     WHERE pp.scenario_id = %s
-                       AND (pp.stress_run_id IS DISTINCT FROM %s
-                            OR pp.scene_fingerprint IS DISTINCT FROM (
-                                SELECT ss.scene_fingerprint FROM scenario_scores ss
-                                 WHERE ss.scenario_id = %s))
-                """, (sid, run_id, sid))
+                    UPDATE scenario_scores SET
+                        min_perturbation     = CASE WHEN %s THEN %s ELSE min_perturbation END,
+                        delta                = CASE WHEN %s THEN %s ELSE delta END,
+                        collision_timestep   = CASE WHEN %s THEN %s ELSE collision_timestep END,
+                        stress_method        = CASE WHEN %s THEN %s ELSE stress_method END,
+                        stress_run_id        = CASE WHEN %s THEN %s ELSE stress_run_id END,
+                        search_provenance    = CASE WHEN %s THEN %s ELSE search_provenance END,
+                        target_idx           = CASE WHEN %s THEN %s ELSE target_idx END,
+                        stress_outcome       = CASE WHEN %s THEN %s ELSE stress_outcome END,
+                        challengers_total    = CASE WHEN %s THEN %s ELSE challengers_total END,
+                        challengers_searched = CASE WHEN %s THEN %s ELSE challengers_searched END,
+                        stress_tested_at     = CASE WHEN %s THEN now() ELSE stress_tested_at END,
+                        last_attempt_outcome = %s,
+                        last_attempt_diagnostics = %s,
+                        stress_attempted_at  = now()
+                    WHERE scenario_id = %s
+                """, (search_ran, min_pert,
+                      search_ran, delta,
+                      search_ran, t_hit,
+                      search_ran, method,
+                      search_ran, run_id,
+                      search_ran, Json(provenance) if provenance is not None else None,
+                      search_ran, None if target_idx is None else int(target_idx),
+                      search_ran, outcome,
+                      search_ran, r.get('challengers_total'),
+                      search_ran, r.get('challengers_searched'),
+                      search_ran,
+                      outcome,
+                      Json(diagnostics) if diagnostics is not None else None,
+                      sid))
+                updated = cur.rowcount
+
+                if updated and search_ran and geometry_exists:
+                    # Only a pass that produced a NEW result invalidates the geometry, for
+                    # the same reason. A refused re-run supersedes nothing, so the
+                    # preserved result keeps its matching path — they still share a
+                    # stress_run_id, so the read-side join continues to pair them
+                    # correctly. Deleting here would strand the preserved result without
+                    # its picture for no gain.
+                    #
+                    # CONDITIONAL, NOT UNCONDITIONAL (audit A05). This used to delete
+                    # whenever a search ran, without ever asking whether the new identity
+                    # DIFFERED from the stored one — so a bit-for-bit identical retry (same
+                    # delta, same method, same target, therefore the same run id by
+                    # construction) destroyed working geometry for nothing. Measured: rows
+                    # 1 -> 0 with the stored run id unchanged at 6854242eaa4550ec.
+                    #
+                    # BOTH IDENTITIES, AND THE FINGERPRINT IS NOT DECORATIVE HERE. A
+                    # re-parsed scene that happens to yield the SAME optimal delta produces
+                    # the SAME stress_run_id, so a run-id-only comparison would preserve a
+                    # path built from the old scene and the read-side join would serve it —
+                    # fixing A05 by reopening A02 one table over. The scene is read from the
+                    # row in the same statement rather than passed in, because Pass 1 owns
+                    # that column and this function must not take a second opinion on it.
+                    #
+                    # IS DISTINCT FROM is the exact inverse of the IS NOT DISTINCT FROM the
+                    # read side uses, so the NULL semantics are the ones B14 reasoned about:
+                    # a legacy path (NULL) against a new run still deletes, as it does today.
+                    cur.execute("""
+                        DELETE FROM perturbed_paths pp
+                         WHERE pp.scenario_id = %s
+                           AND (pp.stress_run_id IS DISTINCT FROM %s
+                                OR pp.scene_fingerprint IS DISTINCT FROM (
+                                    SELECT ss.scene_fingerprint FROM scenario_scores ss
+                                     WHERE ss.scenario_id = %s))
+                    """, (sid, run_id, sid))
+
+            except Exception as exc:  # noqa: BLE001 — deliberate: isolate per scenario
+                # RECORDED AND THE WALK CONTINUES, the same shape and the same
+                # deliberate breadth score_shard and export_shard_geometry already use.
+                # Narrower was tried and was wrong — see the savepoint comment above.
+                cur.execute('ROLLBACK TO SAVEPOINT scenario_write')
+                failures.append({'scenario_id': sid,
+                                 'error': f'{type(exc).__name__}: {exc}'.strip()})
+            else:
+                cur.execute('RELEASE SAVEPOINT scenario_write')
+                n += updated
     conn.commit()
-    return n
+    return UpdateReport(n, failures)
 
 
 def fetch_top(conn, n=20):
