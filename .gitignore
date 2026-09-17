@@ -5,3 +5,4 @@ __pycache__/
 *.tfrecord
 .DS_Store
 venv/
+notebooks/block[0-9]*_v[0-9]*.pdf

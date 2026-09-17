@@ -3,7 +3,9 @@
 The one piece of outstanding work that cannot be done on the dev machine: it needs a real
 WOMD shard and the `waymo-open-dataset` package, which is manylinux-only.
 
-`src/` and `tests/` are settled through Batch 5 (`8e6cfb7`). Nothing here changes code.
+`src/` and `tests/` are settled through Batch 13 (`06022a2`): every finding from all three
+post-launch audits — B01–B20 (B11's `invalid_crc` case the one deliberate exception,
+`xfail(strict=True)`), R01–R12, and A01–A14 — is closed. Nothing here changes code.
 This session **measures**, and four decisions are waiting on what it measures.
 
 ---
@@ -62,7 +64,7 @@ MAX_SCENARIOS = 100    Pass 1 batch size
 TOP_N         = 5      Pass 2 stress-test set — UNCHANGED, see step 6
 DIAG_N        = 50     7c/7d sample
 B09_N         = 25     10b sample — deliberately not TOP_N, see step 5
-DE_KWARGS     = popsize=10, maxiter=60, tol=1e-2, seed=1
+DE_KWARGS     = popsize=15, maxiter=200, tol=1e-3, seed=1
 ```
 
 ---
@@ -230,7 +232,8 @@ on the self-test plus code inspection — the cell says so itself.
 
 **Decision this feeds:** whether B09 needs a Block 4 doctrine note. If it fires on real
 data, Block 4 describes a refinement stage that returns its endpoint — materially wrong,
-and a **third** outstanding textbook correction.
+and a new textbook correction (Block 2's and Block 6's are already fixed; this would be
+the first one still open).
 
 ### B20 — a decision, not a cell
 
@@ -298,9 +301,10 @@ few or no usable comparisons.
 
 **No code changes.** If something here demands one, it is a new batch.
 
-**No doctrine corrections.** Block 6 Concept 24's `stress_tested_at` prose and Block 2 §6 /
-Block 4 §17's common-mode cancellation claim have now been deferred through five batches
-and this session makes six. They are known-false statements in the project's own teaching
-material, they need no shard and no Linux box, and 10b may add a third to the pile. They
-want their own small pass, and the fact that they have never fit anyone's scope is the
-argument for giving them one rather than the reason to keep deferring.
+**Doctrine corrections already made.** Block 6 Concept 24's `stress_tested_at`/`robustly_safe`
+passage was corrected in Block 6 v2, citing audit B04. Block 2 §6/§7's common-mode-cancellation
+claim was corrected in Block 2 v3, citing audit B03 — not Block 4 §17, which is Perturbation
+Space Design and never carried this claim. Neither correction needed a shard or a Linux box,
+and neither is open now. One related item remains: if 10b shows B09 firing on real data,
+Block 4's description of the refinement stage is wrong in a new way and needs its own note —
+and that's its own pass, not this one.
