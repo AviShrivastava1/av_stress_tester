@@ -157,6 +157,27 @@ ALTER TABLE scenario_scores
 -- NULL means NOT RECORDED and must not be read as a mismatch, exactly as B14 reasons
 -- about stress_run_id. Rows written before this column keep exporting.
 ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
+
+-- Fix F02 (independent review): WHICH AGENT is the SDC, alongside scene_fingerprint,
+-- not folded into it.
+--
+-- compute_scene_fingerprint hashes states/validity/types only. sdc_track_index is a
+-- separate scalar field in the WOMD protobuf (ScenarioParser.get_sdc_index reads it
+-- directly, not derived from the arrays) — so two parses can produce a BYTE-IDENTICAL
+-- array hash while disagreeing about which agent the SDC even is. Every collision
+-- check in this project is anchored on sdc_idx, so that disagreement is exactly the
+-- kind of "different scene under an unchanged key" A02 was about, invisible to the
+-- fingerprint alone.
+--
+-- A SEPARATE COLUMN, NOT A CHANGE TO compute_scene_fingerprint's OWN HASH. That
+-- function's contract is versioned (the 'scenefp1' prefix) and already relied on by
+-- Pass 1 and the whole A02/A05/A12 test family; folding sdc_idx into it would need a
+-- version bump and would invalidate every already-stored fingerprint until Pass 1
+-- re-runs shard-wide — a much bigger blast radius than one write-path check.
+--
+-- Same ownership as scene_fingerprint: written once by Pass 1, describes the input,
+-- never touched by update_stress_results. NULL means NOT RECORDED, same carve-out.
+ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS sdc_idx INTEGER;
 """
 
 
@@ -290,20 +311,21 @@ def upsert_scores(conn, records):
     """
     if not records:
         return 0
-    # scene_fingerprint joins the SCENARIO-OWNED columns here (audit A02), not the
-    # result or attempt groups — it describes the input Pass 1 read, so Pass 1 writes
-    # it and update_stress_results never touches it. r.get(), not r[...], so a caller
-    # that predates the column still writes a row; NULL means "not recorded".
+    # scene_fingerprint and sdc_idx join the SCENARIO-OWNED columns here (audit A02,
+    # fix F02), not the result or attempt groups — they describe the input Pass 1
+    # read, so Pass 1 writes them and update_stress_results never touches them.
+    # r.get(), not r[...], so a caller that predates either column still writes a
+    # row; NULL means "not recorded".
     rows = [(r['scenario_id'], r.get('shard'), r.get('n_agents'),
              r['min_ttc'], r['min_pet'], r['fragility_score'],
              r.get('min_ttc_all_pairs'), r.get('min_pet_all_pairs'),
-             r.get('scene_fingerprint'))
+             r.get('scene_fingerprint'), r.get('sdc_idx'))
             for r in records]
     with conn.cursor() as cur:
         execute_values(cur, """
             INSERT INTO scenario_scores
                 (scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score,
-                 min_ttc_all_pairs, min_pet_all_pairs, scene_fingerprint)
+                 min_ttc_all_pairs, min_pet_all_pairs, scene_fingerprint, sdc_idx)
             VALUES %s
             ON CONFLICT (scenario_id) DO UPDATE SET
                 shard             = EXCLUDED.shard,
@@ -314,11 +336,13 @@ def upsert_scores(conn, records):
                 min_ttc_all_pairs = EXCLUDED.min_ttc_all_pairs,
                 min_pet_all_pairs = EXCLUDED.min_pet_all_pairs,
                 -- COALESCE, not a bare overwrite: a re-score by a caller that does
-                -- not compute a fingerprint must not ERASE one that was recorded.
-                -- Dropping it would silently reopen the carve-out for that row and
-                -- make every later export unguarded.
+                -- not compute a fingerprint/sdc_idx must not ERASE one that was
+                -- recorded. Dropping it would silently reopen the carve-out for that
+                -- row and make every later export/write unguarded.
                 scene_fingerprint = COALESCE(EXCLUDED.scene_fingerprint,
                                              scenario_scores.scene_fingerprint),
+                sdc_idx           = COALESCE(EXCLUDED.sdc_idx,
+                                             scenario_scores.sdc_idx),
                 scored_at         = now()
         """, rows)
     conn.commit()
@@ -613,6 +637,14 @@ def update_stress_results(conn, results):
                 provenance = _json_safe(r.get('search_provenance'))
                 diagnostics = _json_safe(_attempt_diagnostics(r))
 
+                # WHAT THIS ATTEMPT WAS SEARCHED AGAINST (fix F02), captured by
+                # _stress_one at entry — see its own comment. None for every outcome
+                # that never reaches a search (no_challenger, replay_infeasible,
+                # error) and for any caller that predates this field; None on EITHER
+                # side is read as "not recorded", never as a mismatch, below.
+                captured_fp = r.get('scene_fingerprint')
+                captured_sdc = r.get('sdc_idx')
+
                 # Two groups of columns, with two different owners.
                 #
                 # THE LATEST PASS (always written): last_attempt_outcome,
@@ -670,24 +702,86 @@ def update_stress_results(conn, results):
                 # exact-SAT-verified collision out of /stats' collisions_found the moment
                 # an unrelated later pass failed. It timestamps the stored result, so it
                 # travels with the stored result.
+                #
+                # ── fix F02: THE SCENE-IDENTITY GUARD ────────────────────────────
+                #
+                # Until this fix, every CASE above read `search_ran` alone — this
+                # function asked "did a search run", never "did it run against the
+                # scene this row NOW describes". Pass 1 can re-run between a search
+                # starting and this call persisting it (upsert_scores has no guard;
+                # by design, per Block 5 v4 — Pass 1 owns this column outright), and
+                # nothing stopped a stale search's collision_found from being
+                # attached to a row that had since moved on. The DELETE below
+                # already compares scene_fingerprint this way, for perturbed_paths;
+                # this closes the identical gap for the row's own result columns.
+                #
+                # READ IN THE SAME STATEMENT, not a Python-side SELECT-then-UPDATE —
+                # the DELETE's own comment explains why: this function must not take
+                # a second opinion on a column Pass 1 owns, and a separate read would
+                # reopen exactly the race a single statement closes.
+                #
+                # BOTH scene_fingerprint AND sdc_idx, not the fingerprint alone.
+                # compute_scene_fingerprint hashes states/validity/types only;
+                # sdc_track_index is a separate WOMD field two parses could disagree
+                # on while every array still hashes identically, and every collision
+                # check is anchored on sdc_idx — invisible to the fingerprint alone.
+                #
+                # NULL ON EITHER SIDE MEANS "NOT RECORDED", NOT "MISMATCH" — the
+                # same carve-out A12 established for the export path, extended here.
+                # The alternative (refuse whenever the CAPTURED side is NULL) would
+                # break the fixture shape most of this project's own test suite
+                # already uses — synthetic result dicts built by hand, with no
+                # scene_fingerprint key — for a check aimed at real Pass 2 traffic,
+                # which always carries one now. Refusing only requires BOTH sides
+                # present and disagreeing.
                 cur.execute("""
+                    WITH row_check AS (
+                        SELECT scene_fingerprint AS stored_scene_fingerprint,
+                               sdc_idx AS stored_sdc_idx,
+                               (scene_fingerprint IS NOT DISTINCT FROM %s
+                                OR scene_fingerprint IS NULL OR %s IS NULL)
+                               AND
+                               (sdc_idx IS NOT DISTINCT FROM %s
+                                OR sdc_idx IS NULL OR %s IS NULL) AS scene_matches
+                          FROM scenario_scores
+                         WHERE scenario_id = %s
+                    )
                     UPDATE scenario_scores SET
-                        min_perturbation     = CASE WHEN %s THEN %s ELSE min_perturbation END,
-                        delta                = CASE WHEN %s THEN %s ELSE delta END,
-                        collision_timestep   = CASE WHEN %s THEN %s ELSE collision_timestep END,
-                        stress_method        = CASE WHEN %s THEN %s ELSE stress_method END,
-                        stress_run_id        = CASE WHEN %s THEN %s ELSE stress_run_id END,
-                        search_provenance    = CASE WHEN %s THEN %s ELSE search_provenance END,
-                        target_idx           = CASE WHEN %s THEN %s ELSE target_idx END,
-                        stress_outcome       = CASE WHEN %s THEN %s ELSE stress_outcome END,
-                        challengers_total    = CASE WHEN %s THEN %s ELSE challengers_total END,
-                        challengers_searched = CASE WHEN %s THEN %s ELSE challengers_searched END,
-                        stress_tested_at     = CASE WHEN %s THEN now() ELSE stress_tested_at END,
+                        min_perturbation     = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE min_perturbation END,
+                        delta                = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE delta END,
+                        collision_timestep   = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE collision_timestep END,
+                        stress_method        = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE stress_method END,
+                        stress_run_id        = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE stress_run_id END,
+                        search_provenance    = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE search_provenance END,
+                        target_idx           = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE target_idx END,
+                        stress_outcome       = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE stress_outcome END,
+                        challengers_total    = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE challengers_total END,
+                        challengers_searched = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN %s ELSE challengers_searched END,
+                        stress_tested_at     = CASE WHEN %s AND (SELECT scene_matches FROM row_check) THEN now() ELSE stress_tested_at END,
                         last_attempt_outcome = %s,
-                        last_attempt_diagnostics = %s,
+                        -- The outcome word stays honest even when refused (fix F02):
+                        -- the search DID reach collision_found/no_collision_found,
+                        -- unlike replay_infeasible where none ran at all. What did
+                        -- NOT happen is that outcome being attached to the row, and
+                        -- that goes in diagnostics, not a relabelled outcome.
+                        last_attempt_diagnostics = CASE
+                            WHEN %s AND NOT (SELECT scene_matches FROM row_check)
+                            THEN COALESCE(%s::jsonb, '{}'::jsonb) || jsonb_build_object(
+                                    'scene_mismatch', true,
+                                    'captured_scene_fingerprint', %s,
+                                    'stored_scene_fingerprint',
+                                        (SELECT stored_scene_fingerprint FROM row_check),
+                                    'captured_sdc_idx', %s,
+                                    'stored_sdc_idx',
+                                        (SELECT stored_sdc_idx FROM row_check)
+                                 )
+                            ELSE %s
+                        END,
                         stress_attempted_at  = now()
                     WHERE scenario_id = %s
-                """, (search_ran, min_pert,
+                    RETURNING (SELECT scene_matches FROM row_check)
+                """, (captured_fp, captured_fp, captured_sdc, captured_sdc, sid,
+                      search_ran, min_pert,
                       search_ran, delta,
                       search_ran, t_hit,
                       search_ran, method,
@@ -699,11 +793,28 @@ def update_stress_results(conn, results):
                       search_ran, r.get('challengers_searched'),
                       search_ran,
                       outcome,
+                      search_ran,
+                      Json(diagnostics) if diagnostics is not None else None,
+                      captured_fp,
+                      captured_sdc,
                       Json(diagnostics) if diagnostics is not None else None,
                       sid))
                 updated = cur.rowcount
+                row = cur.fetchone()
+                scene_matches = bool(row[0]) if row and row[0] is not None else True
 
-                if updated and search_ran and geometry_exists:
+                if updated and search_ran and scene_matches and geometry_exists:
+                    # scene_matches ADDED (fix F02), read back from the UPDATE's own
+                    # RETURNING rather than recomputed: when the guard above refused
+                    # to attach this attempt's result, there is no NEW result for
+                    # this DELETE to invalidate anything for, and running it anyway
+                    # would compare stress_run_id against a run_id THIS statement
+                    # just decided not to trust — computed from the rejected
+                    # attempt's own delta/method/target, not from whatever the
+                    # preserved row's geometry actually pairs with. Skipping it
+                    # entirely leaves the preserved result's geometry exactly where
+                    # A05 already established it belongs: untouched.
+                    #
                     # Only a pass that produced a NEW result invalidates the geometry, for
                     # the same reason. A refused re-run supersedes nothing, so the
                     # preserved result keeps its matching path — they still share a

@@ -71,6 +71,12 @@ def _score_one(states, validity, scenario_id, sdc_index,
         from src.scoring.db import compute_scene_fingerprint
         record['scene_fingerprint'] = compute_scene_fingerprint(states, validity, types)
 
+    # WHICH AGENT is the SDC (fix F02), alongside the fingerprint and for the same
+    # reason: sdc_track_index is a separate WOMD field, invisible to a hash of
+    # states/validity/types, and every collision check is anchored on it. Recorded
+    # unconditionally — sdc_index is already a required argument here, unlike types.
+    record['sdc_idx'] = int(sdc_index)
+
     return record
 
 
@@ -199,7 +205,19 @@ def _stress_one(states, validity, types, sdc_idx,
     from src.scoring.db import (
         OUTCOME_COLLISION_FOUND, OUTCOME_NO_CHALLENGER,
         OUTCOME_NO_COLLISION_FOUND, OUTCOME_REPLAY_INFEASIBLE,
+        compute_scene_fingerprint,
     )
+
+    # WHAT THIS ATTEMPT IS ACTUALLY SEARCHING AGAINST (fix F02), captured before
+    # anything else runs — same call Pass 1's _score_one makes, on the same
+    # arguments this function already receives. update_stress_results compares
+    # this against the row's CURRENT scene_fingerprint/sdc_idx before attaching
+    # this attempt's result: a Pass 1 re-run under a changed scene, racing ahead of
+    # this search's own persistence, must not have its old result silently
+    # relabelled onto the new scene. Captured once, at entry, so every return path
+    # below describes exactly what THIS call looked at — not recomputed later from
+    # state that could have been reassigned by then.
+    scene_fingerprint = compute_scene_fingerprint(states, validity, types)
 
     # How many challengers COULD have been searched, against how many were. Recorded
     # because the honest description of this pass is "one heuristically-chosen
@@ -352,6 +370,17 @@ def _stress_one(states, validity, types, sdc_idx,
         'heading_transition_width': (None if not space.heading_transition_width
                                      else float(space.heading_transition_width)),
     }
+
+    # THE IDENTITY THIS RESULT WAS SEARCHED AGAINST (fix F02) — not search
+    # provenance (how the search ran), but what it ran against, which is a
+    # narrower and more specific claim: update_stress_results needs exactly this
+    # pair to refuse attaching a stale search to a scene that has since changed.
+    # Only attached here, on the path that actually populates the result-group
+    # columns the guard protects — 'no_challenger' and 'replay_infeasible' above
+    # never reach these columns regardless, so they have nothing to guard.
+    result['scene_fingerprint'] = scene_fingerprint
+    result['sdc_idx'] = int(sdc_idx)
+
     return result
 
 
