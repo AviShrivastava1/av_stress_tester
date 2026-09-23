@@ -415,6 +415,17 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     describes exactly what the vacuous path DID, and is kept because the reason the
     signature survives at all is that ten callers depend on its defaults.
 
+    FIX F04: the run half of the vacuous path was still open. A12 closed "the caller
+    named no scene, the row has one" but left "the caller named a scene, but no run"
+    free to fall through to the exact same borrow the paragraph above describes —
+    read whatever run id is currently stored and stamp it back onto the geometry in
+    hand, so the WHERE clause compares that value against itself. Measured: persist
+    delta A, persist delta B against the same scene, export A's geometry with only
+    the correct `scene_fingerprint` and nothing else — it published, stamped with
+    B's run id. A call that names a scene but no run is now REFUSED with
+    StaleExportError under the same condition as the scene refusal (the row records a
+    scene_fingerprint); a row with none keeps exporting under the same carve-out.
+
     With `delta` and `method` supplied, the run id is DERIVED FROM THE CONTENT being
     exported — compute_stress_run_id(scenario_id, target_idx, delta, method), the
     same function and the same four inputs update_stress_results used to stamp the
@@ -446,7 +457,9 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
                           that records one. Nothing is written.
 
         StaleExportError: the run id this export carries is not the one currently
-                          stored for the scenario. Nothing is written.
+                          stored for the scenario, or the caller named a scene but no
+                          run for a row that records a scene_fingerprint (fix F04).
+                          Nothing is written.
 
                           Its `current_run_id` is READ AFTER the refusal, so it is
                           the current value at report time rather than a guaranteed
@@ -512,6 +525,31 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     if scene_fingerprint is None and stored_scene is not None:
         conn.rollback()
         raise SceneChangedError(scenario_id, stored_scene, None)
+
+    # ── THE RUN CHECK MIRRORS THE SCENE CHECK (fix F04) ─────────────────────────
+    #
+    # A caller that names no run and supplies no delta used to fall straight into
+    # `stress_run_id = stored_run_id` below — reading the row's own current run id
+    # and stamping it back onto whatever content was handed in. The INSERT's WHERE
+    # then compares that borrowed value against itself: always true. On a row that
+    # HAS a fingerprint this is the exact shape A12 already closed on the scene
+    # axis and left open here. Measured: persist delta [-1,0,0,0], persist delta
+    # [-2,0,0,0] against the same scene, export the first path with only its
+    # scene_fingerprint — it published, stamped with the second result's run id.
+    #
+    # GATED ON stored_scene, NOT stored_run_id, matching the scene check above and
+    # deliberately NOT the literal borrow. A row with no fingerprint is exempt from
+    # this whole contract already — both axes, the same carve-out — and that is
+    # what keeps test_A12_a_row_without_a_fingerprint_still_exports passing
+    # unmodified: it scores a row via upsert_scores with no scene_fingerprint, then
+    # stress-tests it (so stored_run_id IS set), then exports bare. Gating on
+    # stored_run_id instead would refuse that exact call and regress a contract the
+    # audit protects as unchanged. A row WITH a fingerprint is Pass-1-verified data;
+    # exporting geometry against it without saying which run that geometry came
+    # from is the bypass.
+    if stress_run_id is None and stored_scene is not None:
+        conn.rollback()
+        raise StaleExportError(scenario_id, None, stored_run_id)
 
     if stress_run_id is None:
         stress_run_id = stored_run_id

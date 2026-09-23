@@ -545,6 +545,133 @@ def test_an_explicit_run_id_does_not_vouch_for_the_scene(bconn):
                                  stress_run_id=run_id, scene_fingerprint=fp) is True
 
 
+# ── fix F04: the run half of A12's vacuous path was still open ──────────────────
+#
+# A12 closed "the caller named no scene, the row has one" with SceneChangedError. It
+# left "the caller named a scene, but no run" free to fall into
+# `stress_run_id = stored_run_id` — read the row's own current run id and stamp it
+# back onto whatever geometry was handed in, so the WHERE clause below compares that
+# value against itself. Same shape as A12, other axis.
+
+@requires_db
+def test_F04_a_scene_matched_export_with_no_run_named_is_refused_not_borrowed(bconn):
+    """
+    THE FINDING'S OWN REPRO.
+
+    Persist delta A, persist delta B against the SAME scene (so the scene half of the
+    check is satisfied by construction and cannot be what refuses this). Export A's
+    geometry with only the correct scene_fingerprint — no delta, no stress_run_id.
+    Pre-fix this silently borrowed B's run id and published; the geometry it stored
+    was A's, mislabelled as B's result.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import (
+        export_scenario_agents, export_perturbed_path, StaleExportError,
+    )
+
+    states, validity, types = _ped()
+    fp = compute_scene_fingerprint(states, validity, types)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp)])
+    export_scenario_agents(bconn, 's', states, validity, types, 0)
+
+    result_a = dict(_RESULT, delta=[-1.0, 0.0, 0.0, 0.0])
+    db.update_stress_results(bconn, {'s': result_a})
+    run_id_a = db.fetch_scenario(bconn, 's')['stress_run_id']
+
+    result_b = dict(_RESULT, delta=[-2.0, 0.0, 0.0, 0.0], min_perturbation=1.0)
+    db.update_stress_results(bconn, {'s': result_b})
+    run_id_b = db.fetch_scenario(bconn, 's')['stress_run_id']
+    assert run_id_b != run_id_a, 'fixture regressed: the two deltas must derive different run ids'
+
+    with pytest.raises(StaleExportError) as excinfo:
+        export_perturbed_path(bconn, 's', states, validity, 1, scene_fingerprint=fp)
+    assert excinfo.value.current_run_id == run_id_b, (
+        'the refusal must report what is actually stored, not what was borrowed'
+    )
+
+    with bconn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM perturbed_paths WHERE scenario_id = 's'")
+        assert cur.fetchone()[0] == 0, (
+            'a scene-matched export with no run named published geometry for A '
+            'silently labelled as B — the exact self-comparison A12 already closed '
+            'on the scene axis'
+        )
+
+
+@requires_db
+def test_F04_a_row_without_a_fingerprint_still_exports_bare(bconn):
+    """
+    THE CARVE-OUT, AND THE NEW CHECK IS WORTHLESS WITHOUT IT.
+
+    A row scored but never fingerprinted (upsert_scores with no scene_fingerprint)
+    is legacy/unverified on BOTH axes, the same carve-out B14 and A12 already apply
+    to stress_run_id and scene_fingerprint individually. A fix gated on
+    stored_run_id rather than stored_scene would refuse this exact call — this is
+    the discriminating case that settled which one to gate on.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _ped()
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    assert db.fetch_scenario(bconn, 's')['stress_run_id'] is not None, (
+        'fixture regressed: this row must carry a run id'
+    )
+    assert db.fetch_scenario(bconn, 's')['scene_fingerprint'] is None, (
+        'fixture regressed: this row must carry no fingerprint'
+    )
+    export_scenario_agents(bconn, 's', states, validity, types, 0)
+
+    assert export_perturbed_path(bconn, 's', states, validity, 1) is True, (
+        'a legacy row with no recorded fingerprint was refused on the run axis — '
+        'the carve-out closed'
+    )
+
+
+@requires_db
+def test_F04_delta_alone_still_derives_and_publishes(bconn):
+    """THE ORDINARY PATH MUST NOT BECOME A TAX. delta derives its own run id and
+    never reaches the borrow this fix closes."""
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _ped()
+    fp = compute_scene_fingerprint(states, validity, types)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    export_scenario_agents(bconn, 's', states, validity, types, 0)
+
+    assert export_perturbed_path(bconn, 's', states, validity, 1,
+                                 delta=_RESULT['delta'], method='de',
+                                 scene_fingerprint=fp) is True
+
+
+@requires_db
+def test_F04_an_explicit_matching_run_id_still_publishes(bconn):
+    """Supplying stress_run_id explicitly is deliberate use, not the silent borrow
+    this fix targets — it must keep working alongside a named scene."""
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _ped()
+    fp = compute_scene_fingerprint(states, validity, types)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    export_scenario_agents(bconn, 's', states, validity, types, 0)
+    run_id = db.fetch_scenario(bconn, 's')['stress_run_id']
+
+    assert export_perturbed_path(bconn, 's', states, validity, 1,
+                                 stress_run_id=run_id, scene_fingerprint=fp) is True
+
+
 # ── fix F03: get_perturbed's OWN version of the cross-function-window gap ───────
 #
 # test_a_stale_baseline_is_not_served_after_the_cross_function_window, above, closed
