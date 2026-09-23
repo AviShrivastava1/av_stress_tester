@@ -55,6 +55,16 @@ from src.physics.simulator import (
 # before this constant is defended as final.
 BASELINE_DRIFT_REFUSE_M = 0.5
 
+# Width (m/s) of the speed band, anchored at heading_speed_floor and extending
+# upward, over which a linear-model challenger's heading ramps smoothly from the
+# LOGGED value to the DERIVED one (independent review, 2026-09-18: the pre-fix
+# np.where(speed >= floor, derived, logged) was a hard step exactly at the floor,
+# so a delta of ~5e-7 weighted norm could flip a verified collision by crossing
+# it — measured in both directions, not assumed). Same status as V_HEADING_MIN
+# and BASELINE_DRIFT_REFUSE_M: an order-of-magnitude, defensible default (10% of
+# V_HEADING_MIN), not yet validated against a real shard.
+HEADING_TRANSITION_WIDTH = 0.05
+
 
 class ReplayFidelityError(ValueError):
     """
@@ -94,6 +104,18 @@ class ReplayFidelityError(ValueError):
         )
 
 
+def _smoothstep(x, edge0, edge1):
+    """
+    Cubic Hermite smoothstep: 0 at/below edge0, 1 at/above edge1, continuous (and
+    zero-slope at both ends, i.e. C1) in between. Standard formula, `t*t*(3-2t)`
+    with `t` clamped to [0, 1] first — used here only for `_linear_heading`'s
+    logged/derived blend, over the band [heading_speed_floor,
+    heading_speed_floor + heading_transition_width].
+    """
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 class PerturbationSpace:
     """
     Owns the perturbation parameterization for one (scenario, challenger) pair.
@@ -113,6 +135,7 @@ class PerturbationSpace:
         dt: float = 0.1,
         max_baseline_drift: float = BASELINE_DRIFT_REFUSE_M,
         heading_speed_floor: float = V_HEADING_MIN,
+        heading_transition_width: float = HEADING_TRANSITION_WIDTH,
     ):
         """
         Args:
@@ -139,6 +162,23 @@ class PerturbationSpace:
                         distribution can be measured, not so a refusal can be
                         silenced. The measurement is recorded either way; see
                         `frames_below_heading_floor` and `target_min_speed`.
+            heading_transition_width:
+                        width (m/s) of the band, ANCHORED AT heading_speed_floor and
+                        extending upward, over which heading ramps smoothly from
+                        logged to derived instead of switching at a single point
+                        (independent review, post-A01: the switch itself was a hard
+                        step, so a delta of order 1e-6 weighted norm could cross it
+                        for a free footprint rotation — a different defect from A01's
+                        singularity-at-rest, same family). Anchoring at the floor
+                        rather than centring on it means speed < heading_speed_floor
+                        keeps using logged EXACTLY, same as before this parameter
+                        existed — nothing below the floor derives, full stop; only
+                        the room needed to eliminate the step is added above it.
+                        Ignored when heading_speed_floor is None (no floor, no band).
+                        0 or None reproduces the pre-fix step exactly — the same
+                        escape hatch as heading_speed_floor, for measuring the real
+                        distribution before this width is defended as final. See
+                        `frames_in_heading_transition_band`.
 
         Raises:
             ValueError:            the challenger is never observed, or its recorded
@@ -201,6 +241,7 @@ class PerturbationSpace:
         # Measured against the LOGGED velocities, not a perturbed replay, so it
         # describes the scenario rather than one search's path through it.
         self.heading_speed_floor = heading_speed_floor
+        self.heading_transition_width = heading_transition_width
         _ts = valid_timesteps(self.validity, self.target_idx)
         if len(_ts):
             _logged_speed = np.hypot(
@@ -213,10 +254,23 @@ class PerturbationSpace:
             # does not also switch off the measurement.
             _floor = V_HEADING_MIN if heading_speed_floor is None else heading_speed_floor
             self.frames_below_heading_floor = int((_logged_speed < _floor).sum())
+            # Same idea, for the band the transition-width fix added (independent
+            # review, post-A01): a LOGGED frame that lands inside [floor, floor+width)
+            # no longer replays its exact logged heading under a zero-delta
+            # perturbation — a narrower version of the fidelity gap A01b closed at
+            # v=0. Recorded whether or not the width is currently zero, for the same
+            # reason frames_below_heading_floor is: this is what turns
+            # HEADING_TRANSITION_WIDTH from a proposal into a defended default.
+            _width = (HEADING_TRANSITION_WIDTH if not heading_transition_width
+                     else heading_transition_width)
+            self.frames_in_heading_transition_band = int(
+                ((_logged_speed >= _floor) & (_logged_speed < _floor + _width)).sum()
+            )
             self.frames_observed = int(len(_ts))
         else:
             self.target_min_speed = float('inf')
             self.frames_below_heading_floor = 0
+            self.frames_in_heading_transition_band = 0
             self.frames_observed = 0
 
         # per-dimension box bounds (used by DE and by gradient clamping)
@@ -464,13 +518,68 @@ class PerturbationSpace:
         what makes the zero-delta replay exact everywhere instead of merely at the
         start — an agent that was logged rotating in place keeps doing so.
 
+        THE BOUNDARY ITSELF WAS A THIRD DEFECT, found by independent review after
+        this fix shipped (2026-09-18), same family as the first two: a hard switch is
+        continuous everywhere except at the switch. `np.where(speed >= floor, derived,
+        logged)` is exactly `arctan2`'s old singularity relocated from v=0 to
+        v=heading_speed_floor rather than removed — and moving the floor cannot fix
+        this, because the argument does not depend on where the floor is set.
+        Measured, both directions, on a fixture where logged and derived genuinely
+        disagree (routine for a slow real agent, whose recorded heading and
+        velocity-implied direction need not agree): crossing UPWARD, dvy0=0.049999
+        left speed at 0.499999 with no collision; dvy0=0.05 put speed at exactly
+        0.5 and produced a VERIFIED COLLISION, for a weighted-norm difference of
+        ~5e-7. Crossing DOWNWARD reproduced the same cliff in the other direction at
+        the same magnitude. Neither the frame-0-from-rest guarantee two paragraphs
+        up nor A01's own tests caught this, because both are scoped to v=0 — this
+        defect lives entirely at v=heading_speed_floor, a different point.
+
+        THE FIX: heading ramps smoothly across [heading_speed_floor,
+        heading_speed_floor + heading_transition_width] instead of switching at one
+        point — see _smoothstep. ANCHORED at the floor rather than centred on it,
+        deliberately: centring would let speeds BELOW heading_speed_floor blend in a
+        derived component, relaxing "nothing below the floor ever derives" — a real
+        guarantee the pre-fix code already had (by construction, `speed >= floor` is
+        the only branch that reaches `derived`) and which A01's rest-fixture tests
+        depend on. Anchoring instead makes that guarantee STRICTLY STRONGER: with
+        w = smoothstep(speed, floor, floor + width), w is exactly 0 for every
+        speed < floor as before, AND now also exactly 0 AT speed == floor (where the
+        old code jumped to derived) — so the two sides of the old cliff now agree,
+        and full derivation is deferred until floor + width, not floor.
+
+        Blended as UNIT VECTORS, not raw angles: averaging angles directly breaks at
+        the +-pi wraparound (-179 deg and +179 deg would average to ~0, not +-180).
+        Working in the plane the angle lives on sidesteps this entirely and is exact.
+
+        THE DEGENERATE CASE, HANDLED DELIBERATELY: when logged and derived are
+        exactly pi apart, the blended vector can land at (0, 0) — at whatever weight
+        makes (1-w)*u + w*(-u) = 0, generically the band's midpoint. arctan2(0, 0)
+        returns 0.0 by silent convention, an angle unrelated to either input — which
+        is exactly the kind of unexamined default that made the ORIGINAL defect this
+        function fixes (arctan2(0,0)=0 silently overwriting a parked car's logged
+        0.7 rad, see above) rather than a new one. Falls back to `logged` explicitly:
+        the conservative choice, since it is the value already in effect before any
+        derivation began and hands an optimiser nothing extra at the degenerate
+        point, unlike `derived` (a third free-rotation case) or an unexamined
+        arctan2(0,0) (unpredictable).
+
         WHAT THIS FIXES AND WHAT IT DOES NOT, stated rather than implied:
 
-          * fixed — orientation is preserved exactly under the identity perturbation;
-          * fixed — rotation is no longer free. Rotating a resting linear agent now
-            requires first pushing its speed to the floor, which costs at least
-            heading_speed_floor * weight_vy = 0.5 * 0.5 = 0.25 of weighted norm,
-            against 0.0 before, and buys a physically real change of motion;
+          * fixed — orientation is preserved exactly under the identity perturbation,
+            for any frame whose LOGGED speed is < heading_speed_floor (the vast
+            majority — a frame whose logged speed itself lands inside the transition
+            band no longer replays byte-exact under delta=0; see
+            `frames_in_heading_transition_band`, measured whether or not this
+            matters, same reason `frames_below_heading_floor` is);
+          * fixed — rotation is no longer free, AND the old single-point cliff at
+            v=heading_speed_floor is gone: heading is now continuous in speed (hence
+            in delta) everywhere. Rotating a resting linear agent from TRUE rest
+            still requires reaching floor + heading_transition_width, which costs
+            slightly MORE than the pre-fix bound, not less. A challenger whose
+            LOGGED speed already sits near the floor pays less — as little as
+            heading_transition_width * weight_vy to swing fully across the band —
+            which is smaller than the rest-to-floor cost but, unlike before, never
+            zero and never a discontinuous jump;
           * NOT fixed — above the floor the 1/|v| sensitivity remains. At v = 0.5 a
             unit of weighted norm still buys about 2 rad, where a vehicle's dtheta0
             buys 0.2, so a linear agent's orientation stays roughly ten times cheaper
@@ -480,7 +589,29 @@ class PerturbationSpace:
             directly means a fifth perturbation dimension, which is rejected on arity
             (four separate assertions plus the delta column) rather than on merit;
           * NOT addressed — whether a cyclist can physically rotate in place at all
-            is a modelling question this does not open.
+            is a modelling question this does not open;
+          * NOT fixed, AND STRUCTURAL RATHER THAN AN OVERSIGHT — the antipodal
+            fallback above has its own residual cliff, measured rather than assumed
+            away. Straight-line vector averaging between two EXACTLY opposite unit
+            vectors is not just numerically delicate but topologically undefined —
+            there is no continuous way to pick which side a 180-degree tie resolves
+            to, so any tie-break rule has a jump SOMEWHERE. This design confines it:
+            verified numerically, |blend| only drops below the 1e-5 fallback
+            threshold when logged and derived disagree by more than
+            179.998854 degrees (within ~0.001146 deg of exactly antipodal) AND
+            speed sits in the resulting sub-1e-5-wide window near the band's
+            midpoint — both simultaneously, not either alone. (An earlier version
+            of this threshold, 1e-3, was 100x too generous — it was sized against
+            the float32-precision bug fixed above rather than re-measured
+            afterward, and independent review found it forcing `logged` on pairs
+            merely 0.057 deg off exact antipodal, recreating a smaller version of
+            the very cliff this function exists to remove; see the threshold's own
+            comment below for the corrected, measured derivation.) Finding this
+            narrower window requires an adversarial search to hit two
+            independently narrow targets at once, unlike the single-dimension,
+            one-sided cliff this function was written to remove. Not eliminated
+            because it cannot be, short of abandoning vector-blend interpolation
+            entirely; bounded and quantified instead.
 
         Vehicles never reach this function: the bicycle model carries theta as real
         state, so its heading is written from the rollout and was never derived.
@@ -505,9 +636,73 @@ class PerturbationSpace:
         #
         # Kept because it costs nothing and the float64 form is the one whose
         # correctness does not depend on where the floor happens to be set.
-        speed = np.hypot(vx.astype(np.float64), vy.astype(np.float64))
-        logged = self.states0[self.target_idx, t0:end, 4]
-        return np.where(speed >= self.heading_speed_floor, derived, logged)
+        vx64 = vx.astype(np.float64)
+        vy64 = vy.astype(np.float64)
+        speed = np.hypot(vx64, vy64)
+        logged = self.states0[self.target_idx, t0:end, 4].astype(np.float64)
+
+        if not self.heading_transition_width:
+            # width == 0 (or explicitly None) reproduces the pre-fix step exactly —
+            # the same measurement escape hatch heading_speed_floor itself has, for
+            # an A/B comparison against real data before HEADING_TRANSITION_WIDTH is
+            # defended as final.
+            return np.where(speed >= self.heading_speed_floor, derived, logged)
+
+        # RECOMPUTED IN FLOAT64, NOT THE `derived` ABOVE. Measured, not assumed: the
+        # float32 arctan2 carries ~2.4e-7 rad of error near pi, which is small on
+        # its own but is exactly the kind of error the blend below is sensitive to
+        # near an antipodal pair (see the degenerate-case note). Confirmed by
+        # running this fixture with the float32 `derived`: a logged/derived pair
+        # exactly pi apart, at the band midpoint where blend cancellation should be
+        # near-exact, came back 0.0527 rad off instead of falling to the degenerate
+        # branch below — the float32 precision loss alone was enough to walk the
+        # blend vector's magnitude from ~1e-16 out to ~1.4e-6, comfortably past a
+        # naively-small epsilon. Recomputing here removes that specific source;
+        # `w` still will not land on EXACTLY the analytic midpoint for a real
+        # speed, which is why the epsilon below is sized in real margin, not at
+        # machine precision.
+        derived64 = np.arctan2(vy64, vx64)
+        w = _smoothstep(speed, self.heading_speed_floor,
+                        self.heading_speed_floor + self.heading_transition_width)
+        bx = (1.0 - w) * np.cos(logged) + w * np.cos(derived64)
+        by = (1.0 - w) * np.sin(logged) + w * np.sin(derived64)
+        magnitude = np.hypot(bx, by)
+        # THE DEGENERATE-CASE THRESHOLD — CORRECTED A SECOND TIME, BY INDEPENDENT
+        # REVIEW, AFTER THE FIRST FIX SHIPPED WITHOUT RE-MEASURING IT.
+        #
+        # 1e-3 was the first number tried, and it was wrong in the SAME family of
+        # mistake this whole function exists to fix: a threshold sized for the
+        # threat that had just been found (float32 `derived` precision) rather than
+        # re-measured after that threat was removed. It was never checked against a
+        # NEAR-but-not-exactly-antipodal pair — one delta_angle, of a fixture 0.057
+        # deg off exact antipodal, reaches |blend| as low as 5.08e-4 at some point
+        # during an ordinary speed sweep across the band. 1e-3 is BIGGER than that,
+        # so it wrongly forced `logged` at that point too — recreating the original
+        # discontinuity, smaller and relocated rather than removed: measured, a
+        # weighted-norm-equivalent change of 2.6e-7 m/s produced a 2.625 rad jump.
+        #
+        # The number that actually matters is the REAL noise floor at TRUE exact
+        # antipodal, measured through the real rollout (not the idealized w=0.5,
+        # derived=pi-exactly hand calculation, which understates it): |blend| came
+        # out to 5.9e-7 to 1.4e-6 across four different antipodal directions,
+        # dominated not by arctan2's own precision (fixed above) but by `speed`
+        # itself never landing on the smoothstep's exact analytic midpoint — a
+        # float32-scale error in `speed` (~2.4e-8) gets amplified by the
+        # smoothstep's own slope there, 6 / heading_transition_width (currently
+        # 6/0.05=120, i.e. dw/dspeed=30 at t=0.5, and |blend|~=2*dw), to ~1.4e-6.
+        # THIS THRESHOLD SCALES WITH heading_transition_width — a materially
+        # smaller width would raise this noise floor proportionally and this
+        # number would need re-deriving, not reused.
+        #
+        # 1e-5 sits about 7x above that measured noise floor and about 50x below
+        # the smallest near-antipodal danger-zone minimum measured above — margin
+        # verified on both sides, not assumed. In degrees, this confines the
+        # forced-logged zone to within ~0.001146 deg of exact antipodal (was
+        # ~0.1146 deg at 1e-3 — about 100x narrower), which
+        # test_heading_is_continuous_near_but_not_at_the_antipodal_point in
+        # tests/test_batch9_contract.py checks directly, inside what used to be the
+        # 1e-3 danger zone and is well clear of the new one.
+        return np.where(magnitude < 1e-5, logged, np.arctan2(by, bx))
 
 
 def pick_nearest_challenger(states, validity, sdc_idx) -> int:

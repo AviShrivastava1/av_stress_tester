@@ -339,9 +339,18 @@ def _stress_one(states, validity, types, sdc_idx,
         'target_min_speed': (float(space.target_min_speed)
                              if np.isfinite(space.target_min_speed) else None),
         'frames_below_heading_floor': int(space.frames_below_heading_floor),
+        # A LOGGED frame inside [floor, floor+width) no longer replays byte-exact
+        # under delta=0 (independent review, post-A01: the fix for the boundary
+        # cliff at v=heading_speed_floor trades a bounded, measured amount of this
+        # for removing a discontinuity an optimiser could cross for free). Recorded
+        # for the same reason frames_below_heading_floor is: HEADING_TRANSITION_WIDTH
+        # is a proposal until a real shard says how often this actually matters.
+        'frames_in_heading_transition_band': int(space.frames_in_heading_transition_band),
         'frames_observed': int(space.frames_observed),
         'heading_speed_floor': (None if space.heading_speed_floor is None
                                 else float(space.heading_speed_floor)),
+        'heading_transition_width': (None if not space.heading_transition_width
+                                     else float(space.heading_transition_width)),
     }
     return result
 
