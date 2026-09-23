@@ -661,10 +661,26 @@ def _write_shard(path, payloads):
     return str(path)
 
 
-def _install_parser(scenes):
-    """Substitute src.data.parser, the technique Batch 2's B05 substitutes established."""
+def _install_parser(scenes, monkeypatch):
+    """
+    Substitute src.data.parser, the technique Batch 2's B05 substitutes established.
+
+    monkeypatch.setitem, NOT A BARE ASSIGNMENT (fix F06). The two callers below used
+    to do `sys.modules['src.data.parser'] = module` directly and never undo it —
+    Python caches modules by name, so the substitution outlived both tests for the
+    rest of the process. Any later test in the same invocation that imports
+    src.data.parser, directly or through batch_scorer's own lazy import, got this
+    stub back instead of the real module. monkeypatch is a required parameter, not
+    optional, so a future third caller cannot reintroduce the leak by forgetting to
+    pass one — omitting it is a TypeError at the call site, not a silent leak.
+    """
     import types as _types
     module = _types.ModuleType('src.data.parser')
+    # Marker for test_F06_the_parser_stub_does_not_leak_past_the_A06_tests_above,
+    # which needs to recognize ONE OF THIS FUNCTION'S OWN STUBS specifically —
+    # importing the real src.data.parser to compare against is not an option here,
+    # since it raises ModuleNotFoundError without the waymo package installed.
+    module._is_test_audit3_parser_stub = True
 
     class ScenarioParser:
         def __init__(self, raw):
@@ -686,7 +702,7 @@ def _install_parser(scenes):
             return 0
 
     module.ScenarioParser = ScenarioParser
-    sys.modules['src.data.parser'] = module
+    monkeypatch.setitem(sys.modules, 'src.data.parser', module)
     return module
 
 
@@ -794,7 +810,7 @@ def test_A03_a_non_finite_value_is_recorded_as_such_not_dropped(pconn):
 
 
 @requires_db
-def test_A06_a_generic_exception_keeps_its_type_and_message(pconn, tmp_path):
+def test_A06_a_generic_exception_keeps_its_type_and_message(pconn, tmp_path, monkeypatch):
     """
     _ATTEMPT_DIAGNOSTIC_FIELDS was built around what ReplayFidelityError carries, so
     the 'error' outcome — the catch-all for everything unexpected — had nothing in the
@@ -808,7 +824,7 @@ def test_A06_a_generic_exception_keeps_its_type_and_message(pconn, tmp_path):
     from src.scoring import db
     from src.scoring.batch_scorer import stress_test_scenarios
 
-    _install_parser({'errscene': _ped_error_scene()})
+    _install_parser({'errscene': _ped_error_scene()}, monkeypatch)
     shard = _write_shard(tmp_path / 'err.tfrecord', [b'errscene'])
     results = stress_test_scenarios(shard, ['errscene'], verbose=False)
     assert results['errscene']['status'] == 'error', 'fixture regressed'
@@ -832,7 +848,7 @@ def test_A06_a_generic_exception_keeps_its_type_and_message(pconn, tmp_path):
 
 
 @requires_db
-def test_A06_a_blown_up_rollout_is_diagnosable(pconn, tmp_path):
+def test_A06_a_blown_up_rollout_is_diagnosable(pconn, tmp_path, monkeypatch):
     """
     THE TRIGGER FOUND WHILE DISPROVING A03'S, AND IT BELONGS HERE.
 
@@ -852,7 +868,8 @@ def test_A06_a_blown_up_rollout_is_diagnosable(pconn, tmp_path):
     fine[:, :, 5:7] = [4.5, 2.0]
     fine[1, :, 0] = 8.0
     _install_parser({'blown': _blown_rollout_scene(),
-                     'fine': (fine, np.ones((2, 10), dtype=bool), np.array([1, 1]))})
+                     'fine': (fine, np.ones((2, 10), dtype=bool), np.array([1, 1]))},
+                    monkeypatch)
     shard = _write_shard(tmp_path / 'blown.tfrecord', [b'blown', b'fine'])
 
     results = stress_test_scenarios(shard, ['blown', 'fine'], verbose=False,
@@ -870,6 +887,172 @@ def test_A06_a_blown_up_rollout_is_diagnosable(pconn, tmp_path):
     diagnostics = db.fetch_scenario(pconn, 'blown')['last_attempt_diagnostics']
     assert diagnostics is not None, 'a blown-up rollout persisted no reason'
     assert diagnostics['error_type'] == 'GEOSException', diagnostics
+
+
+# ── fix F06: _install_parser's sys.modules substitution used to outlive its test ──
+#
+# sys.modules['src.data.parser'] = module, with no teardown, called directly from
+# the two test_A06_* tests above. Python caches modules by name, so the stub sat in
+# sys.modules for the rest of the process — any LATER test in the same invocation
+# that imported src.data.parser, directly or through batch_scorer's own lazy
+# import, got the stub back instead of the real module.
+#
+# Two checks, neither alone sufficient. (1) is fast and needs no waymo package:
+# it confirms the teardown mechanism itself fires, self-contained AND (matching how
+# the leak itself was originally found) relying on the two real tests above having
+# already run in file order. (2) is the actual real-world claim — the two tests the
+# leak was shown to break live in a DIFFERENT file (test_audit_core.py) and need the
+# real waymo_open_dataset package, which is not installed in this dev environment
+# (the same gap visible in every full-suite run of this project). See that test's
+# own docstring for exactly what it can and cannot show here.
+
+# Set in the CHILD's environment by test_F06_the_two_named_victims_...'s own
+# subprocess call, below, so that test can recognize "I am the subprocess I myself
+# spawned" and refuse to spawn a further one — the guard that survives even if that
+# test's --deselect flag is ever edited out. See its docstring for why this exists.
+_F06_SUBPROCESS_GUARD_ENV = 'AV_F06_SUBPROCESS_ALREADY_RUNNING'
+
+
+def test_F06_install_parser_reverts_when_its_monkeypatch_context_exits():
+    """
+    SELF-CONTAINED, ORDER-INDEPENDENT. pytest.MonkeyPatch is the same class the
+    `monkeypatch` fixture wraps, used here directly as a context manager so the
+    revert is observed within one test body rather than inferred from what some
+    other test leaves behind.
+    """
+    before = sys.modules.get('src.data.parser')
+    with pytest.MonkeyPatch.context() as mp:
+        stub = _install_parser({'x': _ped_error_scene()}, mp)
+        assert sys.modules['src.data.parser'] is stub, 'fixture regressed: not installed'
+    assert sys.modules.get('src.data.parser') is before, (
+        'the substitution outlived the monkeypatch context that installed it — '
+        f'sys.modules["src.data.parser"] is still {sys.modules.get("src.data.parser")!r}'
+    )
+
+
+def test_F06_the_parser_stub_does_not_leak_past_the_A06_tests_above():
+    """
+    ORDER-DEPENDENT, DELIBERATELY — matching how the leak itself was found. Relies
+    on default pytest execution order: test_A06_a_generic_exception_keeps_its_type_
+    and_message and test_A06_a_blown_up_rollout_is_diagnosable, both above, have
+    already run by the time this test does, each installing its own stub via
+    _install_parser(..., monkeypatch). If either failed to revert, sys.modules would
+    still hold one of THOSE specific stubs.
+
+    Compared against a marker attribute, not against "the real module" — importing
+    the real src.data.parser here to compare identity against would itself raise
+    ModuleNotFoundError without the waymo package, which would make this test fail
+    for an unrelated reason on every machine in this project's Colab/local split.
+    """
+    current = sys.modules.get('src.data.parser')
+    assert not getattr(current, '_is_test_audit3_parser_stub', False), (
+        f'a parser stub installed by an earlier test_A06_* test leaked past its own '
+        f'test: sys.modules["src.data.parser"] is still {current!r}'
+    )
+
+
+@requires_db
+def test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak(tmp_path):
+    """
+    THE REAL-WORLD CLAIM, subprocess-based — the same technique
+    test_audit2_regressions.py's _pytest_run helper uses for the identical shape of
+    problem ("the defect is at MODULE IMPORT... os.environ cannot be un-read"; here
+    it is sys.modules that cannot be un-imported). @requires_db because the two
+    test_A06_* tests below are themselves @requires_db and would simply skip without
+    a reachable disposable database in the subprocess's environment — proving
+    nothing about the leak either way.
+
+    File order on the command line puts test_audit3_regressions.py (and both
+    A06 tests) first, then the two named victims in test_audit_core.py.
+
+    WHAT THIS TEST CAN AND CANNOT SHOW ON THIS MACHINE, STATED PLAINLY RATHER THAN
+    ASSUMED. Both target tests import waymo_open_dataset.protos.scenario_pb2
+    directly and unconditionally, on the line immediately after touching
+    src.data.parser. This was verified by running this exact subprocess invocation
+    twice, once against the fixed _install_parser and once against the pre-fix bare
+    `sys.modules[...] = module`. The two assertions below — exception TYPE and
+    MESSAGE identical, no UnicodeDecodeError or KeyError anywhere — held in both
+    runs. The raw traceback SHAPE was not identical, and that is worth recording
+    rather than glossing over: pre-fix (leak present), `import src.data.parser`
+    retrieves the cached stub silently and the failure surfaces one line later, on
+    the SEPARATE, unconditional `from waymo_open_dataset...` import — a single-frame
+    traceback. Post-fix, `import src.data.parser` has nothing cached and genuinely
+    attempts the real module, which fails one frame deeper, inside
+    src/data/parser.py's own top-level import — an extra frame, at a different line
+    number. Both collapse to the same exception type and message either way, which
+    is exactly what the two assertions below check — not a full-output comparison,
+    deliberately, since a full-output comparison would be fragile against exactly
+    this harmless frame-depth difference. So this test does NOT currently
+    discriminate the fix from its absence on the ultimate pass/fail outcome — it is
+    not a no-op, it guards against a DIFFERENT regression (something else making
+    these two tests fail some other way, or the leak actually reaching the stub),
+    and it is the closest thing to the real claim that is checkable without the
+    waymo package.
+
+    A GUARD AGAINST THIS TEST RECURSING INTO ITSELF, AND IT IS NOT DECORATIVE. This
+    test lives inside test_audit3_regressions.py, and the subprocess command below
+    names that whole file — which, without the `--deselect` below, would re-collect
+    and re-run THIS VERY TEST, spawning another subprocess that does the same thing
+    again, unbounded. Hit for real during development: leaving this unguarded
+    produced roughly 150 stray pytest processes in under two minutes before being
+    killed by hand. `--deselect` is the primary defence; the environment-variable
+    check right below is the one that survives if that flag is ever edited out, and
+    it propagates to any depth because it is set in the CHILD's environment too.
+
+    What a run WITH waymo-open-dataset installed would show instead:
+      pre-fix  (leak present): test_control_parser_preserves_valid_states_and_flags
+               would get the LEAKED STUB's ScenarioParser back from
+               `from src.data.parser import ScenarioParser`, whose __init__ does
+               `self.sid = raw.decode()` on arbitrary serialized-protobuf bytes —
+               very likely UnicodeDecodeError, or (if those particular bytes happen
+               to decode) KeyError inside get_agent_states(), since
+               'parser_control' was never registered with any _install_parser call.
+               test_B05_corrupt_next_record_does_not_overwrite_previous_success
+               would hit the same failure inside stress_test_scenarios's own lazy
+               `from src.data.parser import ScenarioParser`; its per-record
+               `except Exception` (R02's isolation) would catch it and never
+               populate results['A'], so the test's own
+               `assert result['A']['status'] == 'ok'` would fail with
+               KeyError: 'A' — not the fixture-regression message it is meant to
+               report.
+      post-fix (leak closed): both tests exercise the REAL ScenarioParser and
+               either pass on their own merits or fail on whatever they were
+               actually written to catch — not an artifact of an earlier, unrelated
+               test.
+    """
+    import subprocess
+
+    if os.environ.get(_F06_SUBPROCESS_GUARD_ENV) == '1':
+        pytest.skip('running inside the subprocess this test itself spawned')
+
+    project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = os.environ.copy()
+    env[_F06_SUBPROCESS_GUARD_ENV] = '1'
+    this_test_id = (
+        'tests/test_audit3_regressions.py::'
+        'test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak'
+    )
+    proc = subprocess.run(
+        [sys.executable, '-m', 'pytest',
+         'tests/test_audit3_regressions.py',
+         '--deselect', this_test_id,
+         'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
+         'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
+         '-q', '-p', 'no:cacheprovider'],
+        cwd=project, env=env, capture_output=True, text=True, timeout=300,
+    )
+    output = proc.stdout + proc.stderr
+
+    assert output.count("ModuleNotFoundError: No module named 'waymo_open_dataset'") == 2, (
+        f'expected exactly the standard missing-waymo failure for both named tests:\n'
+        f'{output[-3000:]}'
+    )
+    assert 'UnicodeDecodeError' not in output, (
+        f'the leak reached a test in another file:\n{output[-3000:]}'
+    )
+    assert 'KeyError' not in output, (
+        f'the leak reached a test in another file:\n{output[-3000:]}'
+    )
 
 
 def test_A07_de_provenance_survives_an_accepted_refinement():
