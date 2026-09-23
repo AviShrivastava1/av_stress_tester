@@ -543,3 +543,236 @@ def test_an_explicit_run_id_does_not_vouch_for_the_scene(bconn):
     # provenance rather than a ban on the parameter.
     assert export_perturbed_path(bconn, 's', states, validity, 1,
                                  stress_run_id=run_id, scene_fingerprint=fp) is True
+
+
+# ── fix F03: get_perturbed's OWN version of the cross-function-window gap ───────
+#
+# test_a_stale_baseline_is_not_served_after_the_cross_function_window, above, closed
+# this for get_trajectories. get_perturbed had the identical gap in two places — its
+# own baseline read of scenario_agents, and the LABEL RESOLUTION fallback's separate
+# read of the same table — neither guarded by scene_fingerprint, even though the
+# column and the pattern already existed one function away. A run-id-matched
+# perturbed_paths row (get_perturbed's OWN pre-existing guard) proves nothing about
+# scenario_agents's own fingerprint: export_scenario_agents and export_perturbed_path
+# are independent calls, each checked against scenario_scores at its OWN export time,
+# so the two tables can legitimately disagree about which scene they last verified
+# against — exactly the race the test above measures for get_trajectories.
+
+def _veh_challenger(shift=0.0):
+    """
+    Same shape as _ped(), but agent_idx 1 (the challenger _RESULT's target_idx names)
+    is typed as a VEHICLE rather than a pedestrian. Used only to make a stale-label
+    test decisive rather than coincidentally correct: _ped(shift=...) alone changes
+    position but not agent type, so a test built on it could pass even unguarded, the
+    same "fully-valid data hides a real gap" trap B13's own docstring warns about.
+    """
+    states, validity, _ = _ped(shift=shift)
+    return states, validity, np.array([1, 1])
+
+
+@requires_db
+def test_F03_a_stale_baseline_and_perturbed_dimensions_are_not_served_after_the_cross_function_window(bconn):
+    """
+    THE FINDING'S OWN REPRODUCTION, get_perturbed's side. Both scenario_agents reads
+    (the baseline, and the perturbed track's dimensions, which are read off the SAME
+    base_row — see the comment at routes.py's `is_sdc=False` perturbed-track
+    construction) must stop being served once the scene has moved on, while the
+    perturbed track's PATH — sourced from perturbed_paths, independently re-exported
+    against the current scene below — keeps rendering. That split (path present,
+    dimensions absent) is the same degraded shape
+    test_only_one_geometry_table_present_still_degrades already established as
+    correct for a missing scenario_agents table; a stale one must degrade the same
+    way, not serve wrong numbers silently.
+
+    THE RACE MUST LEAVE perturbed_paths CURRENT, DELIBERATELY, or this test would not
+    isolate anything: if perturbed_paths were ALSO left stale, its own pre-existing
+    guard would already return pert_row=None, and execution would never reach the
+    scenario_agents queries this fix touches at all.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states_a, va, ta = _ped()
+    fp_a = compute_scene_fingerprint(states_a, va, ta)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp_a)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    export_scenario_agents(bconn, 's', states_a, va, ta, 0)
+    export_perturbed_path(bconn, 's', states_a, va, 1, delta=_RESULT['delta'],
+                          method=_RESULT['method'], scene_fingerprint=fp_a)
+
+    with TestClient(app) as client:
+        before = client.get('/scenarios/s/perturbed').json()
+    assert before['baseline'] is not None, 'fixture regressed: baseline must serve pre-race'
+    assert before['baseline']['length_m'] is not None
+    assert before['perturbed']['length_m'] is not None, (
+        'fixture regressed: perturbed dimensions must serve pre-race'
+    )
+
+    # The window: a concurrent Pass 1 lands between the two exports, same shape as
+    # the get_trajectories test above.
+    states_b, vb, tb = _ped(shift=10.0)
+    fp_b = compute_scene_fingerprint(states_b, vb, tb)
+    assert fp_b != fp_a, 'fixture regressed'
+    other = db.get_connection()
+    db.upsert_scores(other, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp_b)])
+    other.close()
+
+    # perturbed_paths re-exported AGAINST THE NEW SCENE, so its own guard still
+    # passes and pert_row stays alive — the baseline read is what this test is about.
+    export_perturbed_path(bconn, 's', states_b, vb, 1, delta=_RESULT['delta'],
+                          method=_RESULT['method'], scene_fingerprint=fp_b)
+
+    with TestClient(app) as client:
+        after = client.get('/scenarios/s/perturbed').json()
+
+    assert after['perturbed'] is not None and after['perturbed']['path'], (
+        'fixture regressed: the re-exported perturbed path must still serve'
+    )
+    assert after['baseline'] is None, (
+        'a baseline built from a scene that no longer matches the stored row was '
+        'served as current — the scenario_agents read has no identity check'
+    )
+    # THE SECOND-ORDER CONSEQUENCE (what the finding asked to check specifically):
+    # base_row feeds the PERTURBED track's dimensions too, not only the baseline's.
+    assert after['perturbed']['agent_type'] is None, (
+        'the perturbed track kept a stale agent_type from the old scene'
+    )
+    assert after['perturbed']['length_m'] is None, (
+        'the perturbed track kept a stale length_m from the old scene'
+    )
+    assert after['perturbed']['width_m'] is None, (
+        'the perturbed track kept a stale width_m from the old scene'
+    )
+
+
+@requires_db
+def test_F03_the_label_resolution_fallback_does_not_use_a_stale_agent_type(bconn):
+    """
+    THE SECOND, INDEPENDENT INSTANCE, isolated from the baseline query above: no
+    perturbed_paths row is ever exported, so pert_row is None throughout and the
+    baseline query never runs at all — the ONLY route into scenario_agents here is
+    the LABEL RESOLUTION fallback (audit B13), which _resolve_delta_labels reads
+    agent_type from when search_provenance carries no parameterization, exactly
+    _RESULT's own shape.
+
+    _veh_challenger, not _ped shifted, so a stale read would be DEMONSTRABLY wrong
+    (vehicle labels for a delta the current scene's own agent type says is a
+    pedestrian's) rather than coincidentally right — B13's own docstring warns
+    against a test that cannot tell the difference.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+    from src.scoring import db
+    from src.api.models import LINEAR_DELTA_LABELS
+    from src.scoring.export_geometry import export_scenario_agents
+
+    states_a, va, ta = _ped()   # agent_idx 1 is a pedestrian (type 2)
+    fp_a = compute_scene_fingerprint(states_a, va, ta)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp_a)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})   # no search_provenance
+    export_scenario_agents(bconn, 's', states_a, va, ta, 0)
+
+    with TestClient(app) as client:
+        before = client.get('/scenarios/s/perturbed').json()
+    assert before['delta_labels'] == LINEAR_DELTA_LABELS, (
+        f'fixture regressed: pre-race labels must infer linear from the pedestrian '
+        f'type: {before["delta_labels"]}'
+    )
+
+    # The race: Pass 1 moves to a scene whose agent_idx 1 is a VEHICLE instead.
+    states_b, vb, tb = _veh_challenger(shift=10.0)
+    fp_b = compute_scene_fingerprint(states_b, vb, tb)
+    assert fp_b != fp_a, 'fixture regressed'
+    other = db.get_connection()
+    db.upsert_scores(other, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp_b)])
+    other.close()
+
+    with TestClient(app) as client:
+        after = client.get('/scenarios/s/perturbed').json()
+    assert after['delta_labels'] is None, (
+        f"the fallback inferred labels from scenario_agents's stale, pre-race agent "
+        f"type instead of refusing to guess: {after['delta_labels']}"
+    )
+
+
+@requires_db
+def test_F03_a_genuinely_matching_scene_still_serves_baseline_and_labels(bconn):
+    """
+    THE HOLE THIS FIX MUST NOT OPEN, both instances at once: the ordinary case —
+    scenario_agents genuinely describes the scene scenario_scores currently records
+    — is what the rest of this project's test suite exercises constantly, and it
+    must keep working exactly as before.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+    from src.scoring import db
+    from src.api.models import LINEAR_DELTA_LABELS
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _ped()
+    fp = compute_scene_fingerprint(states, validity, types)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    export_scenario_agents(bconn, 's', states, validity, types, 0)
+    export_perturbed_path(bconn, 's', states, validity, 1, delta=_RESULT['delta'],
+                          method=_RESULT['method'], scene_fingerprint=fp)
+
+    with TestClient(app) as client:
+        data = client.get('/scenarios/s/perturbed').json()
+
+    assert data['baseline'] is not None
+    assert data['baseline']['length_m'] == pytest.approx(0.6)
+    assert data['perturbed'] is not None
+    assert data['perturbed']['length_m'] == pytest.approx(0.6)
+    assert data['perturbed']['agent_type'] == 2
+    assert data['delta_labels'] == LINEAR_DELTA_LABELS
+
+
+@requires_db
+def test_F03_a_legacy_row_with_no_recorded_fingerprint_still_serves(bconn):
+    """
+    THE MIRROR: a scenario Pass 1 never fingerprinted (or exported before Batch 11's
+    columns existed) must not become permanently unable to serve a baseline. Same
+    NULL-means-not-recorded carve-out A12 established for the export path and F02
+    extended to update_stress_results; this is the read-side third instance.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+    from src.scoring import db
+    from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
+
+    states, validity, types = _ped()
+    # No scene_fingerprint= at all — the pre-Batch-11 shape.
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0)])
+    before = db.fetch_scenario(bconn, 's')
+    assert before['scene_fingerprint'] is None, 'fixture regressed'
+
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    export_scenario_agents(bconn, 's', states, validity, types, 0)
+    with bconn.cursor() as cur:
+        cur.execute("SELECT scene_fingerprint FROM scenario_agents "
+                    "WHERE scenario_id = 's' AND agent_idx = 1")
+        assert cur.fetchone()[0] is None, 'fixture regressed: must stamp NULL too'
+    export_perturbed_path(bconn, 's', states, validity, 1, delta=_RESULT['delta'],
+                          method=_RESULT['method'])
+
+    with TestClient(app) as client:
+        data = client.get('/scenarios/s/perturbed').json()
+    assert data['baseline'] is not None, (
+        'a legacy row with no recorded scene identity was refused a baseline — the '
+        'carve-out closed'
+    )
+    assert data['baseline']['length_m'] == pytest.approx(0.6)

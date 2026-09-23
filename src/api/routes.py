@@ -645,11 +645,15 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
         if not _table_exists(cur, 'scenario_agents'):
             return TrajectoryResponse(scenario_id=scenario_id, agents=[])
 
-        # THE SCENE MUST MATCH (audit A02), and this route is where it matters most,
-        # because it has no other identity check of any kind. get_perturbed at least
-        # gates its baseline read behind a run-id-matched perturbed row; this one reads
-        # scenario_agents directly, so before this predicate a scene re-parsed under a
-        # stable scenario_id was SERVED here as current geometry.
+        # THE SCENE MUST MATCH (audit A02). get_perturbed's own baseline and
+        # label-resolution reads of scenario_agents had this identical gap until fix
+        # F03 — a run-id-matched perturbed_paths row proves nothing about
+        # scenario_agents's own fingerprint, since the two tables are populated by
+        # independent export calls that can legitimately disagree about which scene
+        # they last verified against (test_a_stale_baseline_is_not_served_after_the_
+        # cross_function_window traces exactly this race). This route has no
+        # perturbed_paths row to lean on at all, so the predicate below is its only
+        # protection.
         #
         # IS NOT DISTINCT FROM against the score row's own value, matching the join in
         # get_perturbed and the truth table B14 reasoned about: a legacy scenario with
@@ -810,6 +814,15 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
         if pert_row is not None and _table_exists(cur, 'scenario_agents'):
             # The baseline is the SAME agent's logged path, so the frontend can
             # draw "what happened" against "what nearly happened".
+            #
+            # THE SCENE MUST MATCH TOO (fix F03), bound to score_row's already-
+            # captured value, not a fresh subquery — the same R03 reasoning the
+            # perturbed_paths read above already applies, because this function
+            # already has an earlier separate read of scenario_scores to disagree
+            # with. get_trajectories's own fresh-subquery form is correct there only
+            # because it has no earlier read to race against; copying it here would
+            # reopen exactly the window R03 closed. pert_row matching proves nothing
+            # about this table — see the comment above this whole block.
             cur.execute("""
                 SELECT sa.agent_idx, sa.agent_type, sa.is_sdc,
                        sa.length_m, sa.width_m, sa.headings,
@@ -819,7 +832,8 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
                               ORDER BY dp.path) AS measures
                 FROM scenario_agents sa
                 WHERE sa.scenario_id = %s AND sa.agent_idx = %s
-            """, (scenario_id, pert_row['target_idx']))
+                  AND sa.scene_fingerprint IS NOT DISTINCT FROM %s
+            """, (scenario_id, pert_row['target_idx'], score_row['scene_fingerprint']))
             base_row = cur.fetchone()
 
             if base_row is not None:
@@ -873,11 +887,20 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
                 and score_row['delta_parameterization'] is None
                 and score_row['target_idx'] is not None
                 and _table_exists(cur, 'scenario_agents')):
+            # THE SAME SCENE CHECK AS THE BASELINE READ ABOVE (fix F03), and not
+            # optional here: fixing that read means base_row now correctly comes
+            # back None on a scene mismatch, which is precisely this block's own
+            # trigger condition — so a scene-mismatched scenario reaches THIS query
+            # more often after that fix, not less. Leaving this one unguarded would
+            # silently reopen the exact gap just closed, one query down, for
+            # _resolve_delta_labels' agent_type fallback (audit B13): the wrong
+            # agent's type here mislabels the delta's units, not just its dimensions.
             cur.execute("""
                 SELECT agent_type
                 FROM scenario_agents
                 WHERE scenario_id = %s AND agent_idx = %s
-            """, (scenario_id, score_row['target_idx']))
+                  AND scene_fingerprint IS NOT DISTINCT FROM %s
+            """, (scenario_id, score_row['target_idx'], score_row['scene_fingerprint']))
             # Assigned to base_row because that is the argument _resolve_delta_labels
             # reads agent_type from. It carries ONLY agent_type, and nothing below
             # touches it — `baseline` and `perturbed` were both built above.
