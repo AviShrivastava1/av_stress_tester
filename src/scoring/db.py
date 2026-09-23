@@ -421,11 +421,23 @@ class UpdateReport(int):
     `.failures` is a list of {scenario_id, error} records rather than a count, matching
     export_shard_geometry's perturbed_stale and Block 5 Concept 19: an operator looking
     at a spike needs to know WHICH scenarios and why, and a tally answers neither.
+
+    `.geometry_schema_incomplete` is a SEPARATE field from `.failures` (fix F08), not
+    folded into it. It is True when perturbed_paths EXISTS but predates the
+    stress_run_id/scene_fingerprint columns this call's DELETE needs — an environment
+    fact true for the whole call, not a per-scenario, per-row outcome. `.failures`
+    entries always carry a real, retriable scenario_id; conflating an environment fact
+    with that list would make it mean two different things to any existing consumer
+    that already reads it. Same idiom as `.failures` itself, deliberately: `src/` has
+    no logging or warnings.warn anywhere, so extending the object the caller already
+    gets back — not reaching for a new mechanism — is what this codebase already does
+    for "the caller needs to see this."
     """
 
-    def __new__(cls, count, failures=()):
+    def __new__(cls, count, failures=(), geometry_schema_incomplete=False):
         report = super().__new__(cls, count)
         report.failures = list(failures)
+        report.geometry_schema_incomplete = bool(geometry_schema_incomplete)
         return report
 
 
@@ -563,22 +575,56 @@ def update_stress_results(conn, results):
     runs. Only a pass that produced a result does this — a refused re-run supersedes
     nothing, so the preserved result keeps its matching path.
 
+    THIS INVALIDATION DEGRADES SAFELY WHEN perturbed_paths EXISTS BUT PREDATES
+    stress_run_id/scene_fingerprint (fix F08) — a table created by an older
+    init_geometry_schema() that has not been re-run since. Rather than let the
+    DELETE's own column references raise UndefinedColumn (caught per-scenario, so
+    EVERY qualifying scenario in the call fails the same way, silently, over a table
+    the write does not need yet), this is detected once up front and treated the same
+    as "the table does not exist" for this DELETE's purposes — scoring still
+    succeeds, only the (already-absent) geometry invalidation is skipped. The state
+    is not silent: it is reported back on the return value, see UpdateReport's
+    `.geometry_schema_incomplete`. Run init_geometry_schema(conn) to fix it.
+
     Args:
         results: dict scenario_id -> phase 4 result dict
                  (as returned by batch_scorer.stress_test_scenarios)
     Returns:
-        number of rows updated.
+        UpdateReport — an int (rows updated) carrying `.failures` and
+        `.geometry_schema_incomplete`; see that class.
     """
     n = 0
     failures = []
     with conn.cursor() as cur:
         # Checked ONCE, up front, and not inside the DELETE. A guard in the DELETE's
-        # WHERE clause would not help: Postgres resolves table names when it parses
-        # the statement, so `DELETE FROM perturbed_paths` raises on a database where
-        # Pass 3 has never run, whatever the WHERE says. Pass 2 legitimately runs
-        # before the geometry tables exist.
-        cur.execute("SELECT to_regclass('perturbed_paths') IS NOT NULL")
-        geometry_exists = bool(cur.fetchone()[0])
+        # WHERE clause would not help: Postgres resolves table names AND COLUMN
+        # REFERENCES when it parses the statement, so `DELETE FROM perturbed_paths
+        # ... pp.scene_fingerprint ...` raises on a database where Pass 3 has never
+        # run, OR where it ran once under an older schema, whatever the WHERE says.
+        # Pass 2 legitimately runs before the geometry tables exist.
+        #
+        # TABLE EXISTENCE ALONE IS NOT ENOUGH (fix F08). A perturbed_paths table
+        # created by an init_geometry_schema() that predates the stress_run_id/
+        # scene_fingerprint ALTERs — run once, long ago, never re-run since — passes
+        # to_regclass but does not have the columns this DELETE references below.
+        # information_schema.columns is queried for the same reason to_regclass is
+        # used instead of a live probe: it cannot itself raise on a missing table or
+        # column, so this stays a single safe up-front check rather than something
+        # that needs its own error handling.
+        cur.execute("""
+            SELECT to_regclass('perturbed_paths') IS NOT NULL,
+                   COALESCE((SELECT COUNT(*) FROM information_schema.columns
+                              WHERE table_name = 'perturbed_paths'
+                                AND column_name IN ('stress_run_id',
+                                                    'scene_fingerprint')), 0) = 2
+        """)
+        table_exists, columns_present = cur.fetchone()
+        geometry_exists = bool(table_exists) and bool(columns_present)
+        # Reported on UpdateReport rather than printed (see its own docstring) —
+        # True only for "the table exists but is missing what this call needs", NOT
+        # for "the table does not exist yet", which is the ordinary pre-Pass-3 state
+        # and not a migration problem.
+        geometry_schema_incomplete = bool(table_exists) and not bool(columns_present)
 
         for sid, r in results.items():
             # ── PER-SCENARIO ISOLATION (audit A03) ──────────────────────────────
@@ -860,7 +906,8 @@ def update_stress_results(conn, results):
                 cur.execute('RELEASE SAVEPOINT scenario_write')
                 n += updated
     conn.commit()
-    return UpdateReport(n, failures)
+    return UpdateReport(n, failures,
+                        geometry_schema_incomplete=geometry_schema_incomplete)
 
 
 def fetch_top(conn, n=20):

@@ -672,6 +672,177 @@ def test_F04_an_explicit_matching_run_id_still_publishes(bconn):
                                  stress_run_id=run_id, scene_fingerprint=fp) is True
 
 
+# ── fix F05: export_shard_geometry's own carve-out was missing ──────────────────
+#
+# export_scenario_agents reads stored_fingerprint under FOR UPDATE and only stamps
+# and compares it when it is non-null — the correct carve-out. export_shard_geometry,
+# calling export_perturbed_path right after, used to hand it
+# compute_scene_fingerprint(states, validity, types) UNCONDITIONALLY. For a scenario
+# Pass 1 never fingerprinted, that is a non-null value where export_perturbed_path's
+# own carve-out only fires on `scene_fingerprint is None` — so the WHERE clause
+# compared the row's NULL against a real hash, always failed, and every legacy
+# scenario's perturbed export through the batch pass was refused with
+# SceneChangedError for no actual mismatch.
+#
+# These three tests need export_shard_geometry to actually run, which means driving
+# it through a real (stubbed-content) shard rather than calling
+# export_scenario_agents/export_perturbed_path directly — the bug lives in what
+# export_shard_geometry passes between them, not in either function alone.
+
+def _write_geom_shard(path, scenario_ids):
+    """A minimal real tfrecord framing — ShardLoader itself is not stubbed, only
+    ScenarioParser, so the framing must be genuine."""
+    import struct
+    from src.data.loader import _masked_crc32c
+
+    blob = b''
+    for sid in scenario_ids:
+        payload = sid.encode()
+        header = struct.pack('<Q', len(payload))
+        blob += (header + struct.pack('<I', _masked_crc32c(header))
+                 + payload + struct.pack('<I', _masked_crc32c(payload)))
+    path.write_bytes(blob)
+    return str(path)
+
+
+@pytest.fixture
+def _f05_parser(monkeypatch):
+    """
+    Substitute src.data.parser (parser.py imports scenario_pb2 at module scope, and
+    the Waymo wheels are manylinux-only) so export_shard_geometry can run without
+    WOMD. Every scenario id maps to the SAME _ped() scene — tests control identity
+    purely through what they seed in scenario_scores, not through what the parser
+    returns.
+    """
+    import types as _types
+    module = _types.ModuleType('src.data.parser')
+
+    class ScenarioParser:
+        def __init__(self, raw):
+            self.sid = raw.decode()
+
+        def get_scenario_id(self):
+            return self.sid
+
+        def get_agent_states(self):
+            return _ped()[0]
+
+        def get_agent_validity(self):
+            return _ped()[1]
+
+        def get_agent_types(self):
+            return _ped()[2]
+
+        def get_sdc_index(self):
+            return 0
+
+    module.ScenarioParser = ScenarioParser
+    monkeypatch.setitem(sys.modules, 'src.data.parser', module)
+    yield module
+
+
+@requires_db
+def test_F05_a_legacy_scenario_still_publishes_through_the_batch_pass(bconn, tmp_path,
+                                                                       _f05_parser):
+    """
+    THE FINDING'S OWN REPRO, at the actual call site the bug lived in.
+
+    A scenario scored with no scene_fingerprint (upsert_scores records none) must
+    still get its perturbed path published through export_shard_geometry, exactly as
+    a direct export_perturbed_path call already does. Pre-fix this refused with
+    SceneChangedError even though nothing about the scene had changed at all.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_shard_geometry
+
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    assert db.fetch_scenario(bconn, 's')['scene_fingerprint'] is None, (
+        'fixture regressed: this row must carry no fingerprint'
+    )
+
+    shard = _write_geom_shard(tmp_path / 'shard.tfrecord', ['s'])
+    summary = export_shard_geometry(bconn, shard, ['s'],
+                                    stress_results={'s': dict(_RESULT)}, verbose=False)
+
+    assert summary['scene_changed'] == [], (
+        f'a legacy (never-fingerprinted) scenario was refused as scene-changed: '
+        f'{summary["scene_changed"]}'
+    )
+    assert summary['perturbed_stale'] == [], summary['perturbed_stale']
+    assert summary['errors'] == [], summary['errors']
+    assert summary['perturbed_written'] == 1, (
+        'the perturbed path was not published for a legacy scenario with a valid '
+        'stress result'
+    )
+
+
+@requires_db
+def test_F05_a_fingerprinted_scenario_still_has_it_verified_not_silently_dropped(
+        bconn, tmp_path, _f05_parser):
+    """
+    THE OVERCORRECTION GUARD. A fix that made export_shard_geometry always pass
+    scene_fingerprint=None would also make this test's legacy-shaped repro above
+    pass — for the wrong reason, by disabling verification rather than fixing the
+    carve-out. This proves the REAL, non-null fingerprint export_scenario_agents
+    verified is what actually reaches perturbed_paths, not a blanked-out None.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_shard_geometry
+
+    states, validity, types = _ped()
+    fp = compute_scene_fingerprint(states, validity, types)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+
+    shard = _write_geom_shard(tmp_path / 'shard.tfrecord', ['s'])
+    summary = export_shard_geometry(bconn, shard, ['s'],
+                                    stress_results={'s': dict(_RESULT)}, verbose=False)
+
+    assert summary['perturbed_written'] == 1, summary
+    with bconn.cursor() as cur:
+        cur.execute('SELECT scene_fingerprint FROM perturbed_paths '
+                    "WHERE scenario_id = 's'")
+        stored = cur.fetchone()[0]
+    assert stored == fp, (
+        f'expected the verified fingerprint {fp!r} on the published row, got '
+        f'{stored!r} — scene_fingerprint is being blanked rather than passed through'
+    )
+
+
+@requires_db
+def test_F05_a_genuinely_mismatched_scenario_is_still_refused(bconn, tmp_path,
+                                                               _f05_parser):
+    """
+    NOT AN OVERCORRECTION IN THE OTHER DIRECTION EITHER. A scenario whose stored
+    fingerprint describes a DIFFERENT scene than what the parser actually produced
+    must still be refused at the baseline — export_scenario_agents's own existing
+    check, unaffected by this fix — and the perturbed half must never be attempted
+    at all for it.
+    """
+    from src.scoring import db
+    from src.scoring.export_geometry import export_shard_geometry
+
+    wrong, wv, wt = _ped(shift=99.0)
+    fp_wrong = compute_scene_fingerprint(wrong, wv, wt)
+    db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
+                                  min_pet=9.0, fragility_score=1.0,
+                                  scene_fingerprint=fp_wrong)])
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
+
+    shard = _write_geom_shard(tmp_path / 'shard.tfrecord', ['s'])
+    summary = export_shard_geometry(bconn, shard, ['s'],
+                                    stress_results={'s': dict(_RESULT)}, verbose=False)
+
+    assert len(summary['scene_changed']) == 1, summary['scene_changed']
+    assert summary['scene_changed'][0]['scenario_id'] == 's'
+    assert summary['perturbed_written'] == 0
+    assert summary['errors'] == [], summary['errors']
+
+
 # ── fix F03: get_perturbed's OWN version of the cross-function-window gap ───────
 #
 # test_a_stale_baseline_is_not_served_after_the_cross_function_window, above, closed

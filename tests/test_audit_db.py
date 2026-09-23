@@ -140,7 +140,8 @@ def test_B15_reexport_removes_agents_that_are_now_skipped(conn, client):
     types = np.ones(3,dtype=int)
     export_scenario_agents(conn,'audit_scene',s,v,types,0)
     v[2,1:] = False
-    assert export_scenario_agents(conn,'audit_scene',s,v,types,0) == (2,1)
+    # third element is stored_fingerprint (fix F05) — None, seed() records none.
+    assert export_scenario_agents(conn,'audit_scene',s,v,types,0) == (2,1,None)
     response = client.get('/scenarios/audit_scene/trajectories')
     assert response.status_code == 200, response.text
     actual = [agent['agent_idx'] for agent in response.json()['agents']]

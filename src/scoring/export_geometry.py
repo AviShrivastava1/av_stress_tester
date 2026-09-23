@@ -221,7 +221,15 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
         sdc_idx:  index of the self-driving car
 
     Returns:
-        (n_written, n_skipped)
+        (n_written, n_skipped, stored_fingerprint)
+
+        stored_fingerprint is the value read under FOR UPDATE above and stamped onto
+        every row this call writes — None for a legacy/unscored-by-fingerprint row,
+        the verified scene fingerprint otherwise. Callers doing a SECOND export in
+        the same pass (fix F05) should reuse this rather than re-reading
+        scenario_scores: the lock that made this value trustworthy is released the
+        moment this function commits, so a fresh read afterward is a new snapshot,
+        not a continuation of this one.
 
     An agent with fewer than 2 valid timesteps cannot form a linestring — a
     LINESTRING needs at least two vertices. Those agents are skipped and counted,
@@ -353,7 +361,7 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
         """, (scenario_id, exportable))
 
     conn.commit()
-    return written, skipped
+    return written, skipped, stored_fingerprint
 
 
 class StaleExportError(RuntimeError):
@@ -751,7 +759,7 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
             # Stale rows can still exist in the table after such an interleaving; they
             # are inert, invisible to every read, and replaced by the next export.
             try:
-                written, skipped = export_scenario_agents(
+                written, skipped, stored_fingerprint = export_scenario_agents(
                     conn, sid, states, validity, types, sdc_idx
                 )
             except SceneChangedError as changed:
@@ -792,16 +800,37 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                     # content rather than from whatever is currently on the score row
                     # (audit R01). Without them the protection is vacuous — see
                     # export_perturbed_path's docstring.
-                    # scene_fingerprint comes from the ORIGINAL states, not the
-                    # perturbed ones — apply() rewrites the target's kinematics, so a
-                    # fingerprint taken from `perturbed` would hash (scene, delta)
-                    # entangled and could never match what Pass 1 recorded.
-                    from src.scoring.db import compute_scene_fingerprint
+                    #
+                    # scene_fingerprint IS stored_fingerprint FROM THE CALL ABOVE, NOT
+                    # RECOMPUTED (fix F05). export_scenario_agents already read this
+                    # value under FOR UPDATE, already verified it against the parsed
+                    # arrays (raising SceneChangedError on a mismatch, which this loop
+                    # already catches and skips past), and already stamped this exact
+                    # value onto its own rows. Recomputing here used to hand
+                    # export_perturbed_path a NON-NULL fingerprint even for a
+                    # scenario Pass 1 never fingerprinted (stored_fingerprint is
+                    # None): export_perturbed_path's own carve-out only fires on
+                    # `scene_fingerprint is None`, so a computed value sailed past it,
+                    # the WHERE clause compared NULL against a real hash, and every
+                    # legacy scenario's perturbed export was refused with
+                    # SceneChangedError for no actual mismatch. Passing the SAME value
+                    # export_scenario_agents already verified and stamped keeps the
+                    # two tables' carve-out decisions consistent by construction,
+                    # rather than by two independent reads that can disagree.
+                    #
+                    # A fresh read here (instead of reusing stored_fingerprint) would
+                    # reopen a window this file already closed once: the FOR UPDATE
+                    # lock above is released the moment export_scenario_agents
+                    # commits, so a lookup after that point is a new snapshot, not a
+                    # continuation of the locked one — exactly the cross-function gap
+                    # the comment above this try block documents being closed for the
+                    # baseline/perturbed pair. Reusing the value already in hand,
+                    # rather than re-reading, is the same R03 precedent that comment
+                    # already invokes.
                     written = export_perturbed_path(
                         conn, sid, perturbed, validity, int(result['target_idx']),
                         delta=result['delta'], method=result.get('method'),
-                        scene_fingerprint=compute_scene_fingerprint(
-                            states, validity, types),
+                        scene_fingerprint=stored_fingerprint,
                     )
                 except StaleExportError as stale:
                     # A refused export is a NORMAL outcome of a delayed or retried

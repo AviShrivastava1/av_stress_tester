@@ -480,10 +480,12 @@ def test_reexport_removes_an_agent_that_is_no_longer_exportable(conn):
     types = np.ones(3, dtype=int)
 
     _seed(conn)
-    assert export_scenario_agents(conn, 'scene', states, validity, types, 0) == (3, 0)
+    # third element is stored_fingerprint (fix F05) — None here, since _seed does
+    # not record one.
+    assert export_scenario_agents(conn, 'scene', states, validity, types, 0) == (3, 0, None)
 
     validity[2, 1:] = False      # agent 2 now has a single valid frame
-    assert export_scenario_agents(conn, 'scene', states, validity, types, 0) == (2, 1)
+    assert export_scenario_agents(conn, 'scene', states, validity, types, 0) == (2, 1, None)
 
     with conn.cursor() as cur:
         cur.execute('SELECT agent_idx FROM scenario_agents WHERE scenario_id=%s '

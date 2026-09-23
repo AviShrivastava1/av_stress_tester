@@ -162,7 +162,7 @@ def main():
     # ── PASS 3: export geometry ─────────────────────────────────────────────────
     for sid, _ in SCENARIOS:
         s, v, ty = built[sid]
-        written, skipped = export_scenario_agents(conn, sid, s, v, ty, sdc_idx=0)
+        written, skipped, _ = export_scenario_agents(conn, sid, s, v, ty, sdc_idx=0)
         print(f"  geometry {sid}: {written} agents, {skipped} skipped")
 
     space = PerturbationSpace(states, validity, types, 0, int(result['target_idx']))

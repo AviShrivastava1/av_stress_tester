@@ -233,7 +233,7 @@ def test_R02_export_does_not_fetch_beyond_completed_subset(tmp_path, stub_parser
     from src.scoring import export_geometry
 
     monkeypatch.setattr(export_geometry, 'export_scenario_agents',
-                        lambda *a, **k: (2, 0))
+                        lambda *a, **k: (2, 0, None))
     monkeypatch.setattr(export_geometry, 'export_perturbed_path',
                         lambda *a, **k: None)
 
