@@ -150,6 +150,21 @@ ALTER TABLE perturbed_paths ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
 -- a Pass 1 re-run over an already-exported corpus blanks the dashboard until Pass 3
 -- follows. Run them together, or expect the gap.
 ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
+
+-- fix G04: THE SDC AXIS, FOR THE SAME REASON scene_fingerprint IS A COLUMN HERE
+-- AND NOT JUST A WRITE-TIME CHECK. export_scenario_agents already verifies sdc_idx
+-- against scenario_scores at write time (mirroring the scene_fingerprint check
+-- above) — but a write-time check alone protects only the instant of that write.
+-- scene_fingerprint additionally persists a per-row snapshot so get_trajectories can
+-- keep verifying it on every READ, long after the write, against whatever
+-- scenario_scores.scene_fingerprint says NOW — which is exactly what makes a later
+-- Pass 1 rescope self-correcting without any extra invalidation logic. sdc_idx had
+-- no such snapshot, so an sdc_idx-only rescope (scene_fingerprint unchanged — a real
+-- case: compute_scene_fingerprint hashes states/validity/types only, not which
+-- track is the SDC) left is_sdc flags computed from the OLD sdc_idx being served
+-- forever, with nothing to compare against on read. Same column, same carve-out,
+-- same read-side predicate as scene_fingerprint — see get_trajectories.
+ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS sdc_idx INTEGER;
 """
 
 
@@ -210,6 +225,35 @@ class SceneChangedError(RuntimeError):
         )
 
 
+class SdcIndexChangedError(RuntimeError):
+    """
+    The SDC this export was passed does not match the SDC scenario_scores.sdc_idx
+    describes (fix G04).
+
+    A DISTINCT TYPE FROM SceneChangedError, for the reason that class's own
+    docstring argues for splitting by finding rather than merging: this can fire
+    with scene_fingerprint UNCHANGED. compute_scene_fingerprint hashes
+    states/validity/types only (see F02's comment in db.py) — sdc_track_index is a
+    separate WOMD field two parses can disagree on while every array still hashes
+    identically. Reusing SceneChangedError here would report "scene changed" while
+    printing two IDENTICAL fingerprints, which asserts something false about which
+    axis actually disagreed.
+
+    Carries both indices so the caller can say WHICH sdc_idx was refused against
+    WHICH, not merely that something was.
+    """
+
+    def __init__(self, scenario_id, stored_sdc_idx, computed_sdc_idx):
+        self.scenario_id = scenario_id
+        self.stored_sdc_idx = stored_sdc_idx
+        self.computed_sdc_idx = computed_sdc_idx
+        super().__init__(
+            f"refusing to publish geometry for {scenario_id!r}: it was parsed with "
+            f"sdc_idx {computed_sdc_idx!r}, but the stored row describes sdc_idx "
+            f"{stored_sdc_idx!r}"
+        )
+
+
 def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
     """
     Write every agent's logged trajectory for one scenario.
@@ -229,7 +273,17 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
         the same pass (fix F05) should reuse this rather than re-reading
         scenario_scores: the lock that made this value trustworthy is released the
         moment this function commits, so a fresh read afterward is a new snapshot,
-        not a continuation of this one.
+        not a continuation of this one. sdc_idx is not returned the same way (fix
+        G04): once this call has not raised, the caller's OWN sdc_idx argument has
+        already been proven consistent with scenario_scores.sdc_idx (or the latter
+        was never recorded), so there is nothing a second return value would add.
+
+    Raises:
+        SceneChangedError:    the parsed scene does not match scenario_scores'
+                              stored scene_fingerprint.
+        SdcIndexChangedError: the parsed sdc_idx does not match scenario_scores'
+                              stored sdc_idx (fix G04) — checked independently of
+                              the scene, since a fingerprint cannot see this axis.
 
     An agent with fewer than 2 valid timesteps cannot form a linestring — a
     LINESTRING needs at least two vertices. Those agents are skipped and counted,
@@ -278,8 +332,13 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
         # locks exactly one scenario row. The contention this does create is correct:
         # Pass 2 committing a result while Pass 3 writes that scenario's geometry is
         # precisely the interleaving that should serialize.
+        # sdc_idx READ IN THE SAME STATEMENT AS scene_fingerprint, UNDER THE SAME LOCK
+        # (fix G04) — not a second query. F02's own reasoning in db.py: sdc_idx is a
+        # separate identity axis a fingerprint cannot see, since
+        # compute_scene_fingerprint hashes states/validity/types only. A second read
+        # here would reopen exactly the window this FOR UPDATE exists to close.
         cur.execute("""
-            SELECT scene_fingerprint FROM scenario_scores
+            SELECT scene_fingerprint, sdc_idx FROM scenario_scores
              WHERE scenario_id = %s FOR UPDATE
         """, (scenario_id,))
         row = cur.fetchone()
@@ -288,6 +347,7 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
         # actual problem. Inventing a SceneChangedError for it would report a scene
         # mismatch where the truth is a missing scenario.
         stored_fingerprint = row[0] if row else None
+        stored_sdc_idx = row[1] if row else None
         if stored_fingerprint is not None:
             from src.scoring.db import compute_scene_fingerprint
             computed = compute_scene_fingerprint(states, validity, types)
@@ -299,6 +359,14 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
         # NULL means NOT RECORDED, not "mismatch" — the same carve-out B14 makes for
         # stress_run_id. Rows written before this column keep exporting exactly as they
         # did, which is what keeps the audit's own B13/B14 fixtures passing unmodified.
+        #
+        # CHECKED INDEPENDENTLY OF scene_fingerprint, not folded into the branch above
+        # (fix G04) — a scene can match while sdc_idx still disagrees (see
+        # SdcIndexChangedError's own docstring), so this needs its own comparison and
+        # its own carve-out, not a shared one.
+        if stored_sdc_idx is not None and int(sdc_idx) != stored_sdc_idx:
+            conn.rollback()
+            raise SdcIndexChangedError(scenario_id, stored_sdc_idx, int(sdc_idx))
 
         for i in range(n_agents):
             ts = _valid_timesteps(validity, i)
@@ -321,11 +389,23 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
             # scene_fingerprint is the value THIS ROW was verified against, taken
             # from the locked read above rather than recomputed — so a legacy row
             # (NULL) stamps NULL and keeps serving, the same carve-out everywhere else.
+            #
+            # sdc_idx (fix G04) is stored the SAME way, and for the SAME reason —
+            # stored_sdc_idx, not the freshly parsed sdc_idx parameter. A legacy row
+            # (stored_sdc_idx is None, never checked above) must stamp NULL here too:
+            # storing the parsed value instead would make get_trajectories's read-side
+            # predicate compare a real integer against scenario_scores.sdc_idx's own
+            # NULL and wrongly refuse every legacy row, reopening exactly the carve-out
+            # scene_fingerprint already protects. Once stored_sdc_idx IS recorded, the
+            # check above has already proven it equals the parsed sdc_idx, so which one
+            # is stamped makes no difference there — stored_sdc_idx is used regardless,
+            # to keep this column governed by the same rule in both branches.
             cur.execute("""
                 INSERT INTO scenario_agents
                     (scenario_id, agent_idx, agent_type, is_sdc,
-                     length_m, width_m, n_points, headings, path, scene_fingerprint)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s)
+                     length_m, width_m, n_points, headings, path, scene_fingerprint,
+                     sdc_idx)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s, %s)
                 ON CONFLICT (scenario_id, agent_idx) DO UPDATE SET
                     agent_type        = EXCLUDED.agent_type,
                     is_sdc            = EXCLUDED.is_sdc,
@@ -334,11 +414,12 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
                     n_points          = EXCLUDED.n_points,
                     headings          = EXCLUDED.headings,
                     path              = EXCLUDED.path,
-                    scene_fingerprint = EXCLUDED.scene_fingerprint
+                    scene_fingerprint = EXCLUDED.scene_fingerprint,
+                    sdc_idx           = EXCLUDED.sdc_idx
             """, (
                 scenario_id, int(i), int(types[i]), bool(i == sdc_idx),
                 float(states[i, t0, 5]), float(states[i, t0, 6]),
-                len(ts), headings, wkt, stored_fingerprint,
+                len(ts), headings, wkt, stored_fingerprint, stored_sdc_idx,
             ))
             written += 1
 
@@ -651,7 +732,8 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         verbose:        print progress lines
 
     Returns a summary dict: exported, agents_written, agents_skipped,
-    perturbed_written, perturbed_stale (list of dicts), errors (list of dicts).
+    perturbed_written, perturbed_stale (list of dicts), scene_changed (list of
+    dicts), sdc_changed (list of dicts), errors (list of dicts).
 
     perturbed_stale RECORDS EACH REFUSAL INDIVIDUALLY, not as a tally. Block 5
     Concept 19: a batch that reports "982 scored, 18 skipped, here is why" is
@@ -688,6 +770,12 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         # for Batch 7's reason: an operator looking at a spike needs to know WHICH
         # scenarios and which two scenes disagreed, and a count answers neither.
         'scene_changed': [],
+        # Same shape, same reason, for the sdc_idx axis scene_changed cannot see
+        # (fix G04) — a scene can match while the parsed SDC disagrees with the
+        # stored one. A SEPARATE bucket from scene_changed rather than folded in,
+        # for SceneChangedError/SdcIndexChangedError's own reason: printing "scene
+        # changed" for an sdc-only mismatch would assert something false.
+        'sdc_changed': [],
         'errors': [],
     }
     t_start = time.time()
@@ -774,6 +862,24 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                           f"{changed.computed_fingerprint} does not match the stored "
                           f"scene {changed.stored_fingerprint}; nothing exported")
                 continue
+            except SdcIndexChangedError as changed:
+                # Same shape as SceneChangedError just above, and the same
+                # consequence — nothing for this scenario has been written yet, so
+                # `continue` skips it whole, including the PerturbationSpace replay
+                # below. That is fix G04's write-time guard AND the closest thing
+                # this function has to guarding that replay against sdc_idx drift:
+                # it never reaches PerturbationSpace for a scenario refused here.
+                conn.rollback()
+                summary['sdc_changed'].append({
+                    'scenario_id': changed.scenario_id,
+                    'stored_sdc_idx': changed.stored_sdc_idx,
+                    'computed_sdc_idx': changed.computed_sdc_idx,
+                })
+                if verbose:
+                    print(f"  [sdc changed] {sid}: parsed sdc_idx "
+                          f"{changed.computed_sdc_idx} does not match the stored "
+                          f"sdc_idx {changed.stored_sdc_idx}; nothing exported")
+                continue
             summary['exported'] += 1
             summary['agents_written'] += written
             summary['agents_skipped'] += skipped
@@ -791,8 +897,38 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                 # the stored delta.
                 from src.optimization.perturbation_space import PerturbationSpace
 
+                # THE REPLAY MODEL THIS RESULT WAS ACTUALLY VERIFIED UNDER (fix
+                # G08), not whatever heading_speed_floor/heading_transition_width
+                # happen to default to right now. _stress_one always builds its
+                # search-time PerturbationSpace with no override either (see
+                # batch_scorer.py), so these two are today's ambient module
+                # constants at the MOMENT the search that produced this delta ran
+                # — recorded into search_provenance for exactly this reason (each
+                # is "a proposal until a real shard says how often this actually
+                # matters"). A Pass 2 and its matching Pass 3 can straddle a later
+                # change to either constant; without reusing the recorded value,
+                # the SAT-verified collision this delta earned gets silently
+                # replayed under a DIFFERENT model than the one that verified it.
+                #
+                # OMIT THE KWARG WHEN THE KEY IS ABSENT, DO NOT DEFAULT IT TO NONE.
+                # PerturbationSpace treats heading_transition_width=None (and
+                # heading_speed_floor=None) as a MEANINGFUL value — "the floor/band
+                # is off" — not as "use the class default"; that only happens when
+                # the keyword is omitted entirely (see its own docstring). A result
+                # with no search_provenance at all (a caller predating this field,
+                # or an outcome that never reached a search) has nothing recorded
+                # to reproduce, so it must fall through to the class default exactly
+                # as before this fix — not have every legacy result silently
+                # replayed with the band/floor forced off.
+                provenance = result.get('search_provenance') or {}
+                replay_kwargs = {
+                    key: provenance[key]
+                    for key in ('heading_speed_floor', 'heading_transition_width')
+                    if key in provenance
+                }
                 space = PerturbationSpace(
-                    states, validity, types, sdc_idx, int(result['target_idx'])
+                    states, validity, types, sdc_idx, int(result['target_idx']),
+                    **replay_kwargs
                 )
                 perturbed = space.apply(np.asarray(result['delta'], dtype=np.float32))
                 try:

@@ -33,7 +33,7 @@ import hashlib
 import os
 
 import psycopg2
-from psycopg2.extras import execute_values, Json, RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 
 SCHEMA_SQL = """
@@ -302,15 +302,170 @@ def init_schema(conn):
     conn.commit()
 
 
+class UpsertReport(int):
+    """
+    How many rows were written, plus which scenarios had their Phase 4 state
+    invalidated because Pass 1 just rescoped them onto a different scene or a
+    different SDC (fix G01).
+
+    AN int SUBCLASS, for the same reason UpdateReport is one (see its own
+    docstring): every existing caller — the whole test suite, and the
+    notebook's `n1 = db.upsert_scores(...)` / `n2 = db.upsert_scores(...)`
+    idempotency comparison — treats this as a plain count, and must keep
+    working unchanged.
+
+    `.rescoped` is a list of {scenario_id, old_scene_fingerprint,
+    new_scene_fingerprint, old_sdc_idx, new_sdc_idx} records, not a tally —
+    the same Block 5 Concept 19 reasoning as UpdateReport.failures and
+    export_shard_geometry's scene_changed/perturbed_stale/sdc_changed: an
+    operator looking at a spike needs to know WHICH scenarios rescoped and
+    what they moved from/to, and a count answers neither.
+    """
+
+    def __new__(cls, count, rescoped=()):
+        report = super().__new__(cls, count)
+        report.rescoped = list(rescoped)
+        return report
+
+
+# Paginated by hand rather than psycopg2.extras.execute_values, which this
+# function used until fix G01: execute_values only supports ONE %s placeholder
+# in its sql argument (the VALUES list itself), so there is no room left for a
+# second, genuinely separate bind parameter — the scenario_id array the
+# invalidation check below needs to snapshot the PRE-upsert row. 100 matches
+# execute_values' own former default, so batch shape (and round-trip count for
+# a shard-sized call) is unchanged.
+_UPSERT_PAGE_SIZE = 100
+
+# ── fix G01: THE SAME TWO IDENTITY AXES F02 CHECKS, FACING THE OTHER WRITER ────
+#
+# update_stress_results already refuses to ATTACH a new Phase 4 result to a row
+# whose identity has moved since the search that produced it started (fix F02).
+# That guards a write still in flight. It does nothing for a write that already
+# landed: nothing stopped upsert_scores from rescoping scenario_id to a
+# genuinely different scene or a different SDC while an old collision_timestep /
+# stress_outcome / min_perturbation / delta / stress_run_id sat there untouched
+# — this UPDATE never mentioned them at all. Every consumer that reads
+# scenario_scores directly (the list/detail endpoints, /stats, get_perturbed's
+# own score_row) then served A's result under B's identity, with nothing
+# flagging it as stale.
+#
+# THE CONDITION IS THE SAME ONE F02 USES, NOT A NEW ONE. Refuse to keep the old
+# Phase 4 state only when BOTH the stored value and the incoming value are
+# non-NULL and they disagree — never when either side is simply "not recorded".
+# That is A12/F02's own carve-out: a legacy row's first-ever fingerprint is not
+# a rescope, and a caller that does not compute one this time is not asserting
+# a change. Checked independently for scene_fingerprint and sdc_idx, for F02's
+# own reason a fingerprint alone cannot see: two parses can disagree about
+# which track is the SDC while every array still hashes identically.
+_RESCOPED_UPDATE = (
+    "((scenario_scores.scene_fingerprint IS NOT NULL AND"
+    " EXCLUDED.scene_fingerprint IS NOT NULL AND"
+    " scenario_scores.scene_fingerprint IS DISTINCT FROM EXCLUDED.scene_fingerprint)"
+    " OR (scenario_scores.sdc_idx IS NOT NULL AND EXCLUDED.sdc_idx IS NOT NULL AND"
+    " scenario_scores.sdc_idx IS DISTINCT FROM EXCLUDED.sdc_idx))"
+)
+
+# The RETURNING-clause form of the SAME condition. EXCLUDED is not visible in
+# RETURNING (Postgres raises on it — checked directly against this database
+# before writing this), and an unqualified/table-qualified column there reads
+# the row's FINAL, POST-update value, not the pre-conflict one the SET clause
+# above sees — so the "old" side has to come from somewhere else: `old_rows`,
+# a plain snapshot read at the top of the same statement, before this INSERT
+# changes anything. Comparing old_rows (old) against scenario_scores.col
+# (new, i.e. EXCLUDED's value once written) in RETURNING is equivalent to
+# _RESCOPED_UPDATE for exactly the rows this UPDATE touched, since the new
+# value only differs from EXCLUDED when EXCLUDED was NULL (COALESCE keeps the
+# old value) — a case _RESCOPED_UPDATE already reads as "not rescoped" too.
+_RESCOPED_RETURNING = (
+    "(((SELECT scene_fingerprint FROM old_rows"
+    "    WHERE old_rows.scenario_id = scenario_scores.scenario_id) IS NOT NULL"
+    "  AND scenario_scores.scene_fingerprint IS NOT NULL"
+    "  AND (SELECT scene_fingerprint FROM old_rows"
+    "        WHERE old_rows.scenario_id = scenario_scores.scenario_id)"
+    "       IS DISTINCT FROM scenario_scores.scene_fingerprint)"
+    " OR ((SELECT sdc_idx FROM old_rows"
+    "       WHERE old_rows.scenario_id = scenario_scores.scenario_id) IS NOT NULL"
+    "  AND scenario_scores.sdc_idx IS NOT NULL"
+    "  AND (SELECT sdc_idx FROM old_rows"
+    "        WHERE old_rows.scenario_id = scenario_scores.scenario_id)"
+    "       IS DISTINCT FROM scenario_scores.sdc_idx))"
+)
+
+_UPSERT_SQL_TEMPLATE = f"""
+    WITH old_rows AS (
+        SELECT scenario_id, scene_fingerprint, sdc_idx
+          FROM scenario_scores
+         WHERE scenario_id = ANY(%s)
+    )
+    INSERT INTO scenario_scores
+        (scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score,
+         min_ttc_all_pairs, min_pet_all_pairs, scene_fingerprint, sdc_idx)
+    VALUES {{values}}
+    ON CONFLICT (scenario_id) DO UPDATE SET
+        shard             = EXCLUDED.shard,
+        n_agents          = EXCLUDED.n_agents,
+        min_ttc           = EXCLUDED.min_ttc,
+        min_pet           = EXCLUDED.min_pet,
+        fragility_score   = EXCLUDED.fragility_score,
+        min_ttc_all_pairs = EXCLUDED.min_ttc_all_pairs,
+        min_pet_all_pairs = EXCLUDED.min_pet_all_pairs,
+        -- COALESCE, not a bare overwrite: a re-score by a caller that does
+        -- not compute a fingerprint/sdc_idx must not ERASE one that was
+        -- recorded. Dropping it would silently reopen the carve-out for that
+        -- row and make every later export/write unguarded.
+        scene_fingerprint = COALESCE(EXCLUDED.scene_fingerprint,
+                                     scenario_scores.scene_fingerprint),
+        sdc_idx           = COALESCE(EXCLUDED.sdc_idx,
+                                     scenario_scores.sdc_idx),
+        scored_at         = now(),
+        -- fix G01: a genuine rescope means "nothing has been stress-tested
+        -- against this identity yet" — the accurate, honest state — not
+        -- "keep whatever the old identity's result said". Both groups (see
+        -- update_stress_results' own comment for why they are two groups),
+        -- because a preserved last_attempt_outcome describing a refusal
+        -- against the OLD scene would misdescribe the NEW one just as much
+        -- as a stale stress_outcome would.
+        collision_timestep       = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.collision_timestep END,
+        stress_outcome           = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.stress_outcome END,
+        min_perturbation         = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.min_perturbation END,
+        delta                    = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.delta END,
+        stress_run_id            = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.stress_run_id END,
+        stress_method            = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.stress_method END,
+        search_provenance        = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.search_provenance END,
+        target_idx               = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.target_idx END,
+        challengers_total        = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.challengers_total END,
+        challengers_searched     = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.challengers_searched END,
+        stress_tested_at         = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.stress_tested_at END,
+        last_attempt_outcome     = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.last_attempt_outcome END,
+        last_attempt_diagnostics = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.last_attempt_diagnostics END,
+        stress_attempted_at      = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.stress_attempted_at END
+    RETURNING scenario_id,
+        {_RESCOPED_RETURNING} AS rescoped,
+        (SELECT scene_fingerprint FROM old_rows
+          WHERE old_rows.scenario_id = scenario_scores.scenario_id) AS old_scene_fingerprint,
+        scenario_scores.scene_fingerprint AS new_scene_fingerprint,
+        (SELECT sdc_idx FROM old_rows
+          WHERE old_rows.scenario_id = scenario_scores.scenario_id) AS old_sdc_idx,
+        scenario_scores.sdc_idx AS new_sdc_idx
+"""
+
+
 def upsert_scores(conn, records):
     """
     Bulk-write PASS 1 records. Idempotent: re-writing the same scenario_id
     updates the row (and refreshes scored_at) instead of duplicating it.
-    Phase 4 columns are NOT touched here, so a re-score never wipes out an
-    earlier stress-test result.
+
+    Phase 4 columns are left alone here UNLESS this call genuinely rescopes a
+    row's identity (fix G01) — see _RESCOPED_UPDATE's comment. An ordinary
+    re-score (same scene, same SDC, or no identity recorded on either side)
+    never wipes out an earlier stress-test result, exactly as before this fix.
+
+    Returns an UpsertReport — an int (rows written) carrying `.rescoped`; see
+    that class.
     """
     if not records:
-        return 0
+        return UpsertReport(0)
     # scene_fingerprint and sdc_idx join the SCENARIO-OWNED columns here (audit A02,
     # fix F02), not the result or attempt groups — they describe the input Pass 1
     # read, so Pass 1 writes them and update_stress_results never touches them.
@@ -321,32 +476,26 @@ def upsert_scores(conn, records):
              r.get('min_ttc_all_pairs'), r.get('min_pet_all_pairs'),
              r.get('scene_fingerprint'), r.get('sdc_idx'))
             for r in records]
+
+    rescoped = []
     with conn.cursor() as cur:
-        execute_values(cur, """
-            INSERT INTO scenario_scores
-                (scenario_id, shard, n_agents, min_ttc, min_pet, fragility_score,
-                 min_ttc_all_pairs, min_pet_all_pairs, scene_fingerprint, sdc_idx)
-            VALUES %s
-            ON CONFLICT (scenario_id) DO UPDATE SET
-                shard             = EXCLUDED.shard,
-                n_agents          = EXCLUDED.n_agents,
-                min_ttc           = EXCLUDED.min_ttc,
-                min_pet           = EXCLUDED.min_pet,
-                fragility_score   = EXCLUDED.fragility_score,
-                min_ttc_all_pairs = EXCLUDED.min_ttc_all_pairs,
-                min_pet_all_pairs = EXCLUDED.min_pet_all_pairs,
-                -- COALESCE, not a bare overwrite: a re-score by a caller that does
-                -- not compute a fingerprint/sdc_idx must not ERASE one that was
-                -- recorded. Dropping it would silently reopen the carve-out for that
-                -- row and make every later export/write unguarded.
-                scene_fingerprint = COALESCE(EXCLUDED.scene_fingerprint,
-                                             scenario_scores.scene_fingerprint),
-                sdc_idx           = COALESCE(EXCLUDED.sdc_idx,
-                                             scenario_scores.sdc_idx),
-                scored_at         = now()
-        """, rows)
+        for start in range(0, len(rows), _UPSERT_PAGE_SIZE):
+            page = rows[start:start + _UPSERT_PAGE_SIZE]
+            values_sql = ', '.join(['(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'] * len(page))
+            params = [[row[0] for row in page]]
+            for row in page:
+                params.extend(row)
+            cur.execute(_UPSERT_SQL_TEMPLATE.format(values=values_sql), params)
+            for (sid, is_rescoped, old_fp, new_fp, old_sdc,
+                 new_sdc) in cur.fetchall():
+                if is_rescoped:
+                    rescoped.append(dict(
+                        scenario_id=sid,
+                        old_scene_fingerprint=old_fp, new_scene_fingerprint=new_fp,
+                        old_sdc_idx=old_sdc, new_sdc_idx=new_sdc,
+                    ))
     conn.commit()
-    return len(rows)
+    return UpsertReport(len(rows), rescoped=rescoped)
 
 
 def resolve_outcome(result) -> str:

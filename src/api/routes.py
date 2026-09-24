@@ -667,6 +667,16 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
         # rather than glossed: the client behaviour is identical either way (render an
         # empty panel), and the distinction is visible in the export summary's
         # scene_changed bucket and in the table itself.
+        #
+        # THE SDC MUST MATCH TOO, ON THE SAME TERMS (fix G04). scene_fingerprint alone
+        # cannot see this axis — compute_scene_fingerprint hashes states/validity/types
+        # only, so a re-parse can disagree about which track is the SDC while the
+        # scene predicate above still passes. Without this, every row's is_sdc flag
+        # (computed from the OLD sdc_idx at export time) would keep being served after
+        # a later Pass 1 rescoped sdc_idx alone — the read-side half of fix G04;
+        # export_scenario_agents's own FOR UPDATE check is the write-time half. Same
+        # IS NOT DISTINCT FROM carve-out as scene_fingerprint: a legacy pair (NULL on
+        # both sides) keeps serving exactly what it always served.
         cur.execute("""
             SELECT sa.agent_idx, sa.agent_type, sa.is_sdc,
                    sa.length_m, sa.width_m, sa.headings,
@@ -679,8 +689,11 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
               AND sa.scene_fingerprint IS NOT DISTINCT FROM (
                     SELECT ss.scene_fingerprint FROM scenario_scores ss
                      WHERE ss.scenario_id = %s)
+              AND sa.sdc_idx IS NOT DISTINCT FROM (
+                    SELECT ss.sdc_idx FROM scenario_scores ss
+                     WHERE ss.scenario_id = %s)
             ORDER BY sa.agent_idx
-        """, (scenario_id, scenario_id))
+        """, (scenario_id, scenario_id, scenario_id))
         rows = cur.fetchall()
 
     agents = [

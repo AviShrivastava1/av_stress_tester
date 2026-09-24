@@ -303,6 +303,16 @@ def test_a_changed_scene_invalidates_geometry_even_at_an_unchanged_delta(bconn):
 
     test_A05_a_genuinely_new_result_still_invalidates_geometry cannot see this, because
     it changes the delta and so changes the run id too.
+
+    `before` IS CAPTURED HERE, BEFORE THE RESCOPE, NOT AFTER IT (fix G01). Once a
+    genuine rescope nulls the row's own stress_run_id in the same upsert_scores call
+    that moves scene_fingerprint (fix G01 — see db.py's _RESCOPED_UPDATE), it no
+    longer merely "does not move": it is briefly None until Pass 2 re-runs. That is
+    orthogonal to what THIS test proves — comparing the id from before the whole
+    rescope-then-re-run sequence to the id after it still shows the same value,
+    because compute_stress_run_id is deterministic in scenario_id/target_idx/delta/
+    method and none of those changed — so capturing `before` earlier keeps the
+    assertion meaningful instead of comparing against a transient None.
     """
     from src.scoring import db
     from src.scoring.export_geometry import export_scenario_agents, export_perturbed_path
@@ -313,6 +323,7 @@ def test_a_changed_scene_invalidates_geometry_even_at_an_unchanged_delta(bconn):
                                   min_pet=9.0, fragility_score=1.0,
                                   scene_fingerprint=fp_old)])
     db.update_stress_results(bconn, {'s': dict(_RESULT)})
+    before = db.fetch_scenario(bconn, 's')['stress_run_id']
     export_scenario_agents(bconn, 's', states, validity, types, 0)
     export_perturbed_path(bconn, 's', states, validity, 1, delta=_RESULT['delta'],
                           method='de', scene_fingerprint=fp_old)
@@ -322,14 +333,15 @@ def test_a_changed_scene_invalidates_geometry_even_at_an_unchanged_delta(bconn):
         assert cur.fetchone()[0] == 1, 'fixture regressed: nothing exported'
 
     # Pass 1 re-runs over a re-parsed scene. Pass 2 then reproduces the IDENTICAL
-    # delta, so the run id does not move.
+    # delta, so the run id does not move ONCE Pass 2 has re-run (fix G01: the rescope
+    # itself nulls it — see the docstring above — so Pass 2 has to re-run for there
+    # to be a run id to compare at all, matching the real pipeline's own order).
     moved, mv, mt = _ped(shift=10.0)
     fp_new = compute_scene_fingerprint(moved, mv, mt)
     assert fp_new != fp_old, 'fixture regressed'
     db.upsert_scores(bconn, [dict(scenario_id='s', shard='x', n_agents=2, min_ttc=9.0,
                                   min_pet=9.0, fragility_score=1.0,
                                   scene_fingerprint=fp_new)])
-    before = db.fetch_scenario(bconn, 's')['stress_run_id']
     db.update_stress_results(bconn, {'s': dict(_RESULT)})
     assert db.fetch_scenario(bconn, 's')['stress_run_id'] == before, (
         'fixture regressed: the run id moved, so this would pass on run id alone'
@@ -920,6 +932,17 @@ def test_F03_a_stale_baseline_and_perturbed_dimensions_are_not_served_after_the_
                                   min_pet=9.0, fragility_score=1.0,
                                   scene_fingerprint=fp_b)])
     other.close()
+
+    # Pass 2 RE-RUNS AGAINST THE NEW SCENE (fix G01): the rescope just above nulled
+    # stress_run_id along with the rest of the Phase 4 result group, since it is a
+    # genuine identity change — the row now honestly says "not yet stress-tested",
+    # which it is, against this scene. Without this call export_perturbed_path below
+    # has nothing to derive-and-match a run id against and correctly refuses with
+    # StaleExportError; this re-establishes exactly the state a real pipeline would
+    # have at this point, before the RACE this test isolates begins. _RESULT carries
+    # no scene_fingerprint, so F02's own carve-out lets this write through same as
+    # every other use of _RESULT in this file.
+    db.update_stress_results(bconn, {'s': dict(_RESULT)})
 
     # perturbed_paths re-exported AGAINST THE NEW SCENE, so its own guard still
     # passes and pert_row stays alive — the baseline read is what this test is about.
