@@ -564,15 +564,28 @@ def test_the_antipodal_tie_break_is_logged_not_arctan2_of_near_zero():
     measured floor, not the idealized one — see its own comment for the
     derivation, and test_heading_is_continuous_near_but_not_at_the_antipodal_point
     below for why the threshold cannot simply be made larger to compensate.
+
+    CONSTRUCTED WITH A SAFE (STATIONARY) BASELINE, `_linear_heading` CALLED
+    DIRECTLY (independent review, 2026-09-24): a scenario whose LOGGED velocity is
+    itself this exact degenerate case is now refused at construction by
+    HeadingBlendSingularityError — correctly, that is precisely the case this
+    project's own audit found still reachable — so it can no longer be used to
+    build a PerturbationSpace via apply(zeros) the way this test originally did.
+    The policy under test is unchanged and still worth pinning directly: given
+    this exact (vx, vy) pair, does the blend fall back to logged. Same pattern
+    test_heading_is_continuous_near_but_not_at_the_antipodal_point below already
+    uses for the same reason.
     """
     states, validity, types = _disagreeing_scene(
-        vx=-0.525, vy=0.0, logged_heading=0.0, lateral=6.0)
+        vx=0.0, vy=0.0, logged_heading=0.0, lateral=6.0)
     space = PerturbationSpace(states, validity, types, 0, 1)
 
-    replayed = space.apply(np.zeros(4))
-    assert float(replayed[1, 0, 4]) == pytest.approx(0.0, abs=1e-9), (
-        f'antipodal tie-break did not fall back to logged: got '
-        f'{float(replayed[1, 0, 4])!r}'
+    heading = space._linear_heading(
+        np.array([-0.525], dtype=np.float32), np.array([0.0], dtype=np.float32),
+        0, 1,
+    )
+    assert float(heading[0]) == pytest.approx(0.0, abs=1e-9), (
+        f'antipodal tie-break did not fall back to logged: got {float(heading[0])!r}'
     )
 
 

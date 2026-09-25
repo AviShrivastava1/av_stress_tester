@@ -264,11 +264,17 @@ def test_every_outcome_gets_a_distinct_console_description():
 
     outcomes = {name: getattr(db, name) for name in dir(db)
                 if name.startswith('OUTCOME_')}
-    assert len(outcomes) == 5, f'the outcome vocabulary changed: {sorted(outcomes)}'
+    # independent review, 2026-09-24: OUTCOME_HEADING_BLEND_SINGULARITY joined the
+    # vocabulary (PerturbationSpace's own antipodal-blend refusal, distinct from
+    # ReplayFidelityError's OUTCOME_REPLAY_INFEASIBLE) — this tripwire did exactly
+    # its stated job, catching the addition here rather than letting it silently
+    # inherit whatever the last branch in _describe_outcome says.
+    assert len(outcomes) == 6, f'the outcome vocabulary changed: {sorted(outcomes)}'
 
     fields = {'min_perturbation': 0.25, 'collision_timestep': 3, 'method': 'de',
               'challengers_searched': 1, 'challengers_total': 4, 'reason': 'drift',
               'baseline_replay_error': 0.4, 'baseline_replay_collides': False,
+              'baseline_heading_blend_min_magnitude': 1e-6, 'margin': 0.5,
               'error': 'ValueError: boom'}
 
     described = {}

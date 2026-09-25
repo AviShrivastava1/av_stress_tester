@@ -35,7 +35,7 @@ values are reachable here, because the other two produce no result to describe:
                                       collision WITHIN ITS BUDGET AND BOUNDS. This is
                                       a fact about the search, not about the scenario.
 
-`last_attempt_outcome` — what the MOST RECENT pass concluded. All five are reachable,
+`last_attempt_outcome` — what the MOST RECENT pass concluded. All six are reachable,
 adding to the two above:
 
     'replay_infeasible'               No search ran. The scenario's own
@@ -43,6 +43,21 @@ adding to the two above:
                                       enough to measure a perturbation against
                                       (Batch 1, audit B03). Emphatically NOT the same
                                       as "came back clean".
+
+    'heading_blend_singularity'       No search ran. The scenario's baseline replay
+                                      WAS faithful (unlike replay_infeasible above) —
+                                      but its logged/derived heading blend sat close
+                                      enough to the antipodal degenerate point
+                                      (perturbation_space.py::_linear_heading) that a
+                                      vanishingly small perturbation could flip the
+                                      challenger's heading to an essentially
+                                      arbitrary orientation (independent review,
+                                      2026-09-24). A separate value from
+                                      replay_infeasible, not a sub-case of it — the
+                                      two are refused for genuinely different
+                                      reasons, and collapsing them would assert a
+                                      replay-fidelity problem that was never
+                                      measured.
 
     'no_challenger' / 'error'         Nothing to perturb, or the pass raised.
 
@@ -271,6 +286,7 @@ class StatsResponse(BaseModel):
     collisions_found: int
     no_collision_found: int
     replay_infeasible: int
+    heading_blend_singularity: int
     no_challenger: int
     stress_errors: int
     robustly_safe: int

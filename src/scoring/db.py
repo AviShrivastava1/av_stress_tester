@@ -196,6 +196,19 @@ OUTCOME_REPLAY_INFEASIBLE  = 'replay_infeasible'
 OUTCOME_NO_CHALLENGER      = 'no_challenger'
 OUTCOME_ERROR              = 'error'
 
+# No search ran, same category as REPLAY_INFEASIBLE and for a related but distinct
+# reason (independent review, 2026-09-24): PerturbationSpace refused to construct
+# because the baseline replay's logged/derived heading blend
+# (perturbation_space.py::_linear_heading) already sits close to its antipodal
+# degenerate point, where a vanishingly small delta could flip the challenger's
+# heading to an essentially arbitrary orientation. A SEPARATE value from
+# REPLAY_INFEASIBLE, not folded into it — HeadingBlendSingularityError's own
+# docstring makes the same argument SceneChangedError/SdcIndexChangedError make in
+# export_geometry.py: this scenario's baseline replay can be perfectly faithful
+# (ReplayFidelityError never fires) and still be unsafe to search, so reusing that
+# outcome would assert a replay-fidelity problem that was never measured.
+OUTCOME_HEADING_BLEND_SINGULARITY = 'heading_blend_singularity'
+
 # Outcomes for which a search actually ran, and therefore the only ones that set
 # stress_tested_at. Everything else sets stress_attempted_at only.
 OUTCOMES_SEARCH_RAN = frozenset({OUTCOME_COLLISION_FOUND, OUTCOME_NO_COLLISION_FOUND})
@@ -516,6 +529,8 @@ def resolve_outcome(result) -> str:
                 else OUTCOME_NO_COLLISION_FOUND)
     if status == OUTCOME_REPLAY_INFEASIBLE:
         return OUTCOME_REPLAY_INFEASIBLE
+    if status == OUTCOME_HEADING_BLEND_SINGULARITY:
+        return OUTCOME_HEADING_BLEND_SINGULARITY
     if status == OUTCOME_NO_CHALLENGER:
         return OUTCOME_NO_CHALLENGER
     return OUTCOME_ERROR
@@ -553,6 +568,12 @@ _ATTEMPT_DIAGNOSTIC_FIELDS = (
     # message is prose. Storing them separately is what makes the first possible.
     'error_type',
     'error_message',
+    # WHAT HeadingBlendSingularityError CARRIES (independent review, 2026-09-24)
+    # — "the set will grow as more refusal gates are added" above, made good on.
+    # Named after the exception's own attributes, same pattern as reason/
+    # baseline_replay_error/baseline_replay_collides above for ReplayFidelityError.
+    'baseline_heading_blend_min_magnitude',
+    'margin',
 )
 
 

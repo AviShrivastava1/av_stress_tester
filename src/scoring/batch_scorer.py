@@ -199,13 +199,14 @@ def _stress_one(states, validity, types, sdc_idx,
     Testable without the Waymo package.
     """
     from src.optimization.perturbation_space import (
-        PerturbationSpace, ReplayFidelityError, pick_nearest_challenger,
+        HeadingBlendSingularityError, PerturbationSpace, ReplayFidelityError,
+        pick_nearest_challenger,
     )
     from src.optimization.scipy_optimizer import optimize_scenario
     from src.scoring.db import (
-        OUTCOME_COLLISION_FOUND, OUTCOME_NO_CHALLENGER,
-        OUTCOME_NO_COLLISION_FOUND, OUTCOME_REPLAY_INFEASIBLE,
-        compute_scene_fingerprint,
+        OUTCOME_COLLISION_FOUND, OUTCOME_HEADING_BLEND_SINGULARITY,
+        OUTCOME_NO_CHALLENGER, OUTCOME_NO_COLLISION_FOUND,
+        OUTCOME_REPLAY_INFEASIBLE, compute_scene_fingerprint,
     )
 
     # WHAT THIS ATTEMPT IS ACTUALLY SEARCHING AGAINST (fix F02), captured before
@@ -239,12 +240,23 @@ def _stress_one(states, validity, types, sdc_idx,
     # and arrive as status='error' with a stringified message, throwing away the
     # structured reason/error that the real-shard run needs to break the refusals
     # down. Genuine failures elsewhere in this function still reach that handler.
+    #
+    # TWO except CLAUSES, NOT ONE (independent review, 2026-09-24).
+    # HeadingBlendSingularityError is a SIBLING of ReplayFidelityError, not a
+    # subclass — deliberately, per its own docstring, because reusing
+    # ReplayFidelityError here would assert a replay-fidelity problem that was
+    # never measured. A single `except (ReplayFidelityError,
+    # HeadingBlendSingularityError)` would catch both but could only report ONE
+    # shape of structured fields, which is exactly the "conflating asserts
+    # something false" problem the split into two exception types exists to
+    # avoid one level up — so it gets its own clause and its own outcome, the
+    # same treatment 'no_challenger' and replay_infeasible already have.
     try:
         space = PerturbationSpace(states, validity, types, sdc_idx, tgt)
     except ReplayFidelityError as e:
         # NOT a search that found nothing — no search ran at all. Kept as its own
         # outcome all the way to the API so it can never be read as "came back clean".
-        return {'status': 'replay_infeasible',
+        return {'status': OUTCOME_REPLAY_INFEASIBLE,
                 'outcome': OUTCOME_REPLAY_INFEASIBLE,
                 'target_idx': int(tgt),
                 'baseline_replay_error': e.baseline_replay_error,
@@ -254,6 +266,18 @@ def _stress_one(states, validity, types, sdc_idx,
                 # the database was involved.
                 'baseline_replay_collides': e.baseline_replay_collides,
                 'reason': e.reason,
+                'challengers_total': challengers_total,
+                'challengers_searched': 0}
+    except HeadingBlendSingularityError as e:
+        # Same shape as the ReplayFidelityError branch just above, for the same
+        # reason: no search ran, kept as its own outcome all the way to the API,
+        # every field the exception carries persisted rather than a selection.
+        return {'status': OUTCOME_HEADING_BLEND_SINGULARITY,
+                'outcome': OUTCOME_HEADING_BLEND_SINGULARITY,
+                'target_idx': int(tgt),
+                'baseline_heading_blend_min_magnitude':
+                    e.baseline_heading_blend_min_magnitude,
+                'margin': e.margin,
                 'challengers_total': challengers_total,
                 'challengers_searched': 0}
 
@@ -419,8 +443,9 @@ def _describe_outcome(r) -> str:
     console line, an API field and a database column all read the same.
     """
     from src.scoring.db import (
-        OUTCOME_COLLISION_FOUND, OUTCOME_ERROR, OUTCOME_NO_CHALLENGER,
-        OUTCOME_NO_COLLISION_FOUND, OUTCOME_REPLAY_INFEASIBLE,
+        OUTCOME_COLLISION_FOUND, OUTCOME_ERROR, OUTCOME_HEADING_BLEND_SINGULARITY,
+        OUTCOME_NO_CHALLENGER, OUTCOME_NO_COLLISION_FOUND,
+        OUTCOME_REPLAY_INFEASIBLE,
     )
 
     outcome = r.get('outcome')
@@ -445,6 +470,12 @@ def _describe_outcome(r) -> str:
                 f"reason={r.get('reason')}, "
                 f"baseline drift={r.get('baseline_replay_error')}, "
                 f"baseline collides={r.get('baseline_replay_collides')}")
+
+    if outcome == OUTCOME_HEADING_BLEND_SINGULARITY:
+        return (f"{OUTCOME_HEADING_BLEND_SINGULARITY}: no search ran — "
+                f"baseline heading-blend magnitude="
+                f"{r.get('baseline_heading_blend_min_magnitude')} "
+                f"(margin={r.get('margin')})")
 
     if outcome == OUTCOME_NO_CHALLENGER:
         return (f"{OUTCOME_NO_CHALLENGER}: no search ran — nothing to perturb "
@@ -492,7 +523,8 @@ def stress_test_scenarios(
         StressResults — a dict scenario_id -> phase 4 result dict
         (keys: collision, min_perturbation, delta, collision_timestep, target_idx,
          method, status, outcome — or status='no_challenger'/'replay_infeasible'/
-         'error'), carrying `.errors` for records that failed before yielding an id.
+         'heading_blend_singularity'/'error'), carrying `.errors` for records that
+         failed before yielding an id.
     """
     from src.data.loader import ShardLoader
     from src.data.parser import ScenarioParser

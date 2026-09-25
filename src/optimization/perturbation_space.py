@@ -65,6 +65,54 @@ BASELINE_DRIFT_REFUSE_M = 0.5
 # V_HEADING_MIN), not yet validated against a real shard.
 HEADING_TRANSITION_WIDTH = 0.05
 
+# Minimum acceptable blend-vector magnitude in `_linear_heading`'s logged/derived
+# blend, measured across the BASELINE (zero-delta) replay, below which
+# PerturbationSpace refuses to construct at all (independent review,
+# 2026-09-24: the antipodal degenerate case _linear_heading's own docstring
+# already names as "NOT fixed, AND STRUCTURAL" — bounded there, not eliminated —
+# is still reachable in a narrower window after the 1e-3->1e-5 fallback-threshold
+# correction. Reproduced: a cyclist at speed 0.525 m/s, logged heading 0, velocity
+# nearly antipodal to it, safe baseline (baseline_replay_error=3.77e-7 m,
+# baseline_replay_collides=False) — a delta of weighted norm 5.96e-08 flips
+# heading to 2.1133502 rad and produces a verified frame-0 collision).
+#
+# CALIBRATED, NOT GUESSED: measured across a family of fixtures at increasing
+# angular separation from exact antipodal, all at this same dangerous
+# band-midpoint speed (the worst case for any separation — see
+# _linear_heading's own docstring, magnitude_min = cos(separation/2) at w=0.5):
+#
+#     separation    baseline magnitude    smallest exploiting weighted norm
+#       0.1 deg          8.7e-4                    4.1e-7
+#       5   deg          4.4e-2                    2.1e-4
+#       30  deg          0.259                     1.4e-3
+#       45  deg          0.383                     2.9e-3
+#       60  deg          0.500                     5.9e-3
+#       90  deg          0.707                     >= 1.0 (no jump found)
+#
+# 0.5 is chosen because it is the measured magnitude at 60 degrees of separation
+# from exact antipodal — refuse whenever logged and the velocity-implied heading
+# disagree by MORE than 120 degrees, in a frame whose speed lands in or near the
+# transition band. That guarantees every UNREFUSED scenario requires at least
+# ~0.006 weighted norm to exploit this mechanism — comfortably above 0.0032, the
+# weighted norm the ORIGINAL audit finding (F01) already flagged as clearly too
+# small to represent a real vulnerability. Same status as every other constant in
+# this file: an order-of-magnitude, reasoned default, not yet validated against
+# real WOMD data.
+#
+# WHAT THIS DOES NOT CLOSE, stated rather than implied: this gates on the
+# BASELINE trajectory's own minimum magnitude only. A larger delta — via the
+# constant accel-bias dimensions, over the whole rollout — could in principle
+# steer a DIFFERENT, currently-safe frame into a near-antipodal alignment the
+# baseline never reached. Not closed here, and not tractable to close without
+# either constraining DE's search domain (which the danger zone's shape does not
+# reduce to a simple box) or a structural redesign of the blend itself (rejected
+# for now — see the independent review's own note on why a fourth revision of
+# this same 60 lines needs more verification than gating on the baseline can risk
+# getting subtly wrong). A collision found that way would report a large,
+# genuinely-earned norm, not a misleadingly tiny one — the failure mode the audit
+# thread starting at F01 has been about.
+HEADING_BLEND_SINGULARITY_MARGIN = 0.5
+
 
 class ReplayFidelityError(ValueError):
     """
@@ -101,6 +149,47 @@ class ReplayFidelityError(ValueError):
             f"replay fidelity check failed ({reason}): {detail}; "
             f"baseline_replay_error={self.baseline_replay_error:.4f} m, "
             f"baseline_replay_collides={self.baseline_replay_collides}"
+        )
+
+
+class HeadingBlendSingularityError(ValueError):
+    """
+    Raised when the BASELINE (zero-delta) replay's logged/derived heading blend
+    (`_linear_heading`) lands close enough to the antipodal degenerate point that
+    a vanishingly small perturbation could flip the challenger's footprint to an
+    essentially arbitrary orientation (independent review, 2026-09-24).
+
+    A DISTINCT TYPE FROM ReplayFidelityError, for the same reason
+    SdcIndexChangedError is distinct from SceneChangedError in export_geometry.py:
+    this scenario's baseline replay can be perfectly faithful (small
+    baseline_replay_error, no baseline_replay_collides) and still be unsafe to
+    search — reusing ReplayFidelityError would assert a replay-fidelity problem
+    that was never measured.
+
+    `_linear_heading`'s own docstring already documents WHY this cannot be fixed
+    by narrowing the blend's own fallback threshold further: "there is no
+    continuous way to pick which side a 180-degree tie resolves to, so any
+    tie-break rule has a jump SOMEWHERE." This refuses the scenario instead of
+    narrowing the tie-break zone a second time.
+
+    Carries the measured magnitude and the margin it was checked against, so the
+    caller can see how close this came, not merely that it was refused.
+    """
+
+    def __init__(self, baseline_heading_blend_min_magnitude, margin):
+        self.baseline_heading_blend_min_magnitude = float(
+            baseline_heading_blend_min_magnitude
+        )
+        self.margin = float(margin)
+        super().__init__(
+            "refusing to build a PerturbationSpace: the baseline replay's logged/"
+            "derived heading blend has minimum magnitude "
+            f"{self.baseline_heading_blend_min_magnitude:.3e}, below the "
+            f"{self.margin:.3e} safety margin — logged and the velocity-implied "
+            "heading are close enough to exactly antipodal, at a speed close "
+            "enough to the transition band, that a vanishingly small "
+            "perturbation could flip this challenger's heading to an "
+            "essentially arbitrary orientation"
         )
 
 
@@ -185,6 +274,14 @@ class PerturbationSpace:
                                    dimensions at its first valid frame are unusable.
             ReplayFidelityError:   the zero-delta replay is not faithful enough for a
                                    perturbation measured against it to mean anything.
+            HeadingBlendSingularityError:
+                                   the baseline replay's logged/derived heading
+                                   blend lands close enough to the antipodal
+                                   degenerate point that a vanishingly small delta
+                                   could flip the challenger's heading to an
+                                   essentially arbitrary orientation (independent
+                                   review, 2026-09-24). Linear-model challengers
+                                   only; vehicles never reach _linear_heading.
         """
         self.states0  = states.astype(np.float32)
         self.validity = validity
@@ -302,6 +399,13 @@ class PerturbationSpace:
                                      np.abs(self.bounds[:, 1]))
         self.weights = 1.0 / np.maximum(bound_magnitude, 1e-6)
 
+        # Updated by _linear_heading on every call it makes with blending active
+        # (see its own comment) — read ONCE, immediately below, right after the
+        # baseline replay that's about to trigger it. Later apply() calls (the DE
+        # search itself) keep overwriting this, which is harmless: nothing reads
+        # it again after __init__ returns.
+        self._last_heading_blend_min_magnitude = float('inf')
+
         # ── replay fidelity (audit B03) ──────────────────────────────────────────
         # Measure what a ZERO perturbation actually reproduces before anyone asks
         # this space for a minimum perturbation. Costs one rollout, against the
@@ -309,12 +413,31 @@ class PerturbationSpace:
         self.baseline_replay_error, self.baseline_replay_collides = \
             self._measure_baseline_replay()
 
+        # Snapshot taken HERE, the same way baseline_replay_error/
+        # baseline_replay_collides already are — see the attribute's own comment
+        # above for why this must be read now rather than treated as a live
+        # property later.
+        self.baseline_heading_blend_min_magnitude = \
+            self._last_heading_blend_min_magnitude
+
         if self.baseline_replay_collides:
             raise ReplayFidelityError('collision', self.baseline_replay_error, True)
         if (max_baseline_drift is not None
                 and not (self.baseline_replay_error <= max_baseline_drift)):
             # `not (<=)` rather than `>` so a non-finite error refuses too.
             raise ReplayFidelityError('drift', self.baseline_replay_error, False)
+
+        # ── heading-blend singularity (independent review, 2026-09-24) ──────────
+        # See HEADING_BLEND_SINGULARITY_MARGIN's own comment for the finding, the
+        # calibration behind the margin, and what this does and does not close.
+        # Checked AFTER the replay-fidelity gates above, not instead of them: a
+        # baseline that already collides or already drifts too far is refused for
+        # that reason first, with its own, more specific diagnosis.
+        if self.baseline_heading_blend_min_magnitude < HEADING_BLEND_SINGULARITY_MARGIN:
+            raise HeadingBlendSingularityError(
+                self.baseline_heading_blend_min_magnitude,
+                HEADING_BLEND_SINGULARITY_MARGIN,
+            )
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -613,6 +736,22 @@ class PerturbationSpace:
             because it cannot be, short of abandoning vector-blend interpolation
             entirely; bounded and quantified instead.
 
+          * THE ABOVE WINDOW IS STILL REACHABLE (independent review, 2026-09-24) —
+            narrower after the 1e-3->1e-5 correction, not gone: a cyclist at speed
+            0.525 m/s, logged heading 0, velocity nearly antipodal to it, clean
+            baseline (baseline_replay_error=3.77e-7 m, no baseline_replay_collides)
+            — a delta of weighted norm 5.96e-08 flips heading to 2.1133502 rad and
+            produces a verified frame-0 collision. NOT fixed here either, by the
+            same "no continuous tie-break" argument two paragraphs up — instead,
+            PerturbationSpace now REFUSES TO CONSTRUCT when the baseline replay's
+            own blend magnitude is already close to this window
+            (HeadingBlendSingularityError, HEADING_BLEND_SINGULARITY_MARGIN — see
+            that constant's own comment for the calibration and what this does and
+            does not close). This function's own fallback behaviour, and the
+            residual window described above, are UNCHANGED; only whether
+            PerturbationSpace is willing to be built around a baseline already
+            standing in that window has changed.
+
         Vehicles never reach this function: the bicycle model carries theta as real
         state, so its heading is written from the rollout and was never derived.
         """
@@ -667,6 +806,13 @@ class PerturbationSpace:
         bx = (1.0 - w) * np.cos(logged) + w * np.cos(derived64)
         by = (1.0 - w) * np.sin(logged) + w * np.sin(derived64)
         magnitude = np.hypot(bx, by)
+        # Recorded for __init__'s own refusal check (independent review,
+        # 2026-09-24; see HEADING_BLEND_SINGULARITY_MARGIN's own comment) — how
+        # close THIS call came to the degenerate point, regardless of whether the
+        # fallback below actually fired. magnitude.size is 0 only when this
+        # function is called on an empty frame range, which apply() never does.
+        if magnitude.size:
+            self._last_heading_blend_min_magnitude = float(np.min(magnitude))
         # THE DEGENERATE-CASE THRESHOLD — CORRECTED A SECOND TIME, BY INDEPENDENT
         # REVIEW, AFTER THE FIRST FIX SHIPPED WITHOUT RE-MEASURING IT.
         #

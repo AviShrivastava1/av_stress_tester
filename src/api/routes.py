@@ -421,7 +421,7 @@ def stats(conn=Depends(get_db)):
                 -- counted as one (audit B04).
                 count(*) FILTER (WHERE stress_outcome = 'no_collision_found')
                                                                 AS no_collision_found,
-                -- These three describe ATTEMPTS, not stored results, so they count
+                -- These describe ATTEMPTS, not stored results, so they count
                 -- last_attempt_outcome. Counting stress_outcome would under-report
                 -- them: a scenario refused today but holding a result from an earlier
                 -- successful pass keeps stress_outcome='collision_found', and the
@@ -429,6 +429,16 @@ def stats(conn=Depends(get_db)):
                 -- shard run needs.
                 count(*) FILTER (WHERE last_attempt_outcome = 'replay_infeasible')
                                                                 AS replay_infeasible,
+                -- independent review, 2026-09-24: the shard-wide measurement
+                -- HEADING_BLEND_SINGULARITY_MARGIN's own calibration comment (in
+                -- perturbation_space.py) needs before it can move past "an
+                -- order-of-magnitude, reasoned default" — same reasoning as
+                -- frames_below_heading_floor/frames_in_heading_transition_band's
+                -- own comments in batch_scorer.py, one level up: a threshold whose
+                -- effect is only visible where it already fired cannot tell anyone
+                -- how often it fires.
+                count(*) FILTER (WHERE last_attempt_outcome = 'heading_blend_singularity')
+                                                                AS heading_blend_singularity,
                 count(*) FILTER (WHERE last_attempt_outcome = 'no_challenger')
                                                                 AS no_challenger,
                 count(*) FILTER (WHERE last_attempt_outcome = 'error')
@@ -466,6 +476,7 @@ def stats(conn=Depends(get_db)):
         collisions_found=row['collisions_found'],
         no_collision_found=row['no_collision_found'],
         replay_infeasible=row['replay_infeasible'],
+        heading_blend_singularity=row['heading_blend_singularity'],
         no_challenger=row['no_challenger'],
         stress_errors=row['stress_errors'],
         robustly_safe=row['robustly_safe'],
