@@ -913,6 +913,125 @@ def test_A06_a_blown_up_rollout_is_diagnosable(pconn, tmp_path, monkeypatch):
 _F06_SUBPROCESS_GUARD_ENV = 'AV_F06_SUBPROCESS_ALREADY_RUNNING'
 
 
+def _pytest_outcomes(output, node_ids):
+    """
+    Map each of `node_ids` to 'PASSED', 'FAILED', or None (neither line found),
+    reading pytest's own short-test-summary lines out of combined stdout+stderr
+    from a subprocess run made with `-rpf` (report passed+failed).
+
+    A SEPARATE, UNIT-TESTABLE FUNCTION rather than inlined into
+    test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak
+    itself (independent review, 2026-09-25) — that test's own
+    waymo-open-dataset-installed branch cannot be exercised end to end on this
+    machine (the same manylinux/TensorFlow constraint documented since Block
+    1), so the one thing actually checkable here is that the MATCHING LOGIC is
+    correct — see the standalone tests just below, run against hand-built
+    strings shaped like a real run's output, not a live subprocess.
+
+    Matches on 'PASSED <node_id>' / 'FAILED <node_id>' as literal substrings.
+    Deliberately NOT a per-line regex anchored at line start: pytest's `-rpf`
+    summary lines are consistently `f'{OUTCOME} {nodeid}'` with nothing before
+    the outcome word on that line, so a substring match is exactly as precise
+    here and needs no assumption about surrounding whitespace or platform line
+    endings.
+    """
+    outcomes = {}
+    for node_id in node_ids:
+        if f'PASSED {node_id}' in output:
+            outcomes[node_id] = 'PASSED'
+        elif f'FAILED {node_id}' in output:
+            outcomes[node_id] = 'FAILED'
+        else:
+            outcomes[node_id] = None
+    return outcomes
+
+
+def test__pytest_outcomes_reads_passed_lines_from_a_real_shaped_report():
+    """
+    Hand-built, shaped like the actual `-q -rpf` short-test-summary section a
+    genuine waymo-open-dataset-installed, leak-free run would produce (per this
+    file's own test_F06 docstring: 'both tests exercise the REAL ScenarioParser
+    and either pass on their own merits...'). Includes OTHER tests' PASSED
+    lines too, matching a real ~40-test-file run, to prove this does not just
+    detect "the word PASSED appeared somewhere".
+    """
+    fake_output = (
+        '....................................                              [100%]\n'
+        '=========================== short test summary info ===========================\n'
+        'PASSED tests/test_audit3_regressions.py::test_A07_de_provenance_survives_an_accepted_refinement\n'
+        'PASSED tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success\n'
+        'PASSED tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags\n'
+        '38 passed in 12.34s\n'
+    )
+    outcomes = _pytest_outcomes(fake_output, (
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
+    ))
+    assert outcomes == {
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success': 'PASSED',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags': 'PASSED',
+    }
+
+
+def test__pytest_outcomes_reads_failed_lines_from_a_real_shaped_report():
+    """Hand-built, shaped like this machine's own actual output (waymo absent)."""
+    fake_output = (
+        'FF..................................                              [100%]\n'
+        '=========================== short test summary info ===========================\n'
+        'FAILED tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success\n'
+        'FAILED tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags\n'
+        '2 failed, 36 passed in 5.67s\n'
+    )
+    outcomes = _pytest_outcomes(fake_output, (
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
+    ))
+    assert outcomes == {
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success': 'FAILED',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags': 'FAILED',
+    }
+
+
+def test__pytest_outcomes_distinguishes_per_node_id_not_just_any_match():
+    """
+    THE CASE THAT WOULD CATCH A SLOPPY IMPLEMENTATION: one of the two named
+    tests passed, the other failed — each of THOSE outcomes must be attributed
+    to the RIGHT node id, not to "PASSED appeared somewhere so both must have".
+    """
+    fake_output = (
+        '=========================== short test summary info ===========================\n'
+        'FAILED tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success\n'
+        'PASSED tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags\n'
+        '1 failed, 1 passed in 1.0s\n'
+    )
+    outcomes = _pytest_outcomes(fake_output, (
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
+    ))
+    assert outcomes['tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success'] == 'FAILED'
+    assert outcomes['tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags'] == 'PASSED'
+
+
+def test__pytest_outcomes_returns_none_when_neither_line_appears():
+    """
+    THE DEFENSIVE CASE: a collection error, a timeout, or any other shape of
+    subprocess failure that never reaches either named test at all must not be
+    silently misread as a pass or a fail for either of them.
+    """
+    fake_output = (
+        'ERROR collecting tests/test_audit3_regressions.py\n'
+        '1 error in 0.5s\n'
+    )
+    outcomes = _pytest_outcomes(fake_output, (
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
+    ))
+    assert outcomes == {
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success': None,
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags': None,
+    }
+
+
 def test_F06_install_parser_reverts_when_its_monkeypatch_context_exits():
     """
     SELF-CONTAINED, ORDER-INDEPENDENT. pytest.MonkeyPatch is the same class the
@@ -989,6 +1108,37 @@ def test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak(tmp_p
     and it is the closest thing to the real claim that is checkable without the
     waymo package.
 
+    G05 (independent review, 2026-09-25): the assertion below used to be
+    unconditional — `output.count(...) == 2` with no branch for an environment
+    where waymo-open-dataset IS installed, where both named tests would run for
+    real, pass, and make that count 0 — failing this test precisely when the
+    parser fix it exists to validate is working correctly. Branched now on
+    `importlib.util.find_spec('waymo_open_dataset')`, checked, not imported
+    (confirmed live: leaves sys.modules untouched, which matters in a file
+    already about what leaks into it). THE WAYMO-INSTALLED BRANCH REMAINS
+    UNVERIFIABLE END TO END ON THIS MACHINE — same manylinux/TensorFlow
+    constraint this project has documented since Block 1, not something to work
+    around here. What IS checkable, and is checked, in
+    test__pytest_outcomes_reads_passed_lines_from_a_real_shaped_report and its
+    three siblings just above this test: the MATCHING LOGIC that branch depends
+    on (_pytest_outcomes, reading 'PASSED <nodeid>'/'FAILED <nodeid>' lines out
+    of a `-rpf` report) is correct, exercised against a hand-built string shaped
+    like what a genuine waymo-installed passing run would produce. That proves
+    the parsing code is not broken; it does not prove the real package actually
+    behaves as this docstring predicts — those are different claims, and only
+    the first is reachable here.
+
+    PER-TEST OUTCOME, NOT A BARE proc.returncode (also independent review,
+    2026-09-25, raised alongside the branching above). The command line below
+    runs the WHOLE of test_audit3_regressions.py (minus this test) ahead of the
+    two named victims — dozens of unrelated tests in the same subprocess. A
+    bare `proc.returncode == 0` check would be wrong in both directions: it
+    would fail this test over some OTHER, unrelated test breaking elsewhere in
+    that file, and it still could not say WHICH of the two named tests actually
+    passed or failed, only that something in the whole run did. `-rpf` plus
+    _pytest_outcomes checks the two node IDs that actually matter, by name,
+    independent of anything else the subprocess ran.
+
     A GUARD AGAINST THIS TEST RECURSING INTO ITSELF, AND IT IS NOT DECORATIVE. This
     test lives inside test_audit3_regressions.py, and the subprocess command below
     names that whole file — which, without the `--deselect` below, would re-collect
@@ -1020,6 +1170,7 @@ def test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak(tmp_p
                actually written to catch — not an artifact of an earlier, unrelated
                test.
     """
+    import importlib.util
     import subprocess
 
     if os.environ.get(_F06_SUBPROCESS_GUARD_ENV) == '1':
@@ -1032,27 +1183,56 @@ def test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak(tmp_p
         'tests/test_audit3_regressions.py::'
         'test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak'
     )
+    victim_ids = (
+        'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
+        'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
+    )
     proc = subprocess.run(
         [sys.executable, '-m', 'pytest',
          'tests/test_audit3_regressions.py',
          '--deselect', this_test_id,
-         'tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success',
-         'tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags',
-         '-q', '-p', 'no:cacheprovider'],
+         *victim_ids,
+         '-q', '-rpf', '-p', 'no:cacheprovider'],
         cwd=project, env=env, capture_output=True, text=True, timeout=300,
     )
     output = proc.stdout + proc.stderr
+    outcomes = _pytest_outcomes(output, victim_ids)
 
-    assert output.count("ModuleNotFoundError: No module named 'waymo_open_dataset'") == 2, (
-        f'expected exactly the standard missing-waymo failure for both named tests:\n'
-        f'{output[-3000:]}'
-    )
+    # THE LEAK REACHING AN UNRELATED TEST, CHECKED REGARDLESS OF WHICH BRANCH
+    # BELOW APPLIES — this is the actual regression this whole test exists to
+    # catch, and it is exactly as meaningful whether or not waymo is installed
+    # here.
     assert 'UnicodeDecodeError' not in output, (
         f'the leak reached a test in another file:\n{output[-3000:]}'
     )
     assert 'KeyError' not in output, (
         f'the leak reached a test in another file:\n{output[-3000:]}'
     )
+
+    if importlib.util.find_spec('waymo_open_dataset') is not None:
+        # WAYMO IS INSTALLED HERE (fix G05). Neither named test's missing-
+        # dependency failure applies — per this docstring's own "what a run
+        # WITH waymo-open-dataset installed would show instead", post-fix both
+        # exercise the real ScenarioParser and must pass on their own merits.
+        for node_id in victim_ids:
+            assert outcomes[node_id] == 'PASSED', (
+                f'{node_id} did not pass with waymo-open-dataset installed '
+                f'(outcome={outcomes[node_id]!r}):\n{output[-3000:]}'
+            )
+    else:
+        # WAYMO IS ABSENT HERE — this machine, and every machine in this
+        # project's documented local/Colab split. Both named victims must fail,
+        # and specifically for the missing-dependency reason, not some other
+        # way (which is what the leak reaching the stub would look like).
+        for node_id in victim_ids:
+            assert outcomes[node_id] == 'FAILED', (
+                f'{node_id} did not fail the expected way '
+                f'(outcome={outcomes[node_id]!r}):\n{output[-3000:]}'
+            )
+        assert output.count("ModuleNotFoundError: No module named 'waymo_open_dataset'") == 2, (
+            f'expected exactly the standard missing-waymo failure for both named tests:\n'
+            f'{output[-3000:]}'
+        )
 
 
 def test_A07_de_provenance_survives_an_accepted_refinement():

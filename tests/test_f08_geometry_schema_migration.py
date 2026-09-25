@@ -16,10 +16,18 @@ the per-scenario SAVEPOINT and landing in `.failures` as a cryptic SQL error for
 EVERY scenario that would otherwise qualify, over a table the write does not need
 yet.
 
-This file holds three properties: the stale-schema state degrades safely rather than
+This file holds four properties: the stale-schema state degrades safely rather than
 crashing, that state is reported distinctly (not conflated with "the table does not
-exist", which is the ordinary, unremarkable pre-Pass-3 state), and the fully-migrated
-path is unaffected.
+exist", which is the ordinary, unremarkable pre-Pass-3 state), the fully-migrated
+path is unaffected, and — fix G07, independent review, 2026-09-25 — the column check
+itself resolves the SAME relation to_regclass and the DELETE resolve, rather than
+matching column names across every same-named table on the whole search path. The
+original check (`information_schema.columns WHERE table_name = 'perturbed_paths'`)
+had no schema in it at all: a second schema's own perturbed_paths table, sharing no
+relationship with the one this connection actually writes to, could supply columns
+the query counted as if they belonged to the table being checked. Fixed by resolving
+to_regclass('perturbed_paths') once and querying pg_attribute keyed on that exact
+OID.
 
 Needs a DISPOSABLE Postgres/PostGIS database and skips unless AV_CLAIMS_DB=1, same
 requirement as the other DB-gated files in this project.
@@ -135,6 +143,57 @@ def migrated_conn():
     connection.close()
 
 
+@pytest.fixture
+def cross_schema_shadow_conn():
+    """
+    THE G07 REPRO. public.perturbed_paths carries ONLY stress_run_id; a second
+    schema's OWN perturbed_paths — same name, unrelated table, never touched by
+    this connection's actual writes — carries ONLY scene_fingerprint. Neither
+    table alone has both columns, but information_schema.columns has no schema
+    in its WHERE clause and counts 2 across the two of them, which is exactly the
+    state that made update_stress_results report this schema as complete while
+    to_regclass('perturbed_paths') (and the DELETE) resolve to public's table
+    alone, which does not have scene_fingerprint at all.
+
+    The shadow schema is not on the search path (CREATE SCHEMA never adds
+    itself), so this is not a search_path manipulation — just a second,
+    ordinary schema that happens to hold a same-named table, the way a
+    migration-shadow or a differently-privileged app schema legitimately might.
+    """
+    connection = db.get_connection()
+    with connection.cursor() as cur:
+        cur.execute('DROP SCHEMA IF EXISTS audit_shadow CASCADE')
+        cur.execute('DROP TABLE IF EXISTS perturbed_paths, scenario_agents, '
+                    'scenario_scores CASCADE')
+    connection.commit()
+    db.init_schema(connection)
+    with connection.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE perturbed_paths (
+                scenario_id TEXT PRIMARY KEY
+                            REFERENCES scenario_scores(scenario_id) ON DELETE CASCADE,
+                target_idx  INTEGER NOT NULL,
+                n_points    INTEGER NOT NULL,
+                exported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                stress_run_id TEXT
+            )
+        """)
+        cur.execute('CREATE SCHEMA audit_shadow')
+        cur.execute("""
+            CREATE TABLE audit_shadow.perturbed_paths (
+                scenario_id TEXT PRIMARY KEY,
+                scene_fingerprint TEXT
+            )
+        """)
+    connection.commit()
+    yield connection
+    connection.rollback()
+    with connection.cursor() as cur:
+        cur.execute('DROP SCHEMA IF EXISTS audit_shadow CASCADE')
+    connection.commit()
+    connection.close()
+
+
 @requires_db
 def test_F08_a_stale_perturbed_paths_schema_does_not_crash_the_update(stale_geom_conn):
     """
@@ -157,6 +216,35 @@ def test_F08_a_stale_perturbed_paths_schema_does_not_crash_the_update(stale_geom
     assert report.geometry_schema_incomplete is True, (
         'a perturbed_paths table missing the columns this call needs must be '
         'reported, not silently limped past'
+    )
+
+
+@requires_db
+def test_G07_a_same_named_table_in_another_schema_does_not_launder_completeness(
+        cross_schema_shadow_conn):
+    """
+    THE G07 REPRO. public.perturbed_paths has stress_run_id alone; a second
+    schema's own perturbed_paths has scene_fingerprint alone. Pre-fix,
+    information_schema.columns summed both schemas' matching columns (2) and
+    reported geometry_schema_incomplete=False, but update_stress_results
+    resolves and touches public.perturbed_paths ALONE — which does not have
+    scene_fingerprint — so the DELETE raised UndefinedColumn anyway, over a
+    schema check that had just claimed everything was fine.
+    """
+    _seed(cross_schema_shadow_conn)
+
+    report = db.update_stress_results(cross_schema_shadow_conn, {SID: dict(_RESULT)})
+
+    assert report.failures == [], (
+        f'the write failed over a table it does not need for scoring: {report.failures}'
+    )
+    assert int(report) == 1, 'the scenario itself must still be scored'
+    assert db.fetch_scenario(cross_schema_shadow_conn, SID)['min_perturbation'] == 0.5, (
+        'the result must actually be persisted, not merely absent from .failures'
+    )
+    assert report.geometry_schema_incomplete is True, (
+        "public.perturbed_paths is missing scene_fingerprint — a second schema's "
+        'unrelated table having it must not launder this into "complete"'
     )
 
 

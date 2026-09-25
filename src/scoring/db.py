@@ -777,16 +777,46 @@ def update_stress_results(conn, results):
         # created by an init_geometry_schema() that predates the stress_run_id/
         # scene_fingerprint ALTERs — run once, long ago, never re-run since — passes
         # to_regclass but does not have the columns this DELETE references below.
-        # information_schema.columns is queried for the same reason to_regclass is
-        # used instead of a live probe: it cannot itself raise on a missing table or
-        # column, so this stays a single safe up-front check rather than something
-        # that needs its own error handling.
+        # A live probe (a catalog check that can itself raise on a missing table or
+        # column) is deliberately avoided so this stays a single safe up-front
+        # check rather than something that needs its own error handling.
+        #
+        # pg_attribute KEYED ON to_regclass's OWN OID, NOT information_schema.
+        # columns BY NAME (independent review, 2026-09-25). information_schema.
+        # columns has no schema in this query at all — `table_name = 'perturbed_
+        # paths'` matches EVERY schema's perturbed_paths table on the search
+        # path, and sums their columns together, while to_regclass('perturbed_
+        # paths') (and the DELETE below) resolve to exactly ONE of them via that
+        # same search path. Reproduced: a public.perturbed_paths carrying only
+        # stress_run_id, plus a second schema's perturbed_paths carrying only
+        # scene_fingerprint, reported columns_present=true (2, summed across
+        # both) while the table the DELETE actually touches had neither pair
+        # complete — update_stress_results then failed on UndefinedColumn with
+        # geometry_schema_incomplete left false, exactly the silent-crash state
+        # this fix exists to prevent, on a table it correctly claimed was fine.
+        #
+        # to_regclass IS RESOLVED ONCE, IN A CTE, AND REUSED — not re-evaluated
+        # for the existence check and the column check separately. Both are then
+        # guaranteed to describe the SAME relation the DELETE below resolves,
+        # by construction, rather than by two separate name lookups that could
+        # in principle disagree.
+        #
+        # NOT attisdropped, EXCLUDING A REAL EDGE CASE, NOT A HYPOTHETICAL ONE.
+        # Postgres does not physically remove a dropped column's catalog row —
+        # ALTER TABLE ... DROP COLUMN renames it and marks attisdropped, and it
+        # stays in pg_attribute. Without this clause, a column added and later
+        # dropped would still count as "present" here. information_schema.
+        # columns already excludes these for free; pg_attribute does not, so
+        # this has to be spelled out explicitly to keep the same guarantee.
         cur.execute("""
-            SELECT to_regclass('perturbed_paths') IS NOT NULL,
-                   COALESCE((SELECT COUNT(*) FROM information_schema.columns
-                              WHERE table_name = 'perturbed_paths'
-                                AND column_name IN ('stress_run_id',
-                                                    'scene_fingerprint')), 0) = 2
+            WITH rel AS (SELECT to_regclass('perturbed_paths') AS oid)
+            SELECT rel.oid IS NOT NULL,
+                   COALESCE((SELECT COUNT(*) FROM pg_attribute
+                              WHERE attrelid = rel.oid
+                                AND attname IN ('stress_run_id',
+                                                'scene_fingerprint')
+                                AND NOT attisdropped), 0) = 2
+            FROM rel
         """)
         table_exists, columns_present = cur.fetchone()
         geometry_exists = bool(table_exists) and bool(columns_present)
