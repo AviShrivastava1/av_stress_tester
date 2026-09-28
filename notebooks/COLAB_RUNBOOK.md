@@ -8,7 +8,7 @@ finding from all five rounds — the original three post-launch audits (B01–B2
 `invalid_crc` case the one deliberate exception, `xfail(strict=True)`; R01–R12; A01–A14)
 plus the fourth and fifth independent audits (F01–F09, G01–G08) — is closed. Nothing here
 changes code. This runbook's own narrative was silent on F/G until this pass, even though
-individual notebook cells had already been kept current piecemeal — cell 46's write
+individual notebook cells had already been kept current piecemeal — cell 48's write
 confirmation, for instance, already carried F07/F08/G03/G06 verbatim in its own comments
 before this pass touched anything. This session **measures**, and five decisions are
 waiting on what it measures.
@@ -18,7 +18,7 @@ waiting on what it measures.
 ## Ground rules
 
 **Section numbers are the stable reference; cell indices are a convenience.** Every index
-in this document was recounted against `len(nb['cells'])` on 2026-09-27 at 58 cells, but
+in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 60 cells, but
 inserting a cell renumbers everything after it — which has now broken a cell reference
 three times in this project (Batch 4 shifted the audit's B19 fixture, Batch 2 hit a
 name collision on `n_exact_match`, and this runbook's own first draft pointed at the
@@ -332,7 +332,92 @@ same shape as 7g's own `max_baseline_drift` decision:
   and the structural redesign G02 deferred (constrain DE's search domain, or rebuild the
   blend against a singularity-free anchor) needs reconsidering, not just re-margined
 
-### 10b — B09 before/after (cells 43–44)
+### 7g-iii — drift-outlier decomposition (cells 36–37)
+
+Diagnosis only — does not change `max_baseline_drift` or the integrator. 7g's sweep
+found a continuous drift distribution (p50=0.77 m, p90=4.45 m, p99=17.5 m, max=32.7 m,
+only 40.1% at/under the 0.5 m default) and a worst-10 that is all vehicles, no interior
+gap, no hard-gate collision, at 14-33 m. This cell asks *why*, over a targeted revisit
+of the worst `K=10` by drift plus `K=10` nearest the median (0.77 m) — 20 scenarios, one
+more targeted `ShardLoader` pass, not a second full read.
+
+**The shape follows one fact:** `extract_state_from_womd` (`bicycle_model.py`) builds
+the bicycle model's speed as `v = sqrt(vx**2 + vy**2)` — a scalar, from velocity alone,
+that never sees position — and `bicycle_step` clamps it to `[0, V_MAX]`, integrating
+position only along the heading direction. Every measurement below tests a different
+way that can go wrong; see the notebook's own 7g-iii markdown cell for the full
+breakdown, reproduced live against constructed fixtures before this cell was written.
+
+**Candidates C1-C5:** independently-measured channels disagreeing (C1); recovered
+controls hitting `DELTA_MAX`/`A_MAX` (C2); perception noise no smooth control sequence
+reproduces (C3); a short or late-starting track (C4); and **reverse motion (C5)** — a
+car backing up has a positive scalar speed but a logged velocity *vector* opposite its
+heading, and the bicycle model can't represent reversing at all, so the replay drives
+it forward at roughly `2v` error growth. C5 fits the worst-10's profile better than
+C1-C4 and needed its own measurement, since it's invisible to a plain speed-magnitude
+check by construction.
+
+**Measurements M1-M6:** M1 (per-frame error profile — jump frame reported as the real
+global frame `ts[k+1]`, not a bare array index; a concentrated jump is *not* C4-only —
+a single bad frame under C1 or C3 looks identical, and M6's track shape is what actually
+separates C4) and its cheap M1b addition (longitudinal/lateral decomposition of the
+offset vector at the worst frame — one dot product); M2 (speed *magnitude* consistency —
+sign-blind, so C5 passes it cleanly, why M4 exists); M3 (heading consistency, gated on
+*implied* speed, `V_HEADING_MIN` reused from `linear_model.py` rather than a new
+constant); M4 (direction consistency — logged velocity vector vs. logged heading, gated
+on *logged* speed — gating on implied speed would exclude exactly the disagreeing frames
+this measurement exists to catch); M5 (**unexplained fraction from a predicted OFFSET
+VECTOR — corrected twice, independent review 2026-09-29** — round one compared a
+scalar cumsum of the signed residual against `m1b_longitudinal` at the max-offset
+frame, fixing an earlier bug that compared the *final* cumsum against the *max* offset
+instead, wrong whenever drift is non-monotone; that scalar comparison was *itself*
+still wrong on a turning track — it sums each interval's residual as if every interval
+pointed the same way, which a closed-form function of the heading change contradicts,
+so a caveat was the wrong response. **The fix accumulates the residual as a vector, one
+per interval along that interval's own heading, and compares the resulting predicted
+offset vector against the actual offset vector, both at the identical frame** — `norm
+(offset_vec - pred_vec) / norm(offset_vec)`. Verified on five fixtures built from
+`bicycle_step` itself (so the fixture carries no discretization mismatch against the
+replay's own integrator): straight-with-bias and a mid-track peak both landed at 0%
+unexplained; a 100° turn with the same bias and a 100° turn while reversing both
+landed at 1-3% (fixture-dependent); a 100° turn with a genuine 8° heading error
+landed at 99.9%. The scalar
+comparison is kept as context only — it is exact solely on a straight track. **These
+numbers are a floor, not a benchmark** (independent review, 2026-09-30): the fixtures'
+"true" reference path came from the replay's own integrator, with no noise and no
+independent measurement error for the speed channel to compete against. Real logged
+positions come from perception, not from replaying `bicycle_step` — a genuinely
+well-explained real scenario can still carry some nonzero unexplained fraction from
+ordinary sensor noise, and that real-data floor is unknown; nothing here measures it.
+A low fraction is consistent with the speed channel explaining the drift, not a score
+to match against 0% or 1-3%); M6 (track shape — `t0`, `frames_observed/T` — the only
+measurement that actually separates C4).
+
+**What stays unresolved:** C1 and C3 are not separable by anything here — both show as
+"channels disagree, nothing clipped, not reversing, not short" — reported as one
+combined finding, never a forced pick.
+
+**Two state details:** hard-asserts `rows` has 7g's own shape first — not just that a
+variable named `rows` exists (corrected, independent review 2026-09-29: 7f defines its
+*own* `rows`, a list of `{'scenario_id', 'old', 'new'}` dicts, so an existence-only check
+passes after a restart-and-partial-rerun that hits 7f but skips 7g, and this cell then
+`KeyError`s on `r['collides']` confusingly deep in the loop instead of failing here with
+a clear message. The content check itself needs `'rows' in globals()` as its own
+short-circuiting first clause — `rows and {...} <= rows[0].keys()` alone raises a bare
+`NameError` when `rows` doesn't exist at all, which is the exact case the guard exists
+for); the decomposable population explicitly excludes hard-gate rows (`r['collides']`)
+for *both* groups, since `PerturbationSpace.__init__` raises there and discards `self`
+— the worst-10 happen to satisfy this already, the median-nearest group is not
+guaranteed to on a different shard.
+
+**Descriptive, not inferential**, stated as such in the cell's own output: a hand-picked
+10-vs-10 contrast shows whether a pattern is visible, and claims no statistical
+significance.
+
+**Success:** completes for all 20 scenarios; every scenario prints all six
+measurements; no hypothesis is declared confirmed.
+
+### 10b — B09 before/after (cells 45–46)
 
 Runs after Pass 2 diagnostics because it needs `ranked`. `B09_N = 25`, ~8 minutes.
 
@@ -365,7 +450,7 @@ Both add an atomic identity check against a *previous* write: `upsert_scores`'s
 guard (G04). Both need a scenario to be written once, then rescored under a genuinely
 different scene fingerprint or SDC index, before either has anything to catch. This
 session runs Pass 1 once, over a shard being read for the first time — there is no
-earlier write for anything here to diverge from. Section 8's idempotency check (cell 38)
+earlier write for anything here to diverge from. Section 8's idempotency check (cell 40)
 already calls `upsert_scores` twice with *identical* records; it now also asserts
 `.rescoped` is empty both times — a cheap negative-control tripwire, not a validation of
 the rescope path itself. Confirming the guards actually fire needs a second pass over the
@@ -420,7 +505,7 @@ than looking forgotten.
 ## Step 6 — Pass 2, and the rest of the pipeline
 
 Sections 8 through 10 (rank + persist, `stress_test_scenarios`, diagnostics) at cells
-37–42, then 10b, then sections 11 through 15 at cells 45–57 (update, Pass 3 export,
+39–44, then 10b, then sections 11 through 15 at cells 47–59 (update, Pass 3 export,
 geometry verification, API round trip, summary).
 
 **`TOP_N` stays at 5.** Phase 5's architecture is a cheap filter feeding an expensive pass
@@ -428,7 +513,7 @@ over a small selected set; running Pass 2 at a size chosen to make a measurement
 better would misrepresent how the pipeline works. 10b gets its own `B09_N` instead —
 that decoupling is the point.
 
-**Geometry verification (section 13, cell 51)** carries Batch 5's B19 fix: it now asserts *coverage
+**Geometry verification (section 13, cell 53)** carries Batch 5's B19 fix: it now asserts *coverage
 before correctness*. The old version passed vacuously at `0 == 0` when every agent was
 missing from the database — the cell whose job is catching missing geometry was blind to
 geometry being missing in full. It now tracks expected-exportable agents and fails if any
@@ -439,8 +524,9 @@ four inserted cells silently broke it — the test began exec'ing a markdown cel
 with `SyntaxError` instead of reaching its assertion, staying red either way so the count
 never moved. Batch 5 switched it to content lookup. A later session's two new cells (7g,
 10b) shifted indices again with the fixture unaffected, a subsequent pass's two new cells
-(7g-ii) did the same, and this pass's own two new cells (the freshness guard, section 3b)
-do it a third time — which is the fix doing its job, again.
+(7g-ii) did the same, a later pass's two new cells (the freshness guard, section 3b) did
+it a third time, and this pass's own two new cells (7g-iii) do it a fourth — which is the
+fix doing its job, again.
 
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
