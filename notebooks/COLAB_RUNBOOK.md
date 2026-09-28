@@ -8,7 +8,7 @@ finding from all five rounds — the original three post-launch audits (B01–B2
 `invalid_crc` case the one deliberate exception, `xfail(strict=True)`; R01–R12; A01–A14)
 plus the fourth and fifth independent audits (F01–F09, G01–G08) — is closed. Nothing here
 changes code. This runbook's own narrative was silent on F/G until this pass, even though
-individual notebook cells had already been kept current piecemeal — cell 48's write
+individual notebook cells had already been kept current piecemeal — cell 50's write
 confirmation, for instance, already carried F07/F08/G03/G06 verbatim in its own comments
 before this pass touched anything. This session **measures**, and five decisions are
 waiting on what it measures.
@@ -18,7 +18,7 @@ waiting on what it measures.
 ## Ground rules
 
 **Section numbers are the stable reference; cell indices are a convenience.** Every index
-in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 60 cells, but
+in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 62 cells, but
 inserting a cell renumbers everything after it — which has now broken a cell reference
 three times in this project (Batch 4 shifted the audit's B19 fixture, Batch 2 hit a
 name collision on `n_exact_match`, and this runbook's own first draft pointed at the
@@ -417,7 +417,104 @@ significance.
 **Success:** completes for all 20 scenarios; every scenario prints all six
 measurements; no hypothesis is declared confirmed.
 
-### 10b — B09 before/after (cells 45–46)
+### 7g-iv — clipped-acceleration mechanism check (cells 38–39)
+
+Diagnosis only, same 20 scenarios as 7g-iii, no fix proposed. 7g-iii ruled out reverse
+motion for the worst-10 and found the speed channel alone does not explain the drift
+(M5 unexplained 88-103%), while the offset is longitudinal and steady. The one signal
+that separates the worst-10 from the middle-10 is `clip_a` — 3.3-30.0% (median 15.0%)
+vs. 0-6.7% (median 2.2%). This cell tests whether `invert_bicycle` clipping acceleration
+to `A_MAX` is the mechanism, by re-integrating the clipped acceleration and checking
+whether the resulting speed gap accounts for the position offset.
+
+**Six changes from independent review, 2026-09-30, folded in before this cell was
+written, each verified against constructed fixtures run through the real
+`PerturbationSpace`:**
+
+1. **Closure, made the primary number.** Comparing speeds alone never checks that the
+   gap accounts for the 14-33 m offset. Reuses 7g-iii's M5 vector-accumulation with
+   `replay_speed` as the driver term in place of the logged speed, compared against the
+   actual offset vector at the worst frame. A hard-stop fixture (real -8 m/s² decel,
+   exceeding `A_MAX`) landed at 4.4% unexplained; a noise-only fixture (no systematic
+   clipping direction) landed at 0.1% — both in the low range 7g-iii's own fixtures
+   established, confirming the closure metric reads a clipping-explained case as
+   low when it should.
+2. **Proximity test replaced, not kept as a hard check.** "First departure within one
+   transition of a clipped one" is close to chance at real clip rates (roughly half of
+   all 3-transition windows contain one at a 20% clip rate). Replaced with comparing the
+   first frame `|v_sim - logged| > 0.5` against the first frame `|replay - logged| >
+   0.5` directly; the base rate is still printed, labeled as context, not evidence.
+3. **Sign and net effect reported per scenario.** Two different quantities, both
+   printed: the sign split of individually clipped transitions (`a_raw < -A_MAX` for a
+   hard stop — negative), and the net `Σ(clip(a_raw) - a_raw)·dt` (positive for that
+   same hard stop, since clipping applies *less* braking than the raw signal called
+   for — the direction that produces a replay-ahead offset). The net is checked against
+   the replay's own ahead/behind direction — a disagreement is evidence against clipping
+   being that scenario's cause, not for it.
+4. **Clip fraction over valid transitions, not all `T-1`.** 7g-iii's own `clip_a`
+   divides by every row, including zero-padded rows before `t0` or across a gap,
+   understating the rate for a late-starting track. Both are now printed, labeled.
+5. **Division guarded by a tolerance, not just `> 0`.** A no-clip fixture with a
+   near-zero offset printed 18,481,207% unexplained from float dust before this fix;
+   `OFFSET_TOL = 1e-3` m now prints `n/a` below that floor instead.
+6. **Direct cross-check against `space.base_controls`.** Reconstructs `clip(a_raw)` per
+   GLOBAL adjacent frame — the inverter's own unit — and asserts it matches
+   `base_controls` on every gap-free transition.
+
+**Two more fixes, independent review, 2026-09-30 round 2**, both against a constructed
+gapped fixture (mild brake, zero real clipping, frames 10-14 invalid) that exposed each:
+
+7. **The sign check gave a false DISAGREES when nothing was clipped.** With
+   `net_clip_speed` exactly 0 and a noise-level `mean_speed_diff`, the check read one as
+   "BEHIND/neutral" and the other's sign at random, printing a spurious disagreement —
+   on real data the middle group would collect meaningless DISAGREES lines exactly like
+   this. Fixed by gating the comparison on materiality: it only runs when both
+   `|net_clip_speed|` and `|mean_speed_diff|` exceed `DEPARTURE_THRESHOLD` (0.5 m/s);
+   otherwise it prints `n/a (clip effect or speed gap below 0.5 m/s -- not material)`.
+8. **`v_sim` was built on `ts`'s gap-bridged `dt_actual`, not global adjacent frames.**
+   Change 6 above applied the global-frame reconstruction only to the `base_controls`
+   cross-check, not to `v_sim` itself. On the gapped fixture this missed the actual
+   mechanism: `TrajectoryInverter.invert` writes a ZERO control across the gap (the
+   inverter never attempts to recover one there), so the real replay HOLDS speed while
+   the logged car keeps braking — a `dt_actual`-bridged reconstruction cannot represent
+   that, and read a 0.80 m/s build-check error where there should have been none. Fixed
+   by rebuilding `v_sim` frame-by-frame from `t0` over the same global-adjacent-frame
+   `clip(a_raw)` change 6 already reconstructs (zeroed wherever either endpoint is
+   invalid) — the build check is now exact to float precision on every scenario, gap or
+   not, and the departure-frame comparison and sign check both become valid on a gapped
+   scenario too. The clip counts and `net_clip_speed` moved to this same global-frame
+   basis for the same reason and are unaffected on every gap-free fixture (identical to
+   round 1's numbers there, since a gap-free `ts` and the global frame range coincide).
+
+**Gap caveat, current state:** `TrajectoryInverter.invert` writes zero across any
+transition touching an invalid frame — it never bridges a gap with a larger `dt`. After
+round 2, `v_sim`, the clip counts, `net_clip_speed`, and the sign check are all built on
+that same global-adjacent-frame unit, so they are exact regardless of a gap. Only the
+**closure** still bridges a gap, because `implied_longitudinal` is position-derived
+(`dt_actual = diff(ts) * DT`, the same construction 7g-iii's M2-M5 use) rather than
+accel-derived — the gapped fixture's closure still printed 11.3% with zero real
+clipping, which is that approximation's own floor, not a residual. The CLOSURE print
+line carries a `[GAP ...]` marker whenever `has_interior_gap` is true so this isn't
+misread. Separately, the same gapped fixture shows a real 0.52 m/s replay-ahead speed
+departure with `net_clip_speed` at zero (no clipped transitions at all) — that is
+`TrajectoryInverter.invert`'s own zero-control-across-the-gap behavior, not clipping,
+and the reading guide now says so explicitly: on real data, a gapped scenario with a
+speed departure and near-zero `net_clip_speed` points to gap-zeroing, not clipping.
+
+**Also verified:** a non-vehicle (pedestrian) target and a single-valid-frame track
+both hit the early-exit branch cleanly with no missing-field error; the
+`max_offset_frame` recomputed here is asserted equal to 7g-iii's own stored value on
+every scenario, as a cheap proof the two cells are looking at the same computation.
+
+**Descriptive, not inferential** — same 20 scenarios, no statistical claim. A low
+closure number closes the chain for *this* mechanism on a given scenario; it does not
+rule out a compounding cause on a scenario where the numbers don't cleanly close.
+
+**Success:** completes for all 20 (vehicle-only fields are absent for a non-vehicle
+target or a track under 2 valid frames), the `base_controls` cross-check assertion
+holds on every gap-free transition it checks, and no fix to the inverter is proposed.
+
+### 10b — B09 before/after (cells 47–48)
 
 Runs after Pass 2 diagnostics because it needs `ranked`. `B09_N = 25`, ~8 minutes.
 
@@ -450,7 +547,7 @@ Both add an atomic identity check against a *previous* write: `upsert_scores`'s
 guard (G04). Both need a scenario to be written once, then rescored under a genuinely
 different scene fingerprint or SDC index, before either has anything to catch. This
 session runs Pass 1 once, over a shard being read for the first time — there is no
-earlier write for anything here to diverge from. Section 8's idempotency check (cell 40)
+earlier write for anything here to diverge from. Section 8's idempotency check (cell 42)
 already calls `upsert_scores` twice with *identical* records; it now also asserts
 `.rescoped` is empty both times — a cheap negative-control tripwire, not a validation of
 the rescope path itself. Confirming the guards actually fire needs a second pass over the
@@ -505,7 +602,7 @@ than looking forgotten.
 ## Step 6 — Pass 2, and the rest of the pipeline
 
 Sections 8 through 10 (rank + persist, `stress_test_scenarios`, diagnostics) at cells
-39–44, then 10b, then sections 11 through 15 at cells 47–59 (update, Pass 3 export,
+41–46, then 10b, then sections 11 through 15 at cells 49–61 (update, Pass 3 export,
 geometry verification, API round trip, summary).
 
 **`TOP_N` stays at 5.** Phase 5's architecture is a cheap filter feeding an expensive pass
@@ -513,7 +610,7 @@ over a small selected set; running Pass 2 at a size chosen to make a measurement
 better would misrepresent how the pipeline works. 10b gets its own `B09_N` instead —
 that decoupling is the point.
 
-**Geometry verification (section 13, cell 53)** carries Batch 5's B19 fix: it now asserts *coverage
+**Geometry verification (section 13, cell 55)** carries Batch 5's B19 fix: it now asserts *coverage
 before correctness*. The old version passed vacuously at `0 == 0` when every agent was
 missing from the database — the cell whose job is catching missing geometry was blind to
 geometry being missing in full. It now tracks expected-exportable agents and fails if any
@@ -525,8 +622,8 @@ with `SyntaxError` instead of reaching its assertion, staying red either way so 
 never moved. Batch 5 switched it to content lookup. A later session's two new cells (7g,
 10b) shifted indices again with the fixture unaffected, a subsequent pass's two new cells
 (7g-ii) did the same, a later pass's two new cells (the freshness guard, section 3b) did
-it a third time, and this pass's own two new cells (7g-iii) do it a fourth — which is the
-fix doing its job, again.
+it a third time, a subsequent pass's two new cells (7g-iii) did it a fourth, and this
+pass's own two new cells (7g-iv) do it a fifth — which is the fix doing its job, again.
 
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
