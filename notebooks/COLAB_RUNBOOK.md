@@ -261,13 +261,25 @@ appear anywhere above this line in this runbook. **No second Drive pass** — 7g
 above now already collects the fields this cell reads, on every scenario it visits, full
 shard.
 
+**Corrected (independent review, 2026-09-27): only ONE of the three fields is
+genuinely vehicle-inapplicable.** This section previously claimed
+`frames_below_heading_floor` and `frames_in_heading_transition_band` were "exactly 0
+for every vehicle row, by construction." Real data on the 496-scenario shard showed
+vehicle rows with p75=69 and p90=91 frames below the floor, and that claim was false.
+Both counters are computed from **logged speed alone**
+(`perturbation_space.py`'s own comment: "RECORDED ON EVERY SCENARIO, INCLUDING FOR
+VEHICLES"), with no dependence on `is_vehicle` — a slow or parked car counts exactly
+like a slow pedestrian does. Reproduced live against a real, stationary `VEHICLE`
+fixture: `frames_below_heading_floor` came back `91`, not `0`. Only
+`baseline_heading_blend_min_magnitude` is genuinely vehicle-inapplicable — it comes
+from `_last_heading_blend_min_magnitude`, touched exclusively by `_linear_heading`,
+which vehicles never call — and that one claim stays true.
+
 **What this cell reports, split by challenger agent type throughout, not pooled**
-(independent review, 2026-09-26 — vehicles use the bicycle model and never call
-`_linear_heading`, so `baseline_heading_blend_min_magnitude` is exactly `inf` and
-`frames_in_heading_transition_band` is exactly `0` for every vehicle row, by
-construction; WOMD is vehicle-heavy, so pooling would dilute the exact question this
-cell exists to answer with structural zeros/infs. Same pattern 7g's own "drift by
-challenger agent type" section already uses):
+(still the right design — real speed distributions differ by agent type in WOMD, not
+because the floor/band counters structurally don't apply to vehicles; pooling would
+still average away that difference, for a different reason than given last round.
+Same pattern 7g's own "drift by challenger agent type" section already uses):
 - `frames_below_heading_floor` / `frames_in_heading_transition_band` percentiles, per
   agent type, over every scenario that both survived construction *and* did not trip
   the hard replay-fidelity gate — full shard, not the `TOP_N = 5` Pass-2 sample.
@@ -275,10 +287,25 @@ challenger agent type" section already uses):
   already; reading that instead would be strictly worse, N=5 against N≈shard size, so
   it is not read separately here.)
 - The singularity guard's fire rate against the attempted population (constructions
-  actually reached — excludes `no_challenger`, where nothing was ever attempted).
+  actually reached — excludes `no_challenger`, where nothing was ever attempted, and
+  counted over `rows`, not `measured_rows`: a hard-gate refusal still means
+  construction was attempted. In the first real run (496 scenarios), 0 of 39 non-vehicle
+  challengers attempted fired the guard — 36 of those were measured directly, the other
+  3 were hard-gate-excluded, and counting from `measured_rows` alone would have missed
+  them), with a sample-size sentence next to it (independent review, 2026-09-27 — same
+  discipline 10b's before/after already uses): the guard tests a deliberately rare
+  event, so a zero-fire result is "no evidence it fires", never "evidence it does not",
+  regardless of how large the non-vehicle population attempted turns out to be.
 - `baseline_heading_blend_min_magnitude` percentiles per agent type, for the same
   surviving-and-not-hard-gated population — how close real scenarios sit to the 60°
-  margin, not just whether they cross it.
+  margin, not just whether they cross it. **Not a bare percentile line** (independent
+  review, 2026-09-27): `percentiles()` (7g's own helper, untouched) calls
+  `np.percentile` on the raw array, which is `nan` at every quantile with a
+  `RuntimeWarning` on an all-inf VEHICLE group — reproduced live. A local helper here
+  prints "all inf (guard cannot apply to the bicycle model)" for those, and for every
+  non-vehicle group also prints the **minimum at full precision** and a count of rows
+  below `0.999` — the real run printed `1.000` at every percentile for every
+  pedestrian/cyclist row, which cannot distinguish an exact `1.0` from `0.9998`.
 
 **A hard-gate collision refusal (`ReplayFidelityError('collision', ...)`) carries none
 of these three fields, and 7g's cell reflects that explicitly rather than silently
