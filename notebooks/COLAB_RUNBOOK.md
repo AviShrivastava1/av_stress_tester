@@ -8,7 +8,7 @@ finding from all five rounds — the original three post-launch audits (B01–B2
 `invalid_crc` case the one deliberate exception, `xfail(strict=True)`; R01–R12; A01–A14)
 plus the fourth and fifth independent audits (F01–F09, G01–G08) — is closed. Nothing here
 changes code. This runbook's own narrative was silent on F/G until this pass, even though
-individual notebook cells had already been kept current piecemeal — cell 52's write
+individual notebook cells had already been kept current piecemeal — cell 54's write
 confirmation, for instance, already carried F07/F08/G03/G06 verbatim in its own comments
 before this pass touched anything. This session **measures**, and five decisions are
 waiting on what it measures.
@@ -18,7 +18,7 @@ waiting on what it measures.
 ## Ground rules
 
 **Section numbers are the stable reference; cell indices are a convenience.** Every index
-in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 64 cells, but
+in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 66 cells, but
 inserting a cell renumbers everything after it — which has now broken a cell reference
 three times in this project (Batch 4 shifted the audit's B19 fixture, Batch 2 hit a
 name collision on `n_exact_match`, and this runbook's own first draft pointed at the
@@ -122,9 +122,106 @@ closed batch. Capture the full traceback and stop — do not continue to Pass 1.
 
 ---
 
+### 5b — shard cache (cells 16–17)
+
+New this pass. Six or more cells each called `for raw in ShardLoader(SHARD_PATH):` and
+re-parsed the shard through the pure-Python protobuf implementation this notebook
+forces — roughly 0.5s/scenario, so 4-5 minutes per full pass, and the cells hunting for
+a specific 20 or so IDs still read most of the shard to find them. This cell pays that
+cost once, in shard order, right after the smoke test (which is where
+`ShardLoader`/`ScenarioParser` get imported) and before the timing probe — the probe
+still runs against 3 freshly-parsed scenarios, unconverted on purpose, since it exists
+to measure raw parse cost for the `MAX_SCENARIOS` projection below, and converting it
+would make it measure the cache instead.
+
+**Read-only by design.** Every cached array gets `flags.writeable = False` right after
+the build. A consumer that mutates one in place fails loudly with a `ValueError` right
+there — a stop-and-report finding about that consumer, not something to route around
+with a defensive `.copy()` in this cell or anywhere downstream.
+
+**Parity guard**, in the same cell: re-parses the first, middle, and last scenario
+directly and asserts `np.array_equal` against the cache for states, validity, and
+types, plus asserts the record count read matches the cache length. This constructs a
+`ScenarioParser` — the expensive `ParseFromString` plus the per-track Python loop in
+`get_agent_states` — for only those 3 records; `ShardLoader` itself does raw
+struct-level byte reads, not protobuf parsing (confirmed by reading
+`src/data/loader.py`), so this pass should be bounded mostly by file I/O for the
+~493 records it skips. **Its cost is measured, not estimated** — the `[CACHE-TIMING]`
+line prints the real number; do not assume it costs anywhere near a second full build
+pass just because it walks to the end of the shard.
+
+**Ten loop instances across nine cells convert** to read from `shard_cache` instead of
+re-parsing: the validity-gap scan in Pass 1 diagnostics, 7b (now a one-line slice,
+`diag_cache = shard_cache[:DIAG_N]`, since its dict keys are identical), 7g, 7g-iii,
+7g-iv, 7g-v (two passes), the Pass 2 diagnostics re-parse, 10b, and geometry
+verification. Each conversion replaces only the loop header (`for raw in
+ShardLoader(SHARD_PATH):` → `for c in shard_cache:`) and the `p.get_*()` calls
+(`p.get_agent_states()` → `c['states']`, etc.) — nothing else in any of those cells
+changed. 7c/7d/7e/7f, and the cells above that already consumed `diag_cache`, need no
+change at all: they already read `d['states']`/`d['validity']`/`d['sdc_idx']` from a
+dict, and now that dict is `shard_cache`'s (or its slice's) read-only version instead
+of a freshly-parsed one.
+
+**What does not convert, and why:** the smoke test (cell 15) — it's where the imports
+this cache depends on come from, and it runs before the cache exists. The timing probe
+(cell 19) — deliberately left reading raw, uncached scenarios; see above. `score_shard`,
+`stress_test_scenarios`, and `export_shard_geometry` (cells 20, and their own Pass
+2/Pass 3 calls) — these are `src/`-side functions that open their own `ShardLoader`
+internally; changing them is a `src/` batch, not this one. Measured costs for these
+three: `score_shard` 164s, `stress_test_scenarios` 255s, `export_shard_geometry` not
+independently measured (structurally the same targeted re-read as Pass 2, over a
+similarly small scenario-id set — expect a comparable or smaller order of magnitude,
+unconfirmed). None of the three shrink from this cache; the saving is only in the ten
+notebook-level loops.
+
+**Verified** against constructed multi-agent fixtures (interior gap, non-vehicle
+target, hard-gated row included) run through the real `PerturbationSpace`/danger
+engines: every one of the ten converted loops produces byte-identical output to its
+original, and 7c/7d/7e/7f produce byte-identical output whether `diag_cache` was built
+by the original loop or is a `shard_cache` slice — confirming the actual consumers
+(`compute_min_ttc_scenario`, `compute_pet_pair`, `score_scenario`, `PerturbationSpace`,
+etc.) don't just avoid crashing on a read-only array, they produce the same numbers.
+`PerturbationSpace.states0 = states.astype(np.float32)` copies regardless of the input
+array's dtype (numpy's default is `copy=True`), so it's independently writable while
+the source cache entry stays untouched and read-only — demonstrated, not just grepped.
+
+**A resume checkpoint, described here, not as a notebook cell:** the runtime can
+restart mid-session, and re-running 7g/7g-iii/7g-iv from scratch afterward is the exact
+cost this cache exists to avoid paying twice. Paste this into a scratch cell (not
+committed — a cell in the notebook *is* committed, so this stays out of the file) after
+7g-iv or 7g-v finishes:
+
+```python
+import pickle
+with open('/content/drive/MyDrive/av_stress_checkpoint.pkl', 'wb') as f:
+    pickle.dump({'rows': rows, 'decompositions': decompositions,
+                'mechanism': mechanism}, f)
+```
+
+Written to Drive, not `/content` — `/content` is wiped on exactly the restart this
+checkpoint exists for. To resume: re-run cells 1–17 (setup through the shard cache —
+`shard_cache` itself isn't in the pickle, and rebuilding it is exactly the cost this
+whole cache exists to pay once per session, unavoidable after a genuine restart), then
+`pickle.load` that path back into the same three names in a scratch cell instead of
+re-running 7g/7g-iii/7g-iv from scratch. No DB connection is needed for this path —
+7g/7g-iii/7g-iv/7g-v never touch Postgres.
+
+**Diagnostic-only path.** For `A_MAX`-related work that doesn't need Pass 1/2/3, the
+minimal code cells are **2, 4, 6, 7, 9, 10, 15, 17, then 35, 39, 41, 43** — not
+36–37 (7g-ii, a different calibration question, not on this path). This skips the
+Postgres install (cells 11–13) entirely: by content, the cache cell (17) needs only
+`np`/`ShardLoader`/`ScenarioParser`/`SHARD_PATH`, from the smoke test (15) and the
+config cell (6); 7g (35) needs only `shard_cache`; 7g-iii (39) needs `rows` and
+`TYPE_NAMES` from 7g; 7g-iv (41) needs `decompositions`; 7g-v (43) needs `mechanism`.
+Nothing on this path touches the database. It also skips Pass 1, 7b–7f, Pass 2, 10b,
+and cells 53–65 — everything those four need (`rows`, `decompositions`, `mechanism`)
+comes from each other, not from `records`/`ranked`/`stress_results`.
+
+---
+
 ## Step 3 — Pass 1 across the shard
 
-Cells 16–18. `score_shard` over `MAX_SCENARIOS`.
+Cells 18–20. `score_shard` over `MAX_SCENARIOS`.
 
 Every danger number in the database is stale: Batch 4 rewrote both TTC (quadratic root,
 audit B07) and PET (visit pairing, audit B06), and Batch 5's B09/B20 changed Phase 4
@@ -132,15 +229,16 @@ outputs on top of that. Pass 1's ranking also selects which scenarios Pass 2 str
 so **re-running it can change which scenarios would ever have been candidates** — this is
 not a refresh, it is the first ranking these engines have ever produced.
 
-**Success:** `score_shard` completes over `MAX_SCENARIOS` with no exceptions; cell 19–20
+**Success:** `score_shard` completes over `MAX_SCENARIOS` with no exceptions; cell 21–22
 diagnostics print; `records` is populated.
 
-**Capture:** the timing probe from cell 17, and cell 20's full diagnostic block.
+**Capture:** the timing probe from cell 19, and cell 22's full diagnostic block.
 
 **STOP CONDITION.** Any unhandled exception. The engines are new; a crash here is a real
 defect, not a data quirk.
 
-Then cells 21–22 to build `diag_cache` (`DIAG_N = 50`), which 7c/7d/7e/7f all consume.
+Then cells 23–24 to build `diag_cache` (`DIAG_N = 50`), which 7c/7d/7e/7f all consume —
+cell 24 is now a slice of cell 17's shard cache, not a re-parse (see "Shard cache" below).
 
 ---
 
@@ -150,10 +248,10 @@ None of these have ever executed. All depend on `diag_cache` from step 3.
 
 | Cell | Section | First written | Measures |
 |---|---|---|---|
-| 23–25 | 7c | Phase 3 rework | rank correlation, all-pairs vs SDC-restricted |
-| 26–27 | **7d** | **Batch 4** | PET sign semantics + B06 visit separation |
-| 28–29 | **7e** | **Batch 4** | TTC discrimination rate after B07 |
-| 30–31 | **7f** | **Batch 4** | TTC before/after on identical inputs |
+| 25–27 | 7c | Phase 3 rework | rank correlation, all-pairs vs SDC-restricted |
+| 28–29 | **7d** | **Batch 4** | PET sign semantics + B06 visit separation |
+| 30–31 | **7e** | **Batch 4** | TTC discrimination rate after B07 |
+| 32–33 | **7f** | **Batch 4** | TTC before/after on identical inputs |
 
 **7d** is the one with a known history: until Batch 4 this cell verified negative PETs
 against *merged* occupancy spans, which meant it would have **certified the exact defect
@@ -192,7 +290,7 @@ Compare against Block 3 v3's recorded numbers, printed inline as `[v3 measured X
 
 ## Step 5 — The new cells
 
-### 7g — baseline replay drift sweep (cells 32–33)
+### 7g — baseline replay drift sweep (cells 34–35)
 
 Full shard, `max_baseline_drift=None`. One additional sequential Drive pass; ~4 s of
 compute for ~1000 scenarios.
@@ -252,7 +350,7 @@ Fixed: the three fields are now captured as locals inside the `try`, right besid
 `err`/`collides`, and set to `None` in the `ReplayFidelityError` branch — the same
 treatment `has_interior_gap` already gets, for the same reason.
 
-### 7g-ii — heading floor / transition / singularity calibration (cells 34–35)
+### 7g-ii — heading floor / transition / singularity calibration (cells 36–37)
 
 `V_HEADING_MIN` (`linear_model.py`) and `HEADING_TRANSITION_WIDTH` /
 `HEADING_BLEND_SINGULARITY_MARGIN` (`perturbation_space.py`) are each marked in their own
@@ -332,7 +430,7 @@ same shape as 7g's own `max_baseline_drift` decision:
   and the structural redesign G02 deferred (constrain DE's search domain, or rebuild the
   blend against a singularity-free anchor) needs reconsidering, not just re-margined
 
-### 7g-iii — drift-outlier decomposition (cells 36–37)
+### 7g-iii — drift-outlier decomposition (cells 38–39)
 
 Diagnosis only — does not change `max_baseline_drift` or the integrator. 7g's sweep
 found a continuous drift distribution (p50=0.77 m, p90=4.45 m, p99=17.5 m, max=32.7 m,
@@ -417,7 +515,7 @@ significance.
 **Success:** completes for all 20 scenarios; every scenario prints all six
 measurements; no hypothesis is declared confirmed.
 
-### 7g-iv — clipped-acceleration mechanism check (cells 38–39)
+### 7g-iv — clipped-acceleration mechanism check (cells 40–41)
 
 Diagnosis only, same 20 scenarios as 7g-iii, no fix proposed. 7g-iii ruled out reverse
 motion for the worst-10 and found the speed channel alone does not explain the drift
@@ -514,7 +612,7 @@ rule out a compounding cause on a scenario where the numbers don't cleanly close
 target or a track under 2 valid frames), the `base_controls` cross-check assertion
 holds on every gap-free transition it checks, and no fix to the inverter is proposed.
 
-### 7g-v — shard-wide `A_MAX` calibration (cells 40–41)
+### 7g-v — shard-wide `A_MAX` calibration (cells 42–43)
 
 Diagnosis only, no `A_MAX` or inverter change proposed. 7g-iv's real output closed 8
 of the worst 10 to 0.2-7% unexplained. This cell asks what the clipped transitions look
@@ -589,7 +687,7 @@ scenario; item 3 reports the 5 m/2 m stats at all five `A_MAX` values plus `A=�
 scenarios marked and excluded; the identity check passes or reports its actual
 discrepancy; item 4 names the two unclosed scenarios without claiming their cause.
 
-### 10b — B09 before/after (cells 49–50)
+### 10b — B09 before/after (cells 51–52)
 
 Runs after Pass 2 diagnostics because it needs `ranked`. `B09_N = 25`, ~8 minutes.
 
@@ -622,7 +720,7 @@ Both add an atomic identity check against a *previous* write: `upsert_scores`'s
 guard (G04). Both need a scenario to be written once, then rescored under a genuinely
 different scene fingerprint or SDC index, before either has anything to catch. This
 session runs Pass 1 once, over a shard being read for the first time — there is no
-earlier write for anything here to diverge from. Section 8's idempotency check (cell 44)
+earlier write for anything here to diverge from. Section 8's idempotency check (cell 46)
 already calls `upsert_scores` twice with *identical* records; it now also asserts
 `.rescoped` is empty both times — a cheap negative-control tripwire, not a validation of
 the rescope path itself. Confirming the guards actually fire needs a second pass over the
@@ -677,7 +775,7 @@ than looking forgotten.
 ## Step 6 — Pass 2, and the rest of the pipeline
 
 Sections 8 through 10 (rank + persist, `stress_test_scenarios`, diagnostics) at cells
-43–48, then 10b, then sections 11 through 15 at cells 51–63 (update, Pass 3 export,
+45–50, then 10b, then sections 11 through 15 at cells 53–65 (update, Pass 3 export,
 geometry verification, API round trip, summary).
 
 **`TOP_N` stays at 5.** Phase 5's architecture is a cheap filter feeding an expensive pass
@@ -685,7 +783,7 @@ over a small selected set; running Pass 2 at a size chosen to make a measurement
 better would misrepresent how the pipeline works. 10b gets its own `B09_N` instead —
 that decoupling is the point.
 
-**Geometry verification (section 13, cell 57)** carries Batch 5's B19 fix: it now asserts *coverage
+**Geometry verification (section 13, cell 59)** carries Batch 5's B19 fix: it now asserts *coverage
 before correctness*. The old version passed vacuously at `0 == 0` when every agent was
 missing from the database — the cell whose job is catching missing geometry was blind to
 geometry being missing in full. It now tracks expected-exportable agents and fails if any
@@ -698,8 +796,9 @@ never moved. Batch 5 switched it to content lookup. A later session's two new ce
 10b) shifted indices again with the fixture unaffected, a subsequent pass's two new cells
 (7g-ii) did the same, a later pass's two new cells (the freshness guard, section 3b) did
 it a third time, a subsequent pass's two new cells (7g-iii) did it a fourth, a later
-pass's two new cells (7g-iv) did it a fifth, and this pass's own two new cells (7g-v)
-do it a sixth — which is the fix doing its job, again.
+pass's two new cells (7g-iv) did it a fifth, a subsequent pass's two new cells (7g-v)
+did it a sixth, and this pass's own two new cells (the shard cache, section 5b) do it
+a seventh — which is the fix doing its job, again.
 
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
