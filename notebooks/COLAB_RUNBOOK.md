@@ -8,7 +8,7 @@ finding from all five rounds — the original three post-launch audits (B01–B2
 `invalid_crc` case the one deliberate exception, `xfail(strict=True)`; R01–R12; A01–A14)
 plus the fourth and fifth independent audits (F01–F09, G01–G08) — is closed. Nothing here
 changes code. This runbook's own narrative was silent on F/G until this pass, even though
-individual notebook cells had already been kept current piecemeal — cell 44's write
+individual notebook cells had already been kept current piecemeal — cell 46's write
 confirmation, for instance, already carried F07/F08/G03/G06 verbatim in its own comments
 before this pass touched anything. This session **measures**, and five decisions are
 waiting on what it measures.
@@ -18,7 +18,7 @@ waiting on what it measures.
 ## Ground rules
 
 **Section numbers are the stable reference; cell indices are a convenience.** Every index
-in this document was recounted against `len(nb['cells'])` on 2026-09-25 at 56 cells, but
+in this document was recounted against `len(nb['cells'])` on 2026-09-27 at 58 cells, but
 inserting a cell renumbers everything after it — which has now broken a cell reference
 three times in this project (Batch 4 shifted the audit's B19 fixture, Batch 2 hit a
 name collision on `n_exact_match`, and this runbook's own first draft pointed at the
@@ -53,14 +53,19 @@ change, that is a new batch, planned and reviewed like every other one.
 
 | | |
 |---|---|
-| Repo | `main` at `b827969` or later — the fifth-audit commit. Confirm with `git log --oneline -1` and record it. |
+| Repo | `main` at `51a02c9` or later — the fifth-audit commit (`b827969`) plus this runbook/notebook's own reconciliation with it. Confirm with `git log --oneline -1` and record it. |
 | Shard | one real `.tfrecord` on Drive, path in cell 6 `SHARD_PATH` |
 | Waymo package | `waymo-open-dataset-tf-2-11-0`, `--no-deps` (cell 4) |
-| Postgres/PostGIS | cells 9–11 |
+| Postgres/PostGIS | cells 11–13 |
 | `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` | cell 2, **before** any protobuf import |
 
-Cells 1–13, in order. Cell 13 is a one-scenario smoke test; if it fails, nothing later is
-worth running.
+Cells 1–15, in order. Cell 15 is a one-scenario smoke test; if it fails, nothing later is
+worth running. **Section 3b's freshness guard (cells 8–9) is new** (independent review,
+2026-09-27) — cell 9 runs `git log --oneline -1` automatically and hard-asserts
+`HeadingBlendSingularityError` is importable from the just-cloned `src/`, so a stale
+clone or a hand-edited `DE_KWARGS` fails loudly here instead of producing 20 minutes of
+output from a different codebase. See cell 8's own markdown for exactly what it does and
+does not catch.
 
 **Config (cell 6), the values this runbook assumes:**
 
@@ -119,7 +124,7 @@ closed batch. Capture the full traceback and stop — do not continue to Pass 1.
 
 ## Step 3 — Pass 1 across the shard
 
-Cells 14–16. `score_shard` over `MAX_SCENARIOS`.
+Cells 16–18. `score_shard` over `MAX_SCENARIOS`.
 
 Every danger number in the database is stale: Batch 4 rewrote both TTC (quadratic root,
 audit B07) and PET (visit pairing, audit B06), and Batch 5's B09/B20 changed Phase 4
@@ -127,15 +132,15 @@ outputs on top of that. Pass 1's ranking also selects which scenarios Pass 2 str
 so **re-running it can change which scenarios would ever have been candidates** — this is
 not a refresh, it is the first ranking these engines have ever produced.
 
-**Success:** `score_shard` completes over `MAX_SCENARIOS` with no exceptions; cell 17–18
+**Success:** `score_shard` completes over `MAX_SCENARIOS` with no exceptions; cell 19–20
 diagnostics print; `records` is populated.
 
-**Capture:** the timing probe from cell 15, and cell 18's full diagnostic block.
+**Capture:** the timing probe from cell 17, and cell 20's full diagnostic block.
 
 **STOP CONDITION.** Any unhandled exception. The engines are new; a crash here is a real
 defect, not a data quirk.
 
-Then cells 19–20 to build `diag_cache` (`DIAG_N = 50`), which 7c/7d/7e/7f all consume.
+Then cells 21–22 to build `diag_cache` (`DIAG_N = 50`), which 7c/7d/7e/7f all consume.
 
 ---
 
@@ -145,10 +150,10 @@ None of these have ever executed. All depend on `diag_cache` from step 3.
 
 | Cell | Section | First written | Measures |
 |---|---|---|---|
-| 21–23 | 7c | Phase 3 rework | rank correlation, all-pairs vs SDC-restricted |
-| 24–25 | **7d** | **Batch 4** | PET sign semantics + B06 visit separation |
-| 26–27 | **7e** | **Batch 4** | TTC discrimination rate after B07 |
-| 28–29 | **7f** | **Batch 4** | TTC before/after on identical inputs |
+| 23–25 | 7c | Phase 3 rework | rank correlation, all-pairs vs SDC-restricted |
+| 26–27 | **7d** | **Batch 4** | PET sign semantics + B06 visit separation |
+| 28–29 | **7e** | **Batch 4** | TTC discrimination rate after B07 |
+| 30–31 | **7f** | **Batch 4** | TTC before/after on identical inputs |
 
 **7d** is the one with a known history: until Batch 4 this cell verified negative PETs
 against *merged* occupancy spans, which meant it would have **certified the exact defect
@@ -187,7 +192,7 @@ Compare against Block 3 v3's recorded numbers, printed inline as `[v3 measured X
 
 ## Step 5 — The new cells
 
-### 7g — baseline replay drift sweep (cells 30–31)
+### 7g — baseline replay drift sweep (cells 32–33)
 
 Full shard, `max_baseline_drift=None`. One additional sequential Drive pass; ~4 s of
 compute for ~1000 scenarios.
@@ -247,7 +252,7 @@ Fixed: the three fields are now captured as locals inside the `try`, right besid
 `err`/`collides`, and set to `None` in the `ReplayFidelityError` branch — the same
 treatment `has_interior_gap` already gets, for the same reason.
 
-### 7g-ii — heading floor / transition / singularity calibration (cells 32–33)
+### 7g-ii — heading floor / transition / singularity calibration (cells 34–35)
 
 `V_HEADING_MIN` (`linear_model.py`) and `HEADING_TRANSITION_WIDTH` /
 `HEADING_BLEND_SINGULARITY_MARGIN` (`perturbation_space.py`) are each marked in their own
@@ -300,7 +305,7 @@ same shape as 7g's own `max_baseline_drift` decision:
   and the structural redesign G02 deferred (constrain DE's search domain, or rebuild the
   blend against a singularity-free anchor) needs reconsidering, not just re-margined
 
-### 10b — B09 before/after (cells 41–42)
+### 10b — B09 before/after (cells 43–44)
 
 Runs after Pass 2 diagnostics because it needs `ranked`. `B09_N = 25`, ~8 minutes.
 
@@ -333,7 +338,7 @@ Both add an atomic identity check against a *previous* write: `upsert_scores`'s
 guard (G04). Both need a scenario to be written once, then rescored under a genuinely
 different scene fingerprint or SDC index, before either has anything to catch. This
 session runs Pass 1 once, over a shard being read for the first time — there is no
-earlier write for anything here to diverge from. Section 8's idempotency check (cell 36)
+earlier write for anything here to diverge from. Section 8's idempotency check (cell 38)
 already calls `upsert_scores` twice with *identical* records; it now also asserts
 `.rescoped` is empty both times — a cheap negative-control tripwire, not a validation of
 the rescope path itself. Confirming the guards actually fire needs a second pass over the
@@ -388,7 +393,7 @@ than looking forgotten.
 ## Step 6 — Pass 2, and the rest of the pipeline
 
 Sections 8 through 10 (rank + persist, `stress_test_scenarios`, diagnostics) at cells
-35–40, then 10b, then sections 11 through 15 at cells 43–55 (update, Pass 3 export,
+37–42, then 10b, then sections 11 through 15 at cells 45–57 (update, Pass 3 export,
 geometry verification, API round trip, summary).
 
 **`TOP_N` stays at 5.** Phase 5's architecture is a cheap filter feeding an expensive pass
@@ -396,7 +401,7 @@ over a small selected set; running Pass 2 at a size chosen to make a measurement
 better would misrepresent how the pipeline works. 10b gets its own `B09_N` instead —
 that decoupling is the point.
 
-**Geometry verification (section 13, cell 49)** carries Batch 5's B19 fix: it now asserts *coverage
+**Geometry verification (section 13, cell 51)** carries Batch 5's B19 fix: it now asserts *coverage
 before correctness*. The old version passed vacuously at `0 == 0` when every agent was
 missing from the database — the cell whose job is catching missing geometry was blind to
 geometry being missing in full. It now tracks expected-exportable agents and fails if any
@@ -406,8 +411,9 @@ is absent.
 four inserted cells silently broke it — the test began exec'ing a markdown cell and dying
 with `SyntaxError` instead of reaching its assertion, staying red either way so the count
 never moved. Batch 5 switched it to content lookup. A later session's two new cells (7g,
-10b) shifted indices again with the fixture unaffected, and this pass's own two new cells
-(7g-ii) do the same — which is the fix doing its job, again.
+10b) shifted indices again with the fixture unaffected, a subsequent pass's two new cells
+(7g-ii) did the same, and this pass's own two new cells (the freshness guard, section 3b)
+do it a third time — which is the fix doing its job, again.
 
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
@@ -425,7 +431,9 @@ few or no usable comparisons.
 
 ## What to bring back
 
-1. `git log --oneline -1` — the exact commit this ran against.
+1. `git log --oneline -1` — the exact commit this ran against. Cell 9's freshness guard
+   now prints this automatically, so it lands in the saved output even if nobody thinks
+   to run it by hand.
 2. Raw output for every cell in steps 2–6. Not summaries.
 3. For each of the five decisions: the number, and which reading it supports.
    - `max_baseline_drift` default — from 7g
