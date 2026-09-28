@@ -8,7 +8,7 @@ finding from all five rounds — the original three post-launch audits (B01–B2
 `invalid_crc` case the one deliberate exception, `xfail(strict=True)`; R01–R12; A01–A14)
 plus the fourth and fifth independent audits (F01–F09, G01–G08) — is closed. Nothing here
 changes code. This runbook's own narrative was silent on F/G until this pass, even though
-individual notebook cells had already been kept current piecemeal — cell 50's write
+individual notebook cells had already been kept current piecemeal — cell 52's write
 confirmation, for instance, already carried F07/F08/G03/G06 verbatim in its own comments
 before this pass touched anything. This session **measures**, and five decisions are
 waiting on what it measures.
@@ -18,7 +18,7 @@ waiting on what it measures.
 ## Ground rules
 
 **Section numbers are the stable reference; cell indices are a convenience.** Every index
-in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 62 cells, but
+in this document was recounted against `len(nb['cells'])` on 2026-09-28 at 64 cells, but
 inserting a cell renumbers everything after it — which has now broken a cell reference
 three times in this project (Batch 4 shifted the audit's B19 fixture, Batch 2 hit a
 name collision on `n_exact_match`, and this runbook's own first draft pointed at the
@@ -514,7 +514,82 @@ rule out a compounding cause on a scenario where the numbers don't cleanly close
 target or a track under 2 valid frames), the `base_controls` cross-check assertion
 holds on every gap-free transition it checks, and no fix to the inverter is proposed.
 
-### 10b — B09 before/after (cells 47–48)
+### 7g-v — shard-wide `A_MAX` calibration (cells 40–41)
+
+Diagnosis only, no `A_MAX` or inverter change proposed. 7g-iv's real output closed 8
+of the worst 10 to 0.2-7% unexplained. This cell asks what the clipped transitions look
+like and what `A_MAX` would remove the tail — still no `PerturbationSpace` anywhere,
+one full-shard pass shared between items 1 and 3, a targeted 20-scenario pass for item 2.
+
+**One real fix, independent review, 2026-09-30 round 3, found before this cell was
+finished:** the counterfactual sweep's driver term must be the **mid-interval** speed
+`0.5*(v_sim[k]+v_sim[k+1])`, matching `bicycle_step`'s own `v_mid`, not the
+**start-of-interval** `v_sim[k]` 7g-iv's own closure uses. The start-of-interval form
+leaves a discretization floor of `-0.5*dt*(v[k+1]-v[k])` even with zero clipping —
+confirmed on a constructed clean (never-clipping) track, which the buggy form still
+read as a nonzero predicted offset. Negligible against 7g-iv's 14-33 m real offsets (a
+few percent at most — those numbers stand), but dominant against the sub-meter offsets
+this cell predicts for clean tracks, where it would fail every clean scenario for a
+reason unrelated to `A_MAX`. Verified against four constructed tracks (a clean brake,
+two hard stops at different severities, and a noisy constant speed) at
+`A ∈ {5,8,10,12,15,∞}`: the start-of-interval form leaves a nonzero floor at `A=∞` on
+every one of them; the mid-interval form goes to (numerically) zero there, as it should
+with no clipping in effect.
+
+**Two roles for the driver term, kept deliberately separate:** the shard-wide sweep
+(items 1/3's headline numbers) uses the corrected MID-interval driver throughout. The
+**worst-10 identity check** deliberately reproduces 7g-iv's own START-of-interval
+formula instead, at the real `A_MAX=5` — this check validates that this cell's
+independent, `PerturbationSpace`-free reconstruction reproduces an already-computed
+number byte-for-byte (asserted to `1e-6`, rebuilding `offset_vec` from
+`decompositions`' `m1b_longitudinal`/`m1b_lateral` and the heading at
+`max_offset_frame`), not the mid-interval fix. Verified on constructed fixtures run
+through the real `PerturbationSpace`/7g-iii/7g-iv machinery: the identity check landed
+at 0.00 and 1.99e-08 difference against the two clipped scenarios tested. Separately,
+the mid-interval **max-norm proxy** compared against each of 20 scenarios' real
+`max_offset` (not asserted, reported for both groups) matched to three decimal places
+on every non-gapped fixture tested — expected, since mid-interval is now the same
+discretization the real replay's own position update uses.
+
+**Item 3's primary metric is the count/fraction above 5 m and 2 m, plus p90/p99, with
+an `A=∞` reference and a clip-attributable part `max‖pred(A)-pred(∞)‖`** — not the
+`<=0.5` m fraction kept as context, since only ~7% of the shard drifts over 5 m and
+that fraction is set by the noise floor, not `A_MAX`. **The refutation criterion is
+worded accordingly:** the mechanism is undercut if the count above 5 m does not fall
+materially from `A=5` to `A=15` — a flat `<=0.5` m fraction is not that signal.
+Scenarios with an interior gap are marked, counted, and excluded from item 3's headline
+fractions (their `implied_longitudinal` still bridges the gap against a gap-free
+global-frame `v_sim`, the same asymmetry as 7g-iv's own gap caveat) — verified against
+a constructed gapped fixture, correctly flagged and excluded without a crash.
+
+**Item 1 additions:** per-agent fraction with `>=1` and with `>=3` transitions above
+each threshold, alongside the per-transition fraction (a per-transition rate
+understates the risk of one bad frame carrying through an entire open-loop replay); a
+shard-wide glitch-vs-braking split at 12 m/s² (fraction of such transitions within 2
+frames of an opposite-sign one above the same threshold) — item 2 can only answer this
+for 20 scenarios, this answers it shard-wide. Verified on a constructed multi-agent
+scenario with one deliberate glitch pair and one deliberate sustained-brake run: the
+split correctly separated them.
+
+**Item 2** prints every clipped transition's frame and value, grouped into maximal
+same-sign runs vs. flagged spike-pairs, plus the single largest transition —
+verified on a constructed noisy hard-stop fixture, producing a mix of runs and
+spike-pairs that matches the fixture's own construction by inspection.
+
+**Item 4** states plainly this measures only the speed-driven part, and names
+`8fd0…`/`ef85…` (which didn't close in 7g-iv) without attributing a cause.
+
+**Descriptive, not inferential** — items 1 and 3 are shard-wide, not a sample, but
+remain a counterfactual built from logged data, not a claim about what would actually
+happen if `A_MAX` changed in `src/`.
+
+**Success:** item 1 reports all percentiles/threshold fractions over a nonzero sample;
+item 2 prints anatomy for every clipped transition with no crash on a zero-clip
+scenario; item 3 reports the 5 m/2 m stats at all five `A_MAX` values plus `A=∞`, gapped
+scenarios marked and excluded; the identity check passes or reports its actual
+discrepancy; item 4 names the two unclosed scenarios without claiming their cause.
+
+### 10b — B09 before/after (cells 49–50)
 
 Runs after Pass 2 diagnostics because it needs `ranked`. `B09_N = 25`, ~8 minutes.
 
@@ -547,7 +622,7 @@ Both add an atomic identity check against a *previous* write: `upsert_scores`'s
 guard (G04). Both need a scenario to be written once, then rescored under a genuinely
 different scene fingerprint or SDC index, before either has anything to catch. This
 session runs Pass 1 once, over a shard being read for the first time — there is no
-earlier write for anything here to diverge from. Section 8's idempotency check (cell 42)
+earlier write for anything here to diverge from. Section 8's idempotency check (cell 44)
 already calls `upsert_scores` twice with *identical* records; it now also asserts
 `.rescoped` is empty both times — a cheap negative-control tripwire, not a validation of
 the rescope path itself. Confirming the guards actually fire needs a second pass over the
@@ -602,7 +677,7 @@ than looking forgotten.
 ## Step 6 — Pass 2, and the rest of the pipeline
 
 Sections 8 through 10 (rank + persist, `stress_test_scenarios`, diagnostics) at cells
-41–46, then 10b, then sections 11 through 15 at cells 49–61 (update, Pass 3 export,
+43–48, then 10b, then sections 11 through 15 at cells 51–63 (update, Pass 3 export,
 geometry verification, API round trip, summary).
 
 **`TOP_N` stays at 5.** Phase 5's architecture is a cheap filter feeding an expensive pass
@@ -610,7 +685,7 @@ over a small selected set; running Pass 2 at a size chosen to make a measurement
 better would misrepresent how the pipeline works. 10b gets its own `B09_N` instead —
 that decoupling is the point.
 
-**Geometry verification (section 13, cell 55)** carries Batch 5's B19 fix: it now asserts *coverage
+**Geometry verification (section 13, cell 57)** carries Batch 5's B19 fix: it now asserts *coverage
 before correctness*. The old version passed vacuously at `0 == 0` when every agent was
 missing from the database — the cell whose job is catching missing geometry was blind to
 geometry being missing in full. It now tracks expected-exportable agents and fails if any
@@ -622,8 +697,9 @@ with `SyntaxError` instead of reaching its assertion, staying red either way so 
 never moved. Batch 5 switched it to content lookup. A later session's two new cells (7g,
 10b) shifted indices again with the fixture unaffected, a subsequent pass's two new cells
 (7g-ii) did the same, a later pass's two new cells (the freshness guard, section 3b) did
-it a third time, a subsequent pass's two new cells (7g-iii) did it a fourth, and this
-pass's own two new cells (7g-iv) do it a fifth — which is the fix doing its job, again.
+it a third time, a subsequent pass's two new cells (7g-iii) did it a fourth, a later
+pass's two new cells (7g-iv) did it a fifth, and this pass's own two new cells (7g-v)
+do it a sixth — which is the fix doing its job, again.
 
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
