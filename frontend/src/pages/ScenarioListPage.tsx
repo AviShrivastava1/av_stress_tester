@@ -1,5 +1,6 @@
-import { useSearchParams } from 'react-router';
-import { API_BASE_URL, ApiError, type ScenarioSummary } from '../api/client';
+import { Link, useLocation, useSearchParams } from 'react-router';
+import type { ScenarioSummary } from '../api/client';
+import { describeError } from '../api/errors';
 import { useScenarioPages } from '../api/scenarios';
 import { OutcomeCell } from '../components/OutcomeBadge';
 import { TimeMetricCell } from '../components/TimeMetricCell';
@@ -15,14 +16,13 @@ function parseLimit(raw: string | null): number | undefined {
   return n >= MIN_LIMIT && n <= MAX_LIMIT ? n : undefined;
 }
 
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.status === 503) {
-      return 'The API is busy (all database connections in use). Try again in a moment.';
-    }
-    return `The API returned an error — ${error.message}`;
-  }
-  return `Could not reach the API at ${API_BASE_URL}.`;
+/** Carried to the detail page so its back link restores this list's filters. */
+export interface ListReturnState {
+  listSearch: string;
+}
+
+export function scenarioPath(scenarioId: string): string {
+  return `/scenarios/${encodeURIComponent(scenarioId)}`;
 }
 
 function PerturbationCell({ row }: { row: ScenarioSummary }) {
@@ -42,6 +42,7 @@ function PerturbationCell({ row }: { row: ScenarioSummary }) {
 
 export function ScenarioListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const stressTestedOnly = searchParams.get('tested') === '1';
   const limit = parseLimit(searchParams.get('limit'));
 
@@ -118,7 +119,14 @@ export function ScenarioListPage() {
                 {rows.map((row, i) => (
                   <tr key={row.scenario_id}>
                     <td className="num muted">{i + 1}</td>
-                    <td className="mono">{row.scenario_id}</td>
+                    <td className="mono">
+                      <Link
+                        to={scenarioPath(row.scenario_id)}
+                        state={{ listSearch: location.search } satisfies ListReturnState}
+                      >
+                        {row.scenario_id}
+                      </Link>
+                    </td>
                     <td className="num">{row.fragility_score.toFixed(3)}</td>
                     <td className="num">
                       <TimeMetricCell value={row.min_ttc ?? null} metric="ttc" />

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { makePage, makeRow } from '../test/fixtures';
 import { stubFetch } from '../test/fetchStub';
-import { renderListPage } from '../test/renderListPage';
+import { renderApp as renderListPage } from '../test/renderApp';
 
 // Contains every character base64 can produce that a URL would mangle if the client
 // built or re-encoded the cursor itself.

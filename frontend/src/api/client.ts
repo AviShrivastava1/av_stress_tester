@@ -4,6 +4,10 @@ import type { components, paths } from './schema';
 // Aliases only — every shape here is generated from openapi.json.
 export type ScenarioSummary = components['schemas']['ScenarioSummary'];
 export type ScenarioPage = components['schemas']['ScenarioPage'];
+export type ScenarioDetail = components['schemas']['ScenarioDetail'];
+export type AgentTrack = components['schemas']['AgentTrack'];
+export type TrajectoryResponse = components['schemas']['TrajectoryResponse'];
+export type PerturbedResponse = components['schemas']['PerturbedResponse'];
 
 export const API_BASE_URL: string =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -14,6 +18,15 @@ export const api = createClient<paths>({
   // stub globalThis.fetch after this module has loaded.
   fetch: (request) => globalThis.fetch(request),
 });
+
+/**
+ * The body of a successful openapi-fetch call, or the ApiError for a failed one.
+ * Network failures are not caught here: they stay as the TypeError fetch throws.
+ */
+export function unwrap<T>(result: { data?: T; error?: unknown; response: Response }): T {
+  if (result.data === undefined) throw ApiError.from(result.response, result.error);
+  return result.data;
+}
 
 /** A non-2xx response. Network failures stay as the TypeError fetch throws. */
 export class ApiError extends Error {

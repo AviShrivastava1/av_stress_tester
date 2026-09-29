@@ -1,5 +1,5 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { api, ApiError, type ScenarioPage } from './client';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { api, unwrap, type ScenarioPage } from './client';
 
 export interface ScenarioListParams {
   stressTestedOnly: boolean;
@@ -12,7 +12,7 @@ export async function fetchScenarioPage(
   cursor: string | null,
   signal?: AbortSignal,
 ): Promise<ScenarioPage> {
-  const { data, error, response } = await api.GET('/scenarios', {
+  const result = await api.GET('/scenarios', {
     params: {
       query: {
         stress_tested_only: params.stressTestedOnly,
@@ -22,8 +22,7 @@ export async function fetchScenarioPage(
     },
     signal,
   });
-  if (data === undefined) throw ApiError.from(response, error);
-  return data;
+  return unwrap(result);
 }
 
 /**
@@ -44,5 +43,50 @@ export function useScenarioPages(params: ScenarioListParams) {
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchScenarioPage(params, pageParam, signal),
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? null,
+  });
+}
+
+// ── one scenario ─────────────────────────────────────────────────────────────────
+//
+// Three separate queries, deliberately not chained: none needs another's result to
+// build its request, so the detail page starts all three at once and each panel
+// resolves (or fails) on its own. A trajectories 500 does not hide the score.
+
+export function useScenarioDetail(scenarioId: string) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId],
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
+  });
+}
+
+export function useTrajectories(scenarioId: string) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId, 'trajectories'],
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}/trajectories', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
+  });
+}
+
+export function usePerturbed(scenarioId: string) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId, 'perturbed'],
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}/perturbed', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
   });
 }

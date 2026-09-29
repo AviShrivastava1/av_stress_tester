@@ -1,5 +1,6 @@
 import { Outlet, createBrowserRouter } from 'react-router';
 import { Footer } from './components/Footer';
+import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
 
 function Layout() {
@@ -19,6 +20,9 @@ function Layout() {
 export const router = createBrowserRouter([
   {
     element: <Layout />,
-    children: [{ index: true, element: <ScenarioListPage /> }],
+    children: [
+      { index: true, element: <ScenarioListPage /> },
+      { path: 'scenarios/:scenarioId', element: <ScenarioDetailPage /> },
+    ],
   },
 ]);
