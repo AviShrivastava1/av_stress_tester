@@ -1,9 +1,11 @@
 import type { UseQueryResult } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMemo, useState, type KeyboardEvent } from 'react';
 import type { PerturbedResponse, ScenarioDetail, TrajectoryResponse } from '../../api/client';
 import { describeError } from '../../api/errors';
 import { describeAgentType, type AgentKind } from '../../domain/agentTypes';
-import { chooseReferenceFrame } from '../../scene/geometry';
+import { chooseReferenceFrame, poseAt } from '../../scene/geometry';
+import { PlaybackControls } from '../../scene/PlaybackControls';
+import { frameRange } from '../../scene/playback';
 import {
   buildScene,
   canFocusInteraction,
@@ -15,11 +17,13 @@ import {
   type Role,
 } from '../../scene/sceneModel';
 import { SceneView } from '../../scene/SceneView';
+import { usePlayback } from '../../scene/usePlayback';
 
 const GEOMETRY_ABSENT_REASON =
   'Either it has not been exported yet, or it was exported from a scene that no longer ' +
   'matches the stored score; the API does not distinguish the two.';
 const NO_GEOMETRY = `No geometry to draw. ${GEOMETRY_ABSENT_REASON}`;
+const NO_FRAMES = 'Tracks were returned, but none has an observed frame, so there is nothing to draw.';
 
 const ROLE_LEGEND: Record<Exclude<Role, 'other'>, string> = {
   sdc: 'SDC (self-driving car)',
@@ -72,6 +76,28 @@ export function ScenePanel(props: ScenePanelProps) {
 function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
   const [chosenFocus, setChosenFocus] = useState<Focus | null>(null);
 
+  // Memoized so the scene, its framing and its frame range keep their identity across
+  // playback frames; the static layer re-renders only when one of them really changes.
+  const agents = trajectories.data?.agents;
+  const perturbedData = perturbed.data;
+  const drawn = useMemo(() => (agents ? buildScene(agents, perturbedData) : []), [agents, perturbedData]);
+
+  const hasPerturbed = drawn.some((d) => d.role === 'challenger_perturbed');
+  const interactionPossible = canFocusInteraction(drawn);
+  const defaultFocus: Focus = interactionPossible && hasPerturbed ? 'interaction' : 'scene';
+  const focus: Focus = interactionPossible ? (chosenFocus ?? defaultFocus) : 'scene';
+  const focused = useMemo(() => focusTracks(drawn, focus), [drawn, focus]);
+  const range = useMemo(() => frameRange(drawn.map((d) => d.track)), [drawn]);
+
+  // The collision frame belongs to the perturbed run, so it is the reference only
+  // when that run is drawn; without it, frame N shows nothing colliding.
+  const collisionFrame = hasPerturbed ? (perturbedData?.collision_timestep ?? null) : null;
+  const reference = useMemo(
+    () => chooseReferenceFrame(collisionFrame, focused.map((d) => d.track)),
+    [collisionFrame, focused],
+  );
+  const playback = usePlayback(range, reference.kind === 'none' ? null : reference.frame);
+
   if (trajectories.isPending) return <p className="status" role="status">Loading geometry…</p>;
   if (trajectories.isError) {
     // Includes the API's deliberate 500 for inconsistent geometry: an error, shown as
@@ -82,26 +108,15 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
       </p>
     );
   }
-
-  const perturbedData = perturbed.data;
-  const drawn = buildScene(trajectories.data.agents, perturbedData);
   if (drawn.length === 0) return <p className="status">{NO_GEOMETRY}</p>;
+  if (range === null) return <p className="status">{NO_FRAMES}</p>;
 
-  const hasPerturbed = drawn.some((d) => d.role === 'challenger_perturbed');
-  const interactionPossible = canFocusInteraction(drawn);
-  const defaultFocus: Focus = interactionPossible && hasPerturbed ? 'interaction' : 'scene';
-  const focus: Focus = interactionPossible ? (chosenFocus ?? defaultFocus) : 'scene';
-  const focused = focusTracks(drawn, focus);
+  const frame = playback.frame;
+  const observed = frame === null ? 0 : drawn.filter((d) => poseAt(d.track, frame) !== null).length;
 
-  // The collision frame belongs to the perturbed run, so it is the reference only
-  // when that run is drawn; without it, frame N shows nothing colliding.
-  const collisionFrame = hasPerturbed ? (perturbedData?.collision_timestep ?? null) : null;
-  const reference = chooseReferenceFrame(
-    collisionFrame,
-    focused.map((d) => d.track),
-  );
-
-  const notes: string[] = [referenceFrameNote(reference, focused.length)];
+  // The reference note explains the frame the view OPENED on; once the viewer has
+  // moved the playhead it no longer describes what is on screen.
+  const notes: string[] = playback.touched ? [] : [referenceFrameNote(reference, focused.length)];
   if (trajectories.data.agents.length === 0) {
     notes.push(`Only the challenger is drawn: no other agent geometry. ${GEOMETRY_ABSENT_REASON}`);
   }
@@ -111,6 +126,21 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
   } else {
     const note = perturbedPathNote(detail, perturbed.data);
     if (note !== null) notes.push(note);
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    // Bound to the scene frame only; the scrubber and buttons sit outside it and keep
+    // their own keys.
+    if (e.key === ' ') {
+      e.preventDefault();
+      playback.toggle();
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      playback.step(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      playback.step(1);
+    }
   }
 
   return (
@@ -132,9 +162,21 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
         </div>
         <span className="muted">Local planar metres</span>
       </div>
-      <div className="scene-frame">
-        <SceneView drawn={drawn} focus={focused} reference={reference} />
+      <div
+        className="scene-frame"
+        tabIndex={0}
+        aria-label="Scene. Space plays or pauses; the arrow keys step one frame."
+        onKeyDown={onKeyDown}
+      >
+        <SceneView drawn={drawn} focus={focused} frame={frame} collisionFrame={collisionFrame} />
       </div>
+      <PlaybackControls
+        range={range}
+        playback={playback}
+        observed={observed}
+        total={drawn.length}
+        collisionFrame={collisionFrame}
+      />
       <Legend drawn={drawn} />
       {notes.map((n) => (
         <p key={n} className="note">
