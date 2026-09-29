@@ -33,3 +33,21 @@ that could not start without it would not be deployable.
 **Coordinates are local planar metres, not longitude/latitude.** WOMD scenarios use
 a local metric frame. Treating these values as lon/lat puts every scenario off the
 coast of West Africa and makes every distance meaningless.
+
+## Frontend
+
+React + TypeScript + Vite, in `frontend/`. Needs Node 22 (`frontend/.nvmrc`) and
+the API above running on port 8000 (override with `VITE_API_BASE_URL`).
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Its TypeScript types are generated from `frontend/openapi.json`, a committed
+snapshot of the API's schema. After changing a response model, regenerate it and
+commit it alongside the backend change — `tests/test_openapi_snapshot.py` fails
+until you do:
+
+```bash
+./venv/bin/python -m src.api.export_openapi
+```

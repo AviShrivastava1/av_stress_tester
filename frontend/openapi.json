@@ -1,0 +1,991 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AV Scenario Stress-Tester API",
+    "description": "\nRead-only access to the AV scenario stress-tester's results.\n\nScenarios are ranked by **fragility score** (higher = closer to catastrophe), and\neach one can be inspected: its danger metrics, the minimum perturbation that causes\na collision, and the agent trajectories to draw it.\n\n**Coordinates are local planar metres, not longitude/latitude.** Waymo Open Motion\nDataset scenarios use a local metric frame; treating these values as lon/lat will\nplace every scenario off the coast of West Africa and make every distance\nmeaningless.\n\nNothing here starts a computation — the optimizer runs offline and this API reads\nwhat it wrote.\n",
+    "version": "0.6.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Liveness check that actually touches the database.\n\nA health check that only returns {\"status\": \"ok\"} without querying will report\nhealthy while the database is unreachable — which is the exact failure it\nexists to catch. So this executes a real round-trip.\n\nPostGIS being absent is reported as null rather than raised: the scores\nendpoints work fine without it and only geometry is unavailable. That is\ndegraded, not dead, and a health check should be able to say the difference.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stats": {
+      "get": {
+        "summary": "Stats",
+        "description": "Corpus-level counts for the dashboard header.\n\n`count(*) FILTER (WHERE ...)` computes every count in ONE pass over the table,\nrather than issuing nine separate COUNT queries that each scan it again.",
+        "operationId": "stats_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scenarios": {
+      "get": {
+        "summary": "List Scenarios",
+        "description": "The ranked list, most fragile first, keyset-paginated.\n\nORDERING\n--------\n`ORDER BY fragility_score DESC, scenario_id` is byte-identical to\nranker.rank_scenarios' sort key `(-fragility_score, str(scenario_id))`. That\nequivalence is deliberate: if the API and the batch pipeline ordered\ndifferently, \"rank 3\" would mean two different scenarios depending on who you\nasked, which is indefensible in a safety audit.\n\nThe scenario_id tiebreak is LOAD-BEARING, not cosmetic. Without a unique second\nkey, rows tied on fragility_score have no defined order, and the same row can\nbe served on two consecutive pages (or skipped entirely) as the database\nhappens to return ties differently between queries.\n\nWHY KEYSET AND NOT LIMIT/OFFSET\n-------------------------------\nOFFSET is not just slow, it is WRONG under concurrent writes: if a row is\ninserted above the current position between two requests, every subsequent row\nshifts down by one, and the client silently sees a duplicate at the page\nboundary (or, on delete, a gap). Keyset pagination anchors on a value rather\nthan a count, so the page boundary stays put no matter what else is written.\nThat stability is why this is here.\n\nWHAT THIS QUERY COSTS — AND WHY IT IS NOT A SEEK\n------------------------------------------------\nPostgreSQL compiles a ROW COMPARISON, `(a, b) < (c, d)`, into an Index Cond —\na genuine seek straight to the cursor position. But a row comparison is only\nVALID when every column sorts the same direction, because it is lexicographic\nin one direction by definition. Our ordering is mixed — fragility_score DESC,\nscenario_id ASC — so the correct predicate after a cursor (f0, s0) is:\n\n    f < f0  OR  (f = f0 AND s > s0)\n\nand an OR-form predicate is NOT recognized as an index condition. It becomes a\nFilter: the scan starts at the top of the index and discards every row before\nthe cursor. Measured on a 50k-row table with the composite index present:\n\n    tuple form (f, s) < (f0, s0)   Index Only Scan + Index Cond   0.03 ms\n    OR form (what we use)          Index Only Scan + Filter       8.68 ms\n                                   (25005 rows removed by filter)\n\nSo: we keep keyset pagination's CORRECTNESS property (stable page boundaries,\nno duplicates, no gaps) and give up its PERFORMANCE property — page N again\ncosts proportional to N, the same asymptotics as OFFSET. Do not describe this\nquery as a seek.\n\nBoth properties are recoverable by ordering `fragility_score DESC, scenario_id\nDESC` and using the tuple form, which in ranker.py is\n`sorted(records, key=lambda r: (r['fragility_score'], r['scenario_id']),\nreverse=True)` — same direction on both columns. That is the escape hatch if\ndeep paging ever becomes real. It is not taken here because it would change\nPhase 5 code to buy nothing at this scale: a shard holds a few hundred\nscenarios, and the dashboard will never page deep enough for a filter over a\nfew thousand rows to be noticeable. Matching the ranker's ordering is worth\nmore than the seek today.\n\nThe composite index (fragility_score DESC, scenario_id), created in\nexport_geometry.GEOMETRY_SCHEMA_SQL, still earns its keep: it serves the\nORDER BY, so this is an Index Only Scan rather than a sort.",
+        "operationId": "list_scenarios_scenarios_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 25,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "stress_tested_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Stress Tested Only"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scenarios/{scenario_id}": {
+      "get": {
+        "summary": "Get Scenario",
+        "description": "One scenario's full row, including the raw perturbation vector.",
+        "operationId": "get_scenario_scenarios__scenario_id__get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scenarios/{scenario_id}/trajectories": {
+      "get": {
+        "summary": "Get Trajectories",
+        "description": "Every agent's logged path for one scenario.\n\n404 only when the scenario itself is unknown — checked against scenario_scores,\nbecause \"this scenario exists but its geometry has not been exported yet\" is a\nnormal state that must not look like a missing scenario. That case returns 200\nwith an empty agents list.\n\nST_AsGeoJSON does the geometry-to-JSON conversion inside PostgreSQL: less data\non the wire than WKT, no geometry library needed in the API process, and the\nresult drops straight into a deck.gl PathLayer.\n\nBUT GeoJSON has no M dimension, and ST_AsGeoJSON silently DROPS it —\n`LINESTRING M(1 2 0, 3 4 1)` comes back as `[[1,2],[3,4]]` with the measures\ngone. Since M is what tells the frontend which timestep each vertex belongs to,\nit is fetched alongside with ST_DumpPoints + ST_M, ordered by vertex position\nso it stays index-aligned with the coordinates.",
+        "operationId": "get_trajectories_scenarios__scenario_id__trajectories_get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrajectoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scenarios/{scenario_id}/perturbed": {
+      "get": {
+        "summary": "Get Perturbed",
+        "description": "The challenger's logged path next to its minimally-perturbed one — the Phase 4\nresult, made drawable.\n\n404 ONLY when the scenario is unknown. A scenario that exists but has not been\nstress-tested returns 200 with null paths: \"nothing to show yet\" is a normal\nstate in a pipeline whose expensive pass runs over a chosen subset, and a\nfrontend should render an empty panel for it, not an error.",
+        "operationId": "get_perturbed_scenarios__scenario_id__perturbed_get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerturbedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgentTrack": {
+        "properties": {
+          "agent_idx": {
+            "type": "integer",
+            "title": "Agent Idx"
+          },
+          "agent_type": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Type"
+          },
+          "is_sdc": {
+            "type": "boolean",
+            "title": "Is Sdc"
+          },
+          "length_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Length M"
+          },
+          "width_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width M"
+          },
+          "path": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Path"
+          },
+          "timesteps": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Timesteps"
+          },
+          "headings": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Headings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_idx",
+          "is_sdc",
+          "path",
+          "timesteps",
+          "headings"
+        ],
+        "title": "AgentTrack",
+        "description": "One agent's path through space and time.\n\n`path`, `timesteps` and `headings` are index-aligned: element i of each\ndescribes the same vertex. Coordinates are LOCAL PLANAR METRES, not lon/lat."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "database": {
+            "type": "string",
+            "title": "Database"
+          },
+          "postgis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postgis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "database"
+        ],
+        "title": "HealthResponse",
+        "description": "Liveness plus a real database round-trip.\n\n`postgis` is None when the extension is absent — that is degraded, not dead:\nthe scores endpoints work fine without it, only geometry is unavailable."
+      },
+      "PerturbedResponse": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "target_idx": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Idx"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "delta_labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Labels"
+          },
+          "min_perturbation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Perturbation"
+          },
+          "collision_timestep": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collision Timestep"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentTrack"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "perturbed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentTrack"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id"
+        ],
+        "title": "PerturbedResponse",
+        "description": "The Phase 4 answer, made drawable: the challenger's logged path next to its\nminimally-perturbed one.\n\nEvery field except scenario_id is nullable, because \"this scenario has not been\nstress-tested yet\" is a normal state that returns 200, not an error.\n\ndelta_labels USED to be the second exception, and this docstring said so. It stopped\nbeing one in Batch 3 (audit B13): a delta can only be labelled if we know which\nkinematic model produced it, and for a legacy row with neither recorded provenance\nnor exported geometry, nothing does. Corrected here rather than quietly reworded,\nbecause the old sentence is exactly the guarantee a frontend would have been written\nagainst."
+      },
+      "ScenarioDetail": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "shard": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard"
+          },
+          "n_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Agents"
+          },
+          "min_ttc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Ttc",
+            "description": "Minimum time-to-collision (s) over pairs involving the SDC. 999.0 sentinel = the SDC is never in a closing pair."
+          },
+          "min_pet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Pet",
+            "description": "Minimum post-encroachment time (s) over pairs involving the SDC. Negative = the SDC and another agent genuinely occupied a conflict zone simultaneously. 999.0 = no shared conflict zone."
+          },
+          "fragility_score": {
+            "type": "number",
+            "title": "Fragility Score"
+          },
+          "min_perturbation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Perturbation"
+          },
+          "collision_timestep": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collision Timestep"
+          },
+          "stress_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Method"
+          },
+          "stress_tested": {
+            "type": "boolean",
+            "title": "Stress Tested"
+          },
+          "stress_attempted": {
+            "type": "boolean",
+            "title": "Stress Attempted"
+          },
+          "stress_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Outcome"
+          },
+          "last_attempt_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt Outcome"
+          },
+          "challengers_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challengers Total"
+          },
+          "challengers_searched": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challengers Searched"
+          },
+          "no_collision_found": {
+            "type": "boolean",
+            "title": "No Collision Found"
+          },
+          "robustly_safe": {
+            "type": "boolean",
+            "title": "Robustly Safe"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "fragility_score",
+          "stress_tested",
+          "stress_attempted",
+          "stress_outcome",
+          "last_attempt_outcome",
+          "challengers_total",
+          "challengers_searched",
+          "no_collision_found",
+          "robustly_safe"
+        ],
+        "title": "ScenarioDetail",
+        "description": "A single scenario, including the raw perturbation vector."
+      },
+      "ScenarioPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "limit"
+        ],
+        "title": "ScenarioPage",
+        "description": "One page of the ranked list.\n\n`next_cursor` is opaque: clients pass it back verbatim and must never construct\nor edit one. See routes.py for why its precision is load-bearing."
+      },
+      "ScenarioSummary": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "shard": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard"
+          },
+          "n_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Agents"
+          },
+          "min_ttc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Ttc",
+            "description": "Minimum time-to-collision (s) over pairs involving the SDC. 999.0 sentinel = the SDC is never in a closing pair."
+          },
+          "min_pet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Pet",
+            "description": "Minimum post-encroachment time (s) over pairs involving the SDC. Negative = the SDC and another agent genuinely occupied a conflict zone simultaneously. 999.0 = no shared conflict zone."
+          },
+          "fragility_score": {
+            "type": "number",
+            "title": "Fragility Score"
+          },
+          "min_perturbation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Perturbation"
+          },
+          "collision_timestep": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collision Timestep"
+          },
+          "stress_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Method"
+          },
+          "stress_tested": {
+            "type": "boolean",
+            "title": "Stress Tested"
+          },
+          "stress_attempted": {
+            "type": "boolean",
+            "title": "Stress Attempted"
+          },
+          "stress_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Outcome"
+          },
+          "last_attempt_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt Outcome"
+          },
+          "challengers_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challengers Total"
+          },
+          "challengers_searched": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challengers Searched"
+          },
+          "no_collision_found": {
+            "type": "boolean",
+            "title": "No Collision Found"
+          },
+          "robustly_safe": {
+            "type": "boolean",
+            "title": "Robustly Safe"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "fragility_score",
+          "stress_tested",
+          "stress_attempted",
+          "stress_outcome",
+          "last_attempt_outcome",
+          "challengers_total",
+          "challengers_searched",
+          "no_collision_found",
+          "robustly_safe"
+        ],
+        "title": "ScenarioSummary",
+        "description": "One row of the ranked list."
+      },
+      "StatsResponse": {
+        "properties": {
+          "total_scenarios": {
+            "type": "integer",
+            "title": "Total Scenarios"
+          },
+          "stress_tested": {
+            "type": "integer",
+            "title": "Stress Tested"
+          },
+          "collisions_found": {
+            "type": "integer",
+            "title": "Collisions Found"
+          },
+          "no_collision_found": {
+            "type": "integer",
+            "title": "No Collision Found"
+          },
+          "replay_infeasible": {
+            "type": "integer",
+            "title": "Replay Infeasible"
+          },
+          "heading_blend_singularity": {
+            "type": "integer",
+            "title": "Heading Blend Singularity"
+          },
+          "no_challenger": {
+            "type": "integer",
+            "title": "No Challenger"
+          },
+          "stress_errors": {
+            "type": "integer",
+            "title": "Stress Errors"
+          },
+          "robustly_safe": {
+            "type": "integer",
+            "title": "Robustly Safe"
+          },
+          "with_geometry": {
+            "type": "integer",
+            "title": "With Geometry"
+          },
+          "fragility_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fragility Min"
+          },
+          "fragility_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fragility Max"
+          },
+          "fragility_mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fragility Mean"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_scenarios",
+          "stress_tested",
+          "collisions_found",
+          "no_collision_found",
+          "replay_infeasible",
+          "heading_blend_singularity",
+          "no_challenger",
+          "stress_errors",
+          "robustly_safe",
+          "with_geometry"
+        ],
+        "title": "StatsResponse",
+        "description": "Corpus-level summary for the dashboard header."
+      },
+      "TrajectoryResponse": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentTrack"
+            },
+            "type": "array",
+            "title": "Agents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "agents"
+        ],
+        "title": "TrajectoryResponse",
+        "description": "Every agent's logged path for one scenario. Empty if Pass 3 has not run."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

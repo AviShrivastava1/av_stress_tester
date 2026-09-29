@@ -1,0 +1,41 @@
+{
+  "name": "av-stress-tester-frontend",
+  "private": true,
+  "version": "0.7.0",
+  "type": "module",
+  "engines": {
+    "node": "^22.22.2"
+  },
+  "scripts": {
+    "gen:api": "openapi-typescript openapi.json -o src/api/schema.d.ts",
+    "gen:api:live": "openapi-typescript -o src/api/schema.d.ts",
+    "predev": "npm run gen:api",
+    "dev": "vite",
+    "prebuild": "npm run gen:api",
+    "build": "tsc --noEmit && vite build",
+    "pretypecheck": "npm run gen:api",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.104.0",
+    "openapi-fetch": "^0.17.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router": "^8.4.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.1.1",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}

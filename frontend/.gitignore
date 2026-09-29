@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Generated from openapi.json by `npm run gen:api` (runs before dev, build and
+# typecheck). The committed contract is openapi.json; this is derived from it.
+src/api/schema.d.ts
