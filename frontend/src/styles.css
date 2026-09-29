@@ -510,3 +510,68 @@ h2 {
   background: var(--surface);
   color: var(--text);
 }
+
+/* ── corpus page ──────────────────────────────────────────────────────────── */
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.site-nav {
+  display: flex;
+  gap: 16px;
+}
+
+.site-nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.site-nav a.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.stat-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.stat dt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.stat dd {
+  margin: 2px 0 0;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A second dd; the extra class outranks `.stat dd` so the definition is not styled as a value. */
+.stat .stat-def {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-variant-numeric: normal;
+  color: var(--text-muted);
+}
+
+.panel .caption {
+  margin: -6px 0 12px;
+}
+
+.stat dt::first-letter {
+  text-transform: uppercase;
+}

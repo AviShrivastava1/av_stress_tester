@@ -29,6 +29,15 @@ export function parseOutcome(raw: string): Outcome | null {
 
 export type Tone = 'danger' | 'neutral' | 'warning' | 'muted';
 
+/**
+ * The server's `robustly_safe`, worded once for every place that shows it. It is
+ * read from the server's boolean or count, never inferred from other fields.
+ */
+export const ROBUSTLY_SAFE = {
+  label: 'robustly safe',
+  meaning: 'The server reports a search that certifies no collision is reachable within its bounds.',
+} as const;
+
 export interface OutcomeDescription {
   label: string;
   tone: Tone;

@@ -1,4 +1,4 @@
-import { describeOutcome, parseOutcome, type Tone } from '../domain/outcomes';
+import { describeOutcome, parseOutcome, ROBUSTLY_SAFE, type Tone } from '../domain/outcomes';
 
 function Badge({ tone, label, title }: { tone: Tone; label: string; title: string }) {
   return (
@@ -76,11 +76,7 @@ export function OutcomeCell({ row }: { row: OutcomeFields }) {
       )}
       {/* Straight from the server's boolean — never derived from a NULL min_perturbation. */}
       {row.robustly_safe && (
-        <Badge
-          tone="neutral"
-          label="robustly safe"
-          title="The server reports a search that certifies no collision is reachable within its bounds."
-        />
+        <Badge tone="neutral" label={ROBUSTLY_SAFE.label} title={ROBUSTLY_SAFE.meaning} />
       )}
     </span>
   );

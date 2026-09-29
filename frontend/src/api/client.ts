@@ -8,6 +8,8 @@ export type ScenarioDetail = components['schemas']['ScenarioDetail'];
 export type AgentTrack = components['schemas']['AgentTrack'];
 export type TrajectoryResponse = components['schemas']['TrajectoryResponse'];
 export type PerturbedResponse = components['schemas']['PerturbedResponse'];
+export type StatsResponse = components['schemas']['StatsResponse'];
+export type HealthResponse = components['schemas']['HealthResponse'];
 
 export const API_BASE_URL: string =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
