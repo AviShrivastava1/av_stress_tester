@@ -1,9 +1,11 @@
 import numpy as np
 from src.physics.bicycle_model import (
+    A_MAX as BICYCLE_A_MAX,
     bicycle_step, invert_bicycle, extract_state_from_womd as bicycle_extract,
     get_wheelbase
 )
 from src.physics.linear_model import (
+    A_MAX as LINEAR_A_MAX,
     linear_step, invert_linear, extract_state_from_womd as linear_extract
 )
 
@@ -11,6 +13,24 @@ from src.physics.linear_model import (
 TYPE_VEHICLE    = 1
 TYPE_PEDESTRIAN = 2
 TYPE_CYCLIST    = 3
+
+
+def replay_a_max(agent_type: int) -> float:
+    """
+    The acceleration cap a challenger of this type is simulated under.
+
+    Decided by the SAME rule ForwardSimulator.step and TrajectoryInverter.invert use
+    to pick a model (vehicle -> bicycle, anything else -> linear). The two A_MAX
+    constants share a name but are independent, so "which A_MAX" is a dispatch
+    decision, and it is made here, once.
+
+    The point of having one definition: batch_scorer._stress_one RECORDS this value
+    into search_provenance['a_max'], and export_shard_geometry COMPARES the current
+    value against the recorded one before replaying a stored delta. If the writer and
+    the checker each picked the constant themselves, they could disagree about which
+    one applies, and the guard would compare the wrong pair.
+    """
+    return float(BICYCLE_A_MAX if agent_type == TYPE_VEHICLE else LINEAR_A_MAX)
 
 
 class ForwardSimulator:

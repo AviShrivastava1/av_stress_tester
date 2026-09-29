@@ -67,6 +67,26 @@ import numpy as np
 # was audit findings B01 and B02.
 from src.data.validity import valid_timesteps as _valid_timesteps
 
+# The acceleration cap every result was searched under BEFORE search_provenance
+# recorded one. A HISTORICAL FACT, not a default and not a tunable: both
+# bicycle_model.A_MAX and linear_model.A_MAX were 5.0 in every commit up to the one
+# that added the 'a_max' key, so a result without that key can only have come from a
+# 5.0 search.
+#
+# WHY A MISSING KEY IS NOT READ THE WAY G08 READS ONE. For heading_speed_floor and
+# heading_transition_width, a missing key means "use today's class default" (see the
+# replay_kwargs comment in export_shard_geometry). That is correct there because those
+# defaults had not moved when the keys were introduced, so today's default IS what a
+# legacy search ran under. It is wrong here because the change that introduced this
+# key is the same change that moved the value. "Today's value" for a legacy vehicle
+# row is 12.0, the search ran under 5.0, and comparing against today's value would
+# pass every stale vehicle row through: the defect this guard exists to close. The
+# other available reading, "missing means unknown, refuse", fails in the opposite
+# direction. It would refuse every legacy pedestrian/cyclist row, although
+# linear_model.A_MAX never changed and those replays are exactly what they always
+# were. The historical value is the only reading that is true for both models.
+A_MAX_BEFORE_PROVENANCE = 5.0
+
 
 # The composite index is additive — it does not redefine anything db.py created.
 # It exists to serve the API's ranked ORDER BY (fragility_score DESC, scenario_id),
@@ -733,7 +753,8 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
 
     Returns a summary dict: exported, agents_written, agents_skipped,
     perturbed_written, perturbed_stale (list of dicts), scene_changed (list of
-    dicts), sdc_changed (list of dicts), errors (list of dicts).
+    dicts), sdc_changed (list of dicts), a_max_changed (list of dicts), errors
+    (list of dicts).
 
     perturbed_stale RECORDS EACH REFUSAL INDIVIDUALLY, not as a tally. Block 5
     Concept 19: a batch that reports "982 scored, 18 skipped, here is why" is
@@ -776,6 +797,13 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         # for SceneChangedError/SdcIndexChangedError's own reason: printing "scene
         # changed" for an sdc-only mismatch would assert something false.
         'sdc_changed': [],
+        # Stored deltas whose replay would run under a different acceleration cap
+        # than the one they were searched and SAT-verified under. A SEPARATE bucket,
+        # not folded into perturbed_stale: that one means "this geometry belongs to a
+        # different stored run" (export_perturbed_path's run-id refusal), and a delta
+        # whose run is current but whose physics has moved on is not that.
+        # Same reason sdc_changed is not folded into scene_changed.
+        'a_max_changed': [],
         'errors': [],
     }
     t_start = time.time()
@@ -921,6 +949,43 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                 # as before this fix — not have every legacy result silently
                 # replayed with the band/floor forced off.
                 provenance = result.get('search_provenance') or {}
+
+                # THE ACCELERATION CAP, THE SAME QUESTION FOR A MODULE CONSTANT. The
+                # two heading parameters below can be REPRODUCED, because they are
+                # PerturbationSpace arguments. A_MAX is not: bicycle_step and
+                # linear_step read it from their module, so there is no way to
+                # replay under the recorded cap once the constant has moved. The
+                # honest options are to replay under the wrong physics or to refuse,
+                # and this refuses. The baseline agents above are logged data, not a
+                # replay, so they stay exported either way.
+                #
+                # Checked BEFORE PerturbationSpace is built, not after: under the
+                # wrong cap its own baseline-replay gates can raise first, which
+                # would file a physics mismatch under `errors` as if the record were
+                # malformed.
+                from src.physics.simulator import replay_a_max
+                target_idx = int(result['target_idx'])
+                current_a_max = replay_a_max(int(types[target_idx]))
+                if 'a_max' in provenance:
+                    recorded_a_max = provenance['a_max']
+                    a_max_source = 'search_provenance'
+                else:
+                    recorded_a_max = A_MAX_BEFORE_PROVENANCE
+                    a_max_source = 'predates_provenance'
+                if recorded_a_max != current_a_max:
+                    summary['a_max_changed'].append({
+                        'scenario_id': sid,
+                        'target_idx': target_idx,
+                        'recorded_a_max': recorded_a_max,
+                        'recorded_a_max_source': a_max_source,
+                        'current_a_max': current_a_max,
+                    })
+                    if verbose:
+                        print(f"    [a_max changed] perturbed path refused: searched "
+                              f"under A_MAX={recorded_a_max} ({a_max_source}), would "
+                              f"replay under {current_a_max}; re-run Pass 2 for it")
+                    continue
+
                 replay_kwargs = {
                     key: provenance[key]
                     for key in ('heading_speed_floor', 'heading_transition_width')
@@ -1006,6 +1071,7 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         print(f"Geometry pass done: {summary['exported']} scenarios, "
               f"{summary['agents_written']} agents, "
               f"{len(summary['perturbed_stale'])} stale exports refused, "
+              f"{len(summary['a_max_changed'])} refused for a changed A_MAX, "
               f"{len(summary['errors'])} errors, "
               f"{time.time() - t_start:.1f}s")
     return summary

@@ -3,8 +3,35 @@ import numpy as np
 
 # ── Kinematic constraints ──────────────────────────────────────────────────────
 DELTA_MAX = 0.5    # max steering angle (radians, ~30 degrees)
-A_MAX     = 5.0    # max acceleration magnitude (m/s^2)
+A_MAX     = 12.0   # max acceleration magnitude (m/s^2)
 V_MAX     = 40.0   # max speed (m/s, ~90 mph)
+
+# A_MAX is 12.0, about 1.2 g: hard braking on a good tyre. Raised from 5.0 on a
+# measurement, not a preference. Over every valid vehicle-agent transition in a real
+# 496-scenario shard, |dv/dt| is p50 0.00, p90 3.25, p99 13.4 m/s^2, and 33.1% of
+# vehicle agents have at least one transition above 5.0. invert_bicycle clipped those
+# to 5.0 and bicycle_step replayed the clipped value, so a logged hard stop replayed
+# as a gentle one and the zero-delta replay drifted ahead of the log. A counterfactual
+# sweep of that mechanism put the scenarios drifting over 5 m at 32 (A=5), 13 (A=10),
+# 9 (A=12) and 10 (A=15): the return flattens at 12, which is also the shard's p99.
+#
+# ONE CONSTANT, THREE ENFORCEMENT SITES, AND THEY CANNOT BE DECOUPLED: bicycle_step's
+# clamp, invert_bicycle's clip, and autograd_optimizer's torch rollout, which must
+# mirror bicycle_step exactly. Raising only the inverter's clip does nothing, because
+# the zero-delta replay runs through bicycle_step, which clips it straight back down.
+#
+# So this also RAISES THE CEILING ON WHAT PHASE 4 MAY COMMAND: a perturbed search can
+# now ask a vehicle for up to 12 m/s^2, where it used to be capped at 5. That widens
+# the realism guarantee ("a manoeuvre a real driver could execute") by one notch, from
+# firm braking to hard braking. It is deliberate, not a side effect.
+#
+# linear_model.A_MAX is a SEPARATE constant and stays 5.0. The measurement above
+# covers vehicles only; nothing has measured pedestrians or cyclists, and raising
+# their bound on vehicle data would present an assumption as a measurement.
+#
+# Every Pass 2 result records the cap it was searched under (search_provenance
+# 'a_max'), and export_shard_geometry refuses to replay a stored delta under a
+# different one. See simulator.replay_a_max.
 DT        = 0.1    # timestep duration (seconds, WOMD is 10 Hz)
 
 

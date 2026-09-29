@@ -203,6 +203,7 @@ def _stress_one(states, validity, types, sdc_idx,
         pick_nearest_challenger,
     )
     from src.optimization.scipy_optimizer import optimize_scenario
+    from src.physics.simulator import replay_a_max
     from src.scoring.db import (
         OUTCOME_COLLISION_FOUND, OUTCOME_HEADING_BLEND_SINGULARITY,
         OUTCOME_NO_CHALLENGER, OUTCOME_NO_COLLISION_FOUND,
@@ -393,6 +394,15 @@ def _stress_one(states, validity, types, sdc_idx,
                                 else float(space.heading_speed_floor)),
         'heading_transition_width': (None if not space.heading_transition_width
                                      else float(space.heading_transition_width)),
+        # The acceleration cap this delta was searched and SAT-verified under, for
+        # the reason heading_speed_floor/heading_transition_width are recorded just
+        # above (fix G08): export_shard_geometry replays the stored delta later, and
+        # a replay under a different cap is a different trajectory from the one that
+        # earned the collision. Unlike those two, this is a module constant rather
+        # than a PerturbationSpace argument, so the export cannot REPRODUCE a
+        # recorded value; it can only REFUSE a mismatch. replay_a_max picks the
+        # model's constant by the same dispatch rule the simulator uses.
+        'a_max': replay_a_max(space.target_type),
     }
 
     # THE IDENTITY THIS RESULT WAS SEARCHED AGAINST (fix F02) — not search
