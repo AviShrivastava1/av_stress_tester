@@ -17,7 +17,7 @@ the true valid-timestep index, element for element, could not see a mistake in
 exactly that value.
 
 Modelled directly on test_B19's own technique for this cell: a fully in-memory,
-no-database env (ShardLoader/ScenarioParser/cursor all faked), because this defect is
+no-database env (shard_cache and cursor both faked), because this defect is
 pure Python-level comparison logic — nothing about it depends on what PostGIS itself
 can store. Located by the SAME content tokens test_B19 already uses
 ('n_exact_match', 'dump_points_m(') — two cells in this notebook print
@@ -73,18 +73,6 @@ def _geometry_validation_cell():
     return cells[0]
 
 
-class _Parser:
-    """One scenario, one agent, three valid timesteps at indices 0, 1, 2."""
-    def __init__(self, raw):
-        pass
-
-    def get_scenario_id(self):
-        return 'A'
-
-    def get_agent_validity(self):
-        return np.ones((1, 3), dtype=bool)
-
-
 class _Cursor:
     """agent 0 IS exported — unlike test_B19's Cursor, whose empty fetchall() is the
     point of ITS test. This one needs to reach dump_points_m at all."""
@@ -108,12 +96,28 @@ def _dump_points_m(m_values):
     return dump
 
 
+def _env(m_values):
+    """
+    The cell's whole outside environment, built in ONE place.
+
+    shard_cache holds one scenario, one agent, three valid timesteps at indices 0, 1,
+    2. The cell iterates the notebook's parse-once shard_cache (32a2853) and reads
+    only 'scenario_id' and 'validity' from each entry; it no longer reads ShardLoader
+    or ScenarioParser, so there are no fakes for either. This used to be written out
+    three times, which is how three copies of the same dead fakes survived the cell's
+    last change.
+    """
+    return dict(np=np,
+                shard_cache=[{'scenario_id': 'A',
+                              'validity': np.ones((1, 3), dtype=bool)}],
+                ids_to_test=['A'],
+                conn=SimpleNamespace(cursor=_Cursor),
+                dump_points_m=_dump_points_m(m_values),
+                summary={'agents_skipped': 0})
+
+
 def _run_cell(m_values):
-    env = dict(np=np, ShardLoader=lambda _: [b'A'], SHARD_PATH='synthetic',
-               ScenarioParser=_Parser, ids_to_test=['A'],
-               conn=SimpleNamespace(cursor=_Cursor),
-               dump_points_m=_dump_points_m(m_values),
-               summary={'agents_skipped': 0})
+    env = _env(m_values)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         exec(compile(_geometry_validation_cell(), 'notebook_cell_f09', 'exec'), env)
@@ -125,8 +129,13 @@ def test_F09_a_systematic_fractional_offset_is_caught():
     THE PRIMARY REPRO. Every M value shifted by exactly +0.25 — truncates to the
     correct integer sequence under dtype=int, which is exactly what let this defect
     hide behind a passing assertion before.
+
+    Pinned to the M-array assertion: the cell's `n_expected > 0` guard raises a bare
+    AssertionError too, so an unmatched raises() also passed on an environment that
+    never reached an M value at all.
     """
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError,
+                       match="M arrays did not match true valid timesteps"):
         _run_cell([0.25, 1.25, 2.25])
 
 
@@ -136,11 +145,7 @@ def test_F09_the_printed_mismatch_names_non_integer_values_not_a_generic_mismatc
     printed MISMATCH line, captured here directly rather than assumed."""
     out = io.StringIO()
     with contextlib.redirect_stdout(out), pytest.raises(AssertionError):
-        env = dict(np=np, ShardLoader=lambda _: [b'A'], SHARD_PATH='synthetic',
-                   ScenarioParser=_Parser, ids_to_test=['A'],
-                   conn=SimpleNamespace(cursor=_Cursor),
-                   dump_points_m=_dump_points_m([0.25, 1.25, 2.25]),
-                   summary={'agents_skipped': 0})
+        env = _env([0.25, 1.25, 2.25])
         exec(compile(_geometry_validation_cell(), 'notebook_cell_f09', 'exec'), env)
     assert 'not integer-valued' in out.getvalue(), out.getvalue()
 
@@ -163,11 +168,7 @@ def test_F09_an_ordinary_integer_mismatch_is_still_caught():
     not weaken this side."""
     out = io.StringIO()
     with contextlib.redirect_stdout(out), pytest.raises(AssertionError):
-        env = dict(np=np, ShardLoader=lambda _: [b'A'], SHARD_PATH='synthetic',
-                   ScenarioParser=_Parser, ids_to_test=['A'],
-                   conn=SimpleNamespace(cursor=_Cursor),
-                   dump_points_m=_dump_points_m([0.0, 1.0, 5.0]),
-                   summary={'agents_skipped': 0})
+        env = _env([0.0, 1.0, 5.0])
         exec(compile(_geometry_validation_cell(), 'notebook_cell_f09', 'exec'), env)
     printed = out.getvalue()
     assert 'values differ from true valid timesteps' in printed, printed

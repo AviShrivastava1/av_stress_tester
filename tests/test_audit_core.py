@@ -257,19 +257,26 @@ def test_B19_notebook_geometry_validation_rejects_missing_valid_agents():
         f'expected exactly one geometry-validation cell, found {len(cells)}'
     )
     code = cells[0]
-    class Parser:
-        def __init__(self, raw): pass
-        def get_scenario_id(self): return 'A'
-        def get_agent_validity(self): return np.ones((2,3), dtype=bool)
     class Cursor:
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def execute(self, *args): pass
         def fetchall(self): return []
-    env = dict(np=np, ShardLoader=lambda _: [b'A'], SHARD_PATH='synthetic',
-               ScenarioParser=Parser, ids_to_test=['A'],
+    # 32a2853 replaced the cell's ShardLoader/ScenarioParser re-parse with the
+    # notebook's parse-once shard_cache, and the cell reads only 'scenario_id' and
+    # 'validity' from each entry. The old fakes are deleted, not kept beside the stub:
+    # the cell no longer reads either name.
+    #
+    # The raises() is pinned to the MISSING-AGENTS assertion. A bare AssertionError is
+    # also what the cell's own `n_expected > 0` guard raises when there is nothing to
+    # check at all, so an empty cache, a scenario_id outside ids_to_test, or agents
+    # with fewer than 2 valid frames all passed this test without it ever seeing a
+    # missing agent. Same 0 == 0 shape the B19 fix itself exists to close.
+    shard_cache = [{'scenario_id': 'A', 'validity': np.ones((2,3), dtype=bool)}]
+    env = dict(np=np, shard_cache=shard_cache, ids_to_test=['A'],
                conn=SimpleNamespace(cursor=Cursor), summary={'agents_skipped':0})
-    with pytest.raises(AssertionError), contextlib.redirect_stdout(io.StringIO()):
+    with pytest.raises(AssertionError, match='have no row in scenario_agents'), \
+            contextlib.redirect_stdout(io.StringIO()):
         exec(compile(code, 'notebook_cell_39', 'exec'), env)
 
 

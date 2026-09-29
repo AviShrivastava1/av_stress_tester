@@ -1006,14 +1006,18 @@ def _exec_pass2_aggregate(stress_results):
     """
     Run the notebook's Pass 2 aggregate cell against a supplied result dict.
 
-    ShardLoader is stubbed to an empty iterable, so the cell's re-parse loop does not
-    run and no shard or Waymo package is needed — the aggregate block below it, which
-    is what the finding is about, runs in full.
+    shard_cache is stubbed to an empty list, so the cell's per-scenario diagnostics
+    loop does not run and no shard or Waymo package is needed — the aggregate block
+    below it, which is what the finding is about, runs in full.
+
+    The cell iterates the notebook's parse-once shard_cache (32a2853), not
+    ShardLoader/ScenarioParser, so this environment carries no fakes for those names:
+    a fake the cell never reads cannot fail when the cell changes shape again, it can
+    only go stale beside the stub that replaced it.
     """
     cell = _cell_by_content('PASS 2 AGGREGATES', 'n_no_challenger')
     env = {
-        'ShardLoader': lambda path: [], 'SHARD_PATH': 'unused',
-        'ScenarioParser': None, 'np': np,
+        'shard_cache': [], 'np': np,
         'stress_results': stress_results, 'ids_to_test': list(stress_results),
         'pass2_elapsed': 1.0,
     }
