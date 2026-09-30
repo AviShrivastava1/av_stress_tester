@@ -240,10 +240,24 @@ def _run_metadata_source():
     return ast.unparse(fn[0])
 
 
+def _config_top_n():
+    """TOP_N as the config cell assigns it: the checkpoints are exercised at the run's
+    real Pass 2 size, not at a copy of it that could drift."""
+    values = [ast.literal_eval(node.value)
+              for node in ast.parse(_cell_by_content('the only cell you should need to edit')).body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id == 'TOP_N' for t in node.targets)]
+    assert len(values) == 1, f'expected one TOP_N assignment in the config cell, got {values}'
+    return values[0]
+
+
+TOP_N = _config_top_n()
+
+
 def _session(**overrides):
     namespace = {'subprocess': subprocess, 'REPO_DIR': PROJECT,
                  'SHARD_PATH': '/content/drive/MyDrive/waymo_data/shard-00000',
-                 'MAX_SCENARIOS': 100, 'TOP_N': 5,
+                 'MAX_SCENARIOS': 100, 'TOP_N': TOP_N,
                  'DE_KWARGS': dict(popsize=15, maxiter=200, tol=1e-3, seed=1)}
     namespace.update(overrides)
     exec(compile(_run_metadata_source(), '<run_metadata>', 'exec'), namespace)
@@ -266,7 +280,10 @@ def _paths(source, tmp_path):
 
 
 def _records(bump=None):
-    records = [{'scenario_id': f's{i:02d}', 'fragility_score': 1.0 + (i % 3)} for i in range(12)]
+    # More records than TOP_N, in three fragility tiers, so the selection both cuts the
+    # list and breaks ties by scenario ID.
+    records = [{'scenario_id': f's{i:02d}', 'fragility_score': 1.0 + (i % 3)}
+               for i in range(TOP_N + 7)]
     if bump:
         records[0]['fragility_score'] += bump
     return records
@@ -301,13 +318,15 @@ def test_both_checkpoints_resume_in_a_matching_session(tmp_path):
     _run(_paths(_block(PASS1, 'pickle.load'), tmp_path), resumed)
     assert resumed['records'] == records and resumed['errors'] == []
     _run(_paths(_block(PASS2, 'pickle.load'), tmp_path), resumed)
-    assert resumed['ids_to_test'] == ['s02', 's05', 's08', 's11', 's01']
+    by_fragility_then_id = sorted(records, key=lambda r: (-r['fragility_score'], r['scenario_id']))
+    assert resumed['ids_to_test'] == [r['scenario_id'] for r in by_fragility_then_id[:TOP_N]]
+    assert len(resumed['ids_to_test']) == TOP_N
     assert set(resumed['stress_results']) == set(resumed['ids_to_test'])
 
 
 @pytest.mark.parametrize('key,value', [
     ('commit', '0' * 40), ('shard_path', '/elsewhere'), ('max_scenarios', 50),
-    ('top_n', 20), ('de_kwargs', {'popsize': 15}), ('a_max', 5.0),
+    ('top_n', TOP_N + 1), ('de_kwargs', {'popsize': 15}), ('a_max', 5.0),
 ])
 def test_a_pass_1_checkpoint_from_a_different_run_is_refused(tmp_path, key, value):
     _save_pass1(tmp_path, _session(), _records())

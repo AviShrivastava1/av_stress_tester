@@ -51,8 +51,14 @@ change, that is a new batch, planned and reviewed like every other one.
 depending on availability and your usage patterns", says runtimes "time out if you are
 idle", and offers no background execution on the free tier. **The idle timeout is not
 documented**: no duration is given, and nothing says whether a running cell counts as
-activity. The full run is estimated at about 17 minutes with 10b skipped, far inside the
-lifetime cap, so the realistic risks are an idle disconnect and a lost connection. So:
+activity. The full run is estimated at about 26–28 minutes with 10b skipped and
+`TOP_N = 20`. That is the earlier 17-minute estimate for 5 scenarios, plus about 8–9
+minutes for the 15 extra DE searches (roughly 30–35 s each), plus about 1–2 minutes for
+roughly four times the Pass 3 exports and geometry-verification queries over the network
+(at about 50 ms per round trip). All of these are estimates, not measurements. Pass 2
+becomes the longest single step, about 12 minutes (estimated), which is what the Pass 2
+checkpoint below is for. The run is still far inside the lifetime cap, so the realistic
+risks are an idle disconnect and a lost connection. So:
 keep the Colab tab open and in front; keep the Mac awake (`caffeinate -dims` in a
 terminal, left running until the dump is done); and run in blocks — cells 1–13, read the
 pre-write report, then the rest.
@@ -87,7 +93,7 @@ does not catch.
 
 ```
 MAX_SCENARIOS = 100    Pass 1 batch size
-TOP_N         = 5      Pass 2 stress-test set — UNCHANGED, see step 6
+TOP_N         = 20     Pass 2 stress-test set — 20 for the site's dataset, see step 6
 DIAG_N        = 50     7c/7d sample
 RUN_B09       = False  10b skipped by default: its result is recorded, see step 5
 B09_N         = 25     10b sample — deliberately not TOP_N, see step 5
@@ -542,10 +548,10 @@ still average away that difference, for a different reason than given last round
 Same pattern 7g's own "drift by challenger agent type" section already uses):
 - `frames_below_heading_floor` / `frames_in_heading_transition_band` percentiles, per
   agent type, over every scenario that both survived construction *and* did not trip
-  the hard replay-fidelity gate — full shard, not the `TOP_N = 5` Pass-2 sample.
+  the hard replay-fidelity gate — full shard, not the `TOP_N`-scenario Pass-2 sample.
   (`stress_results`'s own `search_provenance` carries these two per Pass-2 scenario
-  already; reading that instead would be strictly worse, N=5 against N≈shard size, so
-  it is not read separately here.)
+  already; reading that instead would be strictly worse, N=`TOP_N` against N≈shard size,
+  so it is not read separately here.)
 - The singularity guard's fire rate against the attempted population (constructions
   actually reached — excludes `no_challenger`, where nothing was ever attempted, and
   counted over `rows`, not `measured_rows`: a hard-gate refusal still means
@@ -958,10 +964,22 @@ Sections 8 through 10 (rank + persist, `stress_test_scenarios`, diagnostics) at 
 45–50, then 10b, then sections 11 through 15 at cells 53–65 (update, Pass 3 export,
 geometry verification, API round trip, summary).
 
-**`TOP_N` stays at 5.** Phase 5's architecture is a cheap filter feeding an expensive pass
-over a small selected set; running Pass 2 at a size chosen to make a measurement look
-better would misrepresent how the pipeline works. 10b gets its own `B09_N` instead —
-that decoupling is the point.
+**`TOP_N = 20`, for the deployed site, not for any measurement.** This paragraph used to
+say `TOP_N` stays at 5: Phase 5's architecture is a cheap filter feeding an expensive pass
+over a small selected set, and running Pass 2 at a size chosen to make a measurement look
+better would misrepresent how the pipeline works. That still holds at 20. 20 of 100 is
+still a small, selected set, so the cheap-filter-then-expensive-pass architecture is
+unchanged. The reason for 20 is the dataset the deployed site serves, 20 scenarios with a
+perturbation and playback instead of 5, not any measurement in this run. The S1–S8 drift
+checks don't depend on `TOP_N` either: 7g–7g-v read the whole shard through the cache.
+10b keeps its own `B09_N`, so its sample never depends on Pass 2's size. **The tie
+caveat:** at least a quarter and fewer than half of the 100 scenarios tie at the maximum
+fragility score, 100 (the first real run's Pass 1 fragility percentiles: p50 57.1429,
+p75 100.0000; not re-derived here). 100 is Pass 1's ceiling, TTC and PET both at their
+0.01 s floor. `rank_scenarios` breaks ties by scenario ID, and at least 25 scenarios tie at
+the maximum, so all 20 selected fall inside the tie: the 20 are the first 20 by scenario ID
+among the most fragile, not the 20 most fragile. The site's description of its data should
+eventually say the same.
 
 **Geometry verification (section 13, cell 59)** carries Batch 5's B19 fix: it now asserts *coverage
 before correctness*. The old version passed vacuously at `0 == 0` when every agent was
@@ -983,8 +1001,8 @@ a seventh — which is the fix doing its job, again.
 **Success:** section 13's code cell prints `CONFIRMED: all N exportable agents present ...`; the API round
 trip closes the loop between HTTP timesteps and the M values read directly from PostGIS.
 
-**If no scenario in the Pass 2 sample produced a verified collision** — an ordinary outcome
-at `TOP_N = 5`, not a failure — section 14 no longer crashes on it (audit R09). It falls
+**If no scenario in the Pass 2 sample produced a verified collision** — an ordinary
+outcome, not a failure — section 14 no longer crashes on it (audit R09). It falls
 back to any scenario with exported geometry, prints every outcome it did see, and states
 explicitly that collision-specific checks were **skipped, not passed**. The round-trip
 assertion still runs, on a non-colliding agent; it never needed a delta. Read that notice
