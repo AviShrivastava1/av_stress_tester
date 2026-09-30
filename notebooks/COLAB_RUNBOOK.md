@@ -47,6 +47,12 @@ those steps run first.
 **Nothing in this session is expected to change code.** If something here demands a code
 change, that is a new batch, planned and reviewed like every other one.
 
+**Clear all outputs before committing the notebook** (Colab: *Edit → Clear all outputs*,
+then save). In external-database mode, cell outputs contain the database host and
+everything a later cell prints about the data, and this repository is public.
+`tests/test_notebook_committed_clean.py` fails if the committed notebook carries any
+outputs or execution counts, so this is enforced, not just remembered.
+
 ---
 
 ## Step 1 — Environment
@@ -56,7 +62,7 @@ change, that is a new batch, planned and reviewed like every other one.
 | Repo | `main` at `51a02c9` or later — the fifth-audit commit (`b827969`) plus this runbook/notebook's own reconciliation with it. Confirm with `git log --oneline -1` and record it. |
 | Shard | one real `.tfrecord` on Drive, path in cell 6 `SHARD_PATH` |
 | Waymo package | `waymo-open-dataset-tf-2-11-0`, `--no-deps` (cell 4) |
-| Postgres/PostGIS | cells 11–13 |
+| Postgres/PostGIS | cells 11–13; `DB_MODE` in cell 6 picks a throwaway local database or a hosted one (see *External database* below) |
 | `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` | cell 2, **before** any protobuf import |
 
 Cells 1–15, in order. Cell 15 is a one-scenario smoke test; if it fails, nothing later is
@@ -75,7 +81,69 @@ TOP_N         = 5      Pass 2 stress-test set — UNCHANGED, see step 6
 DIAG_N        = 50     7c/7d sample
 B09_N         = 25     10b sample — deliberately not TOP_N, see step 5
 DE_KWARGS     = popsize=15, maxiter=200, tol=1e-3, seed=1
+DB_MODE       = "colab_local"   or "external" for the A_MAX=12 re-run, see below
+DB_URL_SECRET = "AV_STRESS_DATABASE_URL"
 ```
+
+**External database — for the `A_MAX=12` re-run.** Every earlier run wrote to a Postgres
+installed inside Colab, which disappears with the session; no data from those runs
+survives. The re-run writes to a hosted Render Postgres instead, so it produces the first
+dataset that persists. Render's documentation (checked 2026-09-29) says:
+
+- External connections must use TLS: Render rejects `sslmode=disable`. Section 4 sets
+  `PGSSLMODE=require` unless the URL asks for `verify-ca` or `verify-full`, and refuses
+  any weaker mode.
+- PostGIS is enabled by the database user with `CREATE EXTENSION` on Postgres 13 and
+  later, which `init_geometry_schema` already runs. Cell 13 checks the server version and
+  `PostGIS_Version()` before anything is written.
+- **A free database expires 30 days after creation, then Render deletes it after a 14-day
+  grace period, and free databases have no backups of any kind.** Whether to use a paid
+  plan is decided before deploying, not here. Either way, take the dump below.
+
+Before the session:
+
+1. Create the Render Postgres: version 13 or later. Leave external access open to all IPs
+   for the run, because Colab's outgoing address changes between sessions.
+2. Copy its **external** database URL (`postgresql://user:password@host:5432/dbname`)
+   into a Colab secret named `AV_STRESS_DATABASE_URL` (key icon in the left sidebar), and
+   enable notebook access for it. Never paste the URL into a cell.
+3. Set `DB_MODE = "external"` in cell 6, in Colab only. Don't commit that change: the
+   committed default stays `"colab_local"`.
+
+In the session, cell 12 prints only the host, database name and sslmode, and cell 13
+prints how many stored results the database already holds, grouped by the `A_MAX` each
+search recorded. On a fresh database that is zero. A resumed run is allowed (every pass
+upserts), but results from different caps must not end up side by side unnoticed.
+
+**Immediately after the run, dump the database**, because a free database keeps no
+backups. Do it from the dev machine, not Colab: in external mode Colab has no Postgres
+client installed. `pg_dump` refuses a server whose major version is newer than its own
+(this project's Homebrew default `pg_dump` 16 already refused a Postgres 17 server once),
+so check the server first and use a matching client, e.g. Homebrew's `postgresql@17`.
+Read the URL at a silent prompt, so the password never lands in shell history (typing
+`export AV_STRESS_DATABASE_URL=postgresql://…` would put it in `~/.zsh_history`); paste
+the URL when the prompt waits:
+
+```
+read -rs AV_STRESS_DATABASE_URL && export AV_STRESS_DATABASE_URL
+psql "$AV_STRESS_DATABASE_URL" -Atc "SHOW server_version"
+/opt/homebrew/opt/postgresql@17/bin/pg_dump --no-owner --no-privileges -Fc \
+    -f av_stress_amax12.dump "$AV_STRESS_DATABASE_URL"
+```
+
+Never write the URL into a file in this repository. Keep a copy of the dump on Drive as
+well. To use it locally, restore into a **new** database, not `av_stress` (that one holds
+the four synthetic rows; restoring on top would fail on existing tables or mix synthetic
+and real rows). Local PostGIS is already installed, so the extension restores with it:
+
+```
+createdb av_stress_amax12
+pg_restore --no-owner -d av_stress_amax12 av_stress_amax12.dump
+```
+
+Point the local API at it with `PGDATABASE=av_stress_amax12`; that is the real-scale data
+the frontend is checked against. Afterwards, external access can be restricted or turned
+off: a Render-hosted API connects through the internal URL.
 
 ---
 
@@ -193,16 +261,35 @@ committed — a cell in the notebook *is* committed, so this stays out of the fi
 
 ```python
 import pickle
+from src.physics.bicycle_model import A_MAX
 with open('/content/drive/MyDrive/av_stress_checkpoint.pkl', 'wb') as f:
     pickle.dump({'rows': rows, 'decompositions': decompositions,
-                'mechanism': mechanism}, f)
+                'mechanism': mechanism, 'a_max': A_MAX}, f)
+```
+
+**Delete any checkpoint written before `ccab66d`** (the `A_MAX` 5.0 → 12.0 change): it was
+computed under the old cap and carries no `a_max` key. The load snippet below refuses it,
+and refuses any checkpoint whose recorded cap differs from the current one, before binding
+anything:
+
+```python
+import pickle
+from src.physics.bicycle_model import A_MAX
+with open('/content/drive/MyDrive/av_stress_checkpoint.pkl', 'rb') as f:
+    checkpoint = pickle.load(f)
+assert checkpoint.get('a_max') == A_MAX, (
+    f"checkpoint was computed under A_MAX={checkpoint.get('a_max')!r}, this code uses "
+    f"{A_MAX}: re-run 7g onward instead of resuming"
+)
+rows, decompositions, mechanism = (checkpoint['rows'], checkpoint['decompositions'],
+                                   checkpoint['mechanism'])
 ```
 
 Written to Drive, not `/content` — `/content` is wiped on exactly the restart this
 checkpoint exists for. To resume: re-run cells 1–17 (setup through the shard cache —
 `shard_cache` itself isn't in the pickle, and rebuilding it is exactly the cost this
 whole cache exists to pay once per session, unavoidable after a genuine restart), then
-`pickle.load` that path back into the same three names in a scratch cell instead of
+run the load snippet above in a scratch cell instead of
 re-running 7g/7g-iii/7g-iv from scratch. No DB connection is needed for this path —
 7g/7g-iii/7g-iv/7g-v never touch Postgres.
 
@@ -496,12 +583,14 @@ measurement that actually separates C4).
 combined finding, never a forced pick.
 
 **Two state details:** hard-asserts `rows` has 7g's own shape first — not just that a
-variable named `rows` exists (corrected, independent review 2026-09-29: 7f defines its
-*own* `rows`, a list of `{'scenario_id', 'old', 'new'}` dicts, so an existence-only check
-passes after a restart-and-partial-rerun that hits 7f but skips 7g, and this cell then
-`KeyError`s on `r['collides']` confusingly deep in the loop instead of failing here with
-a clear message. The content check itself needs `'rows' in globals()` as its own
-short-circuiting first clause — `rows and {...} <= rows[0].keys()` alone raises a bare
+variable named `rows` exists (corrected, independent review 2026-09-29: 7f used to define
+its *own* `rows`, a list of `{'scenario_id', 'old', 'new'}` dicts, so an existence-only
+check passed after a restart-and-partial-rerun that hit 7f but skipped 7g, and this cell
+then `KeyError`ed on `r['collides']` confusingly deep in the loop instead of failing here
+with a clear message. 7f's variable is now `ttc_rows`, so `rows` is 7g's alone; the shape
+check stays as a second line of defence for a restart that skips 7g. The content check
+itself needs `'rows' in globals()` as its own short-circuiting first clause —
+`rows and {...} <= rows[0].keys()` alone raises a bare
 `NameError` when `rows` doesn't exist at all, which is the exact case the guard exists
 for); the decomposable population explicitly excludes hard-gate rows (`r['collides']`)
 for *both* groups, since `PerturbationSpace.__init__` raises there and discards `self`
@@ -533,7 +622,8 @@ written, each verified against constructed fixtures run through the real
    gap accounts for the 14-33 m offset. Reuses 7g-iii's M5 vector-accumulation with
    `replay_speed` as the driver term in place of the logged speed, compared against the
    actual offset vector at the worst frame. A hard-stop fixture (real -8 m/s² decel,
-   exceeding `A_MAX`) landed at 4.4% unexplained; a noise-only fixture (no systematic
+   beyond the cap in force when this was written, `A_MAX = 5.0`; the current 12.0 would not
+   clip it) landed at 4.4% unexplained; a noise-only fixture (no systematic
    clipping direction) landed at 0.1% — both in the low range 7g-iii's own fixtures
    established, confirming the closure metric reads a clipping-explained case as
    low when it should.

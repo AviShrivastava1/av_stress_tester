@@ -41,6 +41,24 @@ def _code_cells(path=NOTEBOOK):
             if c['cell_type'] == 'code']
 
 
+def _rebound_names(target):
+    """
+    The names an assignment target actually REBINDS: bare names, including inside tuple,
+    list and starred unpacking. Not the base of an attribute or subscript store:
+    `os.environ['X'] = v` mutates the object `os` refers to and leaves the name pointing
+    at the same module. Walking the whole target counted that `os` as a binding, which
+    flagged every cell that sets an environment variable (found when the Postgres setup
+    cell became plain Python and started parsing).
+    """
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_rebound_names(e) for e in target.elts)) if target.elts else set()
+    if isinstance(target, ast.Starred):
+        return _rebound_names(target.value)
+    return set()
+
+
 def _scoped_names(tree):
     """
     Names that are NOT module-level in this cell: comprehension targets, function
@@ -71,13 +89,9 @@ def _scoped_names(tree):
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Assign):
                     for target in sub.targets:
-                        for leaf in ast.walk(target):
-                            if isinstance(leaf, ast.Name):
-                                scoped.add(leaf.id)
+                        scoped |= _rebound_names(target)
                 elif isinstance(sub, ast.For):
-                    for leaf in ast.walk(sub.target):
-                        if isinstance(leaf, ast.Name):
-                            scoped.add(leaf.id)
+                    scoped |= _rebound_names(sub.target)
     return scoped
 
 
@@ -96,9 +110,7 @@ def _module_bindings(tree, scoped):
 
         def visit_Assign(self, node):
             for target in node.targets:
-                for leaf in ast.walk(target):
-                    if isinstance(leaf, ast.Name):
-                        bound.add(leaf.id)
+                bound.update(_rebound_names(target))
             self.generic_visit(node)
 
         def visit_AugAssign(self, node):
@@ -107,9 +119,7 @@ def _module_bindings(tree, scoped):
             self.generic_visit(node)
 
         def visit_For(self, node):
-            for leaf in ast.walk(node.target):
-                if isinstance(leaf, ast.Name):
-                    bound.add(leaf.id)
+            bound.update(_rebound_names(node.target))
             self.generic_visit(node)
 
     Visitor().visit(tree)
@@ -179,6 +189,9 @@ def test_the_guard_finds_a_planted_collision():
      'names assigned inside function bodies are locals, not module bindings'),
     ([(0, 'a = 1\nprint(a)\n'), (1, 'a = 2\nprint(a)\n')],
      'two cells binding and reading their own value cannot mislead a third'),
+    ([(0, "import os\nos.environ['A'] = '1'\n"), (1, "os.environ['B'] = '2'\nos.x = 3\n"),
+      (2, 'print(os.environ)\n')],
+     'storing into an attribute or subscript mutates the object; it does not rebind the name'),
 ])
 def test_the_guard_does_not_flag_legitimate_reuse(cells, why):
     """
