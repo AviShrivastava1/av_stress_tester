@@ -103,8 +103,10 @@ def migrated_conn():
 
 
 def _run_write_cell(conn, records, stress_results, top_n=1):
+    # refresh_connection is cell 13's; the write cell calls it first. A no-op here, so
+    # the cell writes through the fixture's own connection.
     env = dict(db=db, conn=conn, stress_results=stress_results, records=records,
-              TOP_N=top_n)
+              TOP_N=top_n, refresh_connection=lambda: None)
     exec(compile(_write_cell(), 'notebook_cell_g03_g06', 'exec'), env)
     return env
 

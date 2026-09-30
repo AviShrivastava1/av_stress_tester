@@ -72,6 +72,11 @@ def _write_cell():
     return _cell_by_content('Confirmed: Phase 4 columns landed', 'fetch_top')
 
 
+def _no_refresh():
+    """Stands in for cell 13's refresh_connection(): the write cell calls it first,
+    and these tests keep the fixture's own connection."""
+
+
 def _seed(conn, sid):
     db.upsert_scores(conn, [dict(scenario_id=sid, shard='x', n_agents=2, min_ttc=9.0,
                                  min_pet=9.0, fragility_score=1.0)])
@@ -170,7 +175,7 @@ def test_F07_a_scenario_whose_write_failed_is_not_certified_confirmed(dconn):
     }
 
     env = dict(db=db, conn=dconn, stress_results=stress_results, records=records,
-              TOP_N=3)
+              TOP_N=3, refresh_connection=_no_refresh)
     with pytest.raises(AssertionError) as excinfo:
         exec(compile(_write_cell(), 'notebook_cell_f07', 'exec'), env)
 
@@ -195,7 +200,7 @@ def test_F07_a_stale_geometry_schema_is_surfaced_not_silently_confirmed(stale_ge
     stress_results = {'s': dict(_RESULT)}
 
     env = dict(db=db, conn=stale_geom_conn, stress_results=stress_results,
-              records=records, TOP_N=1)
+              records=records, TOP_N=1, refresh_connection=_no_refresh)
     with pytest.raises(AssertionError) as excinfo:
         exec(compile(_write_cell(), 'notebook_cell_f07', 'exec'), env)
 
@@ -218,7 +223,7 @@ def test_F07_a_fully_successful_write_still_confirms(migrated_conn):
     stress_results = {'s': dict(_RESULT)}
 
     env = dict(db=db, conn=migrated_conn, stress_results=stress_results,
-              records=records, TOP_N=1)
+              records=records, TOP_N=1, refresh_connection=_no_refresh)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         exec(compile(_write_cell(), 'notebook_cell_f07', 'exec'), env)

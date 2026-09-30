@@ -47,6 +47,16 @@ those steps run first.
 **Nothing in this session is expected to change code.** If something here demands a code
 change, that is a new batch, planned and reviewed like every other one.
 
+**Colab's own limits.** Google's FAQ gives a maximum runtime of "at most 12 hours,
+depending on availability and your usage patterns", says runtimes "time out if you are
+idle", and offers no background execution on the free tier. **The idle timeout is not
+documented**: no duration is given, and nothing says whether a running cell counts as
+activity. The full run is estimated at about 17 minutes with 10b skipped, far inside the
+lifetime cap, so the realistic risks are an idle disconnect and a lost connection. So:
+keep the Colab tab open and in front; keep the Mac awake (`caffeinate -dims` in a
+terminal, left running until the dump is done); and run in blocks — cells 1–13, read the
+pre-write report, then the rest.
+
 **Clear all outputs before committing the notebook** (Colab: *Edit → Clear all outputs*,
 then save). In external-database mode, cell outputs contain the database host and
 everything a later cell prints about the data, and this repository is public.
@@ -79,6 +89,7 @@ does not catch.
 MAX_SCENARIOS = 100    Pass 1 batch size
 TOP_N         = 5      Pass 2 stress-test set — UNCHANGED, see step 6
 DIAG_N        = 50     7c/7d sample
+RUN_B09       = False  10b skipped by default: its result is recorded, see step 5
 B09_N         = 25     10b sample — deliberately not TOP_N, see step 5
 DE_KWARGS     = popsize=15, maxiter=200, tol=1e-3, seed=1
 DB_MODE       = "colab_local"   or "external" for the A_MAX=12 re-run, see below
@@ -102,8 +113,9 @@ dataset that persists. Render's documentation (checked 2026-09-29) says:
 
 Before the session:
 
-1. Create the Render Postgres: version 13 or later. Leave external access open to all IPs
-   for the run, because Colab's outgoing address changes between sessions.
+1. Create the Render Postgres: version 13 or later, in a **US** region (Colab VMs are
+   usually US-hosted, so round trips stay short; not verified). Leave external access open
+   to all IPs for the run, because Colab's outgoing address changes between sessions.
 2. Copy its **external** database URL (`postgresql://user:password@host:5432/dbname`)
    into a Colab secret named `AV_STRESS_DATABASE_URL` (key icon in the left sidebar), and
    enable notebook access for it. Never paste the URL into a cell.
@@ -292,6 +304,69 @@ whole cache exists to pay once per session, unavoidable after a genuine restart)
 run the load snippet above in a scratch cell instead of
 re-running 7g/7g-iii/7g-iv from scratch. No DB connection is needed for this path —
 7g/7g-iii/7g-iv/7g-v never touch Postgres.
+
+**Pass checkpoints — surviving a disconnect after Pass 1 or Pass 2.** Pass 1 (section 6,
+`score_shard`) and Pass 2 (section 9) are the expensive computations; their database
+writes are idempotent, so after a restart the only thing worth saving is their output. In
+a scratch cell (not committed, like the snippet above), right after each pass:
+
+```python
+import pickle
+with open('/content/drive/MyDrive/av_stress_pass1.pkl', 'wb') as f:
+    pickle.dump({'meta': run_metadata(), 'records': records, 'errors': errors}, f)
+```
+
+```python
+import pickle
+from src.scoring.ranker import rank_scenarios
+with open('/content/drive/MyDrive/av_stress_pass2.pkl', 'wb') as f:
+    pickle.dump({'meta': run_metadata(),
+                 'pass1_ranking': [(r['scenario_id'], r['fragility_score'])
+                                   for r in rank_scenarios(records)],
+                 'ids_to_test': ids_to_test, 'stress_results': stress_results}, f)
+```
+
+`run_metadata()` (cell 9) records the commit, `SHARD_PATH`, `MAX_SCENARIOS`, `TOP_N`,
+`DE_KWARGS` and `A_MAX`. To resume after a restart: re-run cells 1–17, then load Pass 1
+**instead of** running section 6, and run sections 7 onward as normal (section 8's upsert
+is idempotent):
+
+```python
+import pickle
+with open('/content/drive/MyDrive/av_stress_pass1.pkl', 'rb') as f:
+    pass1 = pickle.load(f)
+assert pass1.get('meta') == run_metadata(), (
+    f"Pass 1 checkpoint was made under {pass1.get('meta')!r}, this session is "
+    f"{run_metadata()!r}: run Pass 1 instead of resuming"
+)
+records, errors = pass1['records'], pass1['errors']
+```
+
+and, if Pass 2 also finished, load it **instead of** running section 9. It refuses unless
+Pass 1 is already in place and ranks exactly as it did when Pass 2 ran, so `stress_results`
+can never be paired with a different ranking:
+
+```python
+import pickle
+from src.scoring.ranker import rank_scenarios, top_n_ids
+assert 'records' in globals(), "load (or run) Pass 1 before loading Pass 2"
+with open('/content/drive/MyDrive/av_stress_pass2.pkl', 'rb') as f:
+    pass2 = pickle.load(f)
+assert pass2.get('meta') == run_metadata(), (
+    f"Pass 2 checkpoint was made under {pass2.get('meta')!r}, this session is "
+    f"{run_metadata()!r}: run Pass 2 instead of resuming"
+)
+assert pass2.get('pass1_ranking') == [(r['scenario_id'], r['fragility_score'])
+                                      for r in rank_scenarios(records)], (
+    "Pass 2 checkpoint was made against a different Pass 1 ranking: run Pass 2 instead"
+)
+assert pass2['ids_to_test'] == top_n_ids(records, TOP_N)
+ids_to_test, stress_results = pass2['ids_to_test'], pass2['stress_results']
+```
+
+The write passes (sections 8, 11, 12) each call `refresh_connection()` first, so a
+connection that went idle during the diagnostics is replaced, with the same TLS check
+section 4 applies, before anything is written.
 
 **Diagnostic-only path.** For `A_MAX`-related work that doesn't need Pass 1/2/3, the
 minimal code cells are **2, 4, 6, 7, 9, 10, 15, 17, then 35, 39, 41, 43** — not
@@ -779,6 +854,19 @@ discrepancy; item 4 names the two unclosed scenarios without claiming their caus
 
 ### 10b — B09 before/after (cells 51–52)
 
+**Skipped by default: `RUN_B09 = False`.** Measured already: **B09 fired on all 6
+evaluable scenarios, and the warm start won every time.** Where that comes from: the first
+real-shard run (496 scenarios; its commit wasn't recorded, because it predates the
+freshness guard), run under `A_MAX = 5`. 6 of the 25 sampled scenarios were evaluable; the
+0.5 m drift gate refused 18. That output is not in this repository, and the result has
+not been re-derived here. It is not from the last full run (cache commit `32a2853`), whose
+10b was interrupted before it finished. Re-measuring under `A_MAX = 12` would likely
+evaluate more scenarios, since fewer would be refused for drift. The cap matters because
+the result was measured under the old physics: the conclusion, that B09 fires on real
+data, doesn't depend on it; the sample does. With the flag off the cell prints one line
+saying it was skipped and where this result is, and runs nothing — not even its imports.
+Set `RUN_B09 = True` only to re-measure. The rest of this section describes that run.
+
 Runs after Pass 2 diagnostics because it needs `ranked`. `B09_N = 25`, ~8 minutes.
 
 **Read the self-test line first.** The cell reconstructs the pre-B09 behaviour (no flag
@@ -792,10 +880,12 @@ on the self-test plus code inspection — the cell says so itself.
 **Then read the sample size, which prints directly above the conclusion.** A zero with
 `n < 20` is reported as *"no evidence it fires"*, never as *"evidence it does not"*.
 
-**Decision this feeds:** whether B09 needs a Block 4 doctrine note. If it fires on real
-data, Block 4 describes a refinement stage that returns its endpoint — materially wrong,
-and a new textbook correction (Block 2's and Block 6's are already fixed; this would be
-the first one still open).
+**Decision this fed, now made:** whether B09 needs a Block 4 doctrine note. It does.
+Block 4 describes a refinement stage that returns its endpoint. B09 firing means the stage
+returned a better verified candidate than its endpoint instead, and on every one of the 6
+evaluable scenarios that candidate was the warm start. So Block 4's description is
+materially wrong. The note is already drafted in the review session's doctrine corrections;
+Avi decided compiling those into the PDFs isn't needed.
 
 **This cell's own `except` clause had the same gap 7g's had.** `HeadingBlendSingularityError`
 is a `ValueError` subclass, and this cell's single `except (ReplayFidelityError, ValueError)`
@@ -914,7 +1004,9 @@ few or no usable comparisons.
    - `max_baseline_drift` default — from 7g
    - `V_HEADING_MIN` / `HEADING_TRANSITION_WIDTH` / `HEADING_BLEND_SINGULARITY_MARGIN`
      calibration — from 7g-ii
-   - B09 doctrine note — from 10b
+   - B09 doctrine note — **already decided, nothing to bring back**: a Block 4 note is
+     needed (step 5, 10b, says why and where the result comes from), and it is already
+     drafted in the review session's doctrine corrections. 10b is skipped by default.
    - TTC saturation fallback, worth designing or not — from 7e
    - whether the audit is genuinely closed — from step 2
 4. Anything that failed, with its full traceback.
@@ -927,6 +1019,7 @@ few or no usable comparisons.
 passage was corrected in Block 6 v2, citing audit B04. Block 2 §6/§7's common-mode-cancellation
 claim was corrected in Block 2 v3, citing audit B03 — not Block 4 §17, which is Perturbation
 Space Design and never carried this claim. Neither correction needed a shard or a Linux box,
-and neither is open now. One related item remains: if 10b shows B09 firing on real data,
-Block 4's description of the refinement stage is wrong in a new way and needs its own note —
-and that's its own pass, not this one.
+and neither is open now. One related item: B09 fires on real data (step 5, 10b), so Block
+4's description of the refinement stage as returning its endpoint is materially wrong. Its
+note is already drafted in the review session's doctrine corrections, so nothing is left
+to do for it here.

@@ -148,7 +148,8 @@ def test_the_pass_3_summary_prints_all_four_refusal_buckets(monkeypatch):
     monkeypatch.setattr(export_geometry, 'export_shard_geometry', lambda *a, **k: summary)
     source = _cell_by_content('PASS 3 SUMMARY')
     out = _run(source, {'time': time, 'conn': None, 'SHARD_PATH': 'x',
-                        'ids_to_test': [], 'stress_results': {}})
+                        'ids_to_test': [], 'stress_results': {},
+                        'refresh_connection': lambda: None})
 
     for bucket, sid in [('perturbed_stale', 'stale-1'), ('scene_changed', 'scene-1'),
                         ('sdc_changed', 'sdc-1'), ('a_max_changed', 'amax-1')]:
@@ -179,7 +180,7 @@ CHECKPOINT = '/content/drive/MyDrive/av_stress_checkpoint.pkl'
 
 
 def test_the_checkpoint_records_the_cap_it_was_computed_under(tmp_path):
-    save = _runbook_python_block('pickle.dump').replace(CHECKPOINT, str(tmp_path / 'c.pkl'))
+    save = _runbook_python_block('pickle.dump', CHECKPOINT).replace(CHECKPOINT, str(tmp_path / 'c.pkl'))
     _run(save, {'rows': [1], 'decompositions': [2], 'mechanism': [3], 'A_MAX': A_MAX})
     saved = pickle.load(open(tmp_path / 'c.pkl', 'rb'))
     assert saved['a_max'] == A_MAX
@@ -194,7 +195,7 @@ def test_resuming_refuses_a_checkpoint_from_another_cap(tmp_path, stored, refuse
     path = tmp_path / 'c.pkl'
     pickle.dump({'rows': ['r'], 'decompositions': ['d'], 'mechanism': ['m'], **stored},
                 open(path, 'wb'))
-    load = _runbook_python_block('pickle.load').replace(CHECKPOINT, str(path))
+    load = _runbook_python_block('pickle.load', CHECKPOINT).replace(CHECKPOINT, str(path))
     namespace = {'A_MAX': A_MAX}
     if refused:
         with pytest.raises(AssertionError):
