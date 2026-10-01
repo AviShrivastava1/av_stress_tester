@@ -278,6 +278,10 @@ def held_speed_excess(states, validity, agent_idx, dt, a_max=BICYCLE_A_MAX,
     is not a logged transition, so it is not attributed to the speed channel here. Gaps
     are recorded separately (has_interior_gap), and their drift is the backstop's.
 
+    It also ignores the replay's clamp at zero speed: where the replay would brake below
+    0, its real speed error is smaller than this measure says. That errs towards refusing,
+    and every refusal records this value, so such cases can be counted.
+
     0.0 when no run is long enough to hold anything. Logged speeds are read in float64
     from the float32 states, as the replay's inverter reads them.
     """
