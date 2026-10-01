@@ -1,0 +1,15 @@
+# The deployed API (Render web service) installs THIS file, not requirements.txt.
+#
+# src/api imports only FastAPI, Pydantic and psycopg2 (plus the standard library): it
+# reads PostgreSQL and nothing else, so TensorFlow, the Waymo package, torch, scipy and
+# shapely have no business on the API server. tests/test_deploy_contract.py fails if
+# src/api imports something not listed here.
+#
+# Exact pins, equal to the versions the test suite runs against on Python 3.11
+# (.python-version); the same test fails if they drift apart. Upgrade by installing the
+# new version locally, running the suite, and changing the pin in the same commit.
+fastapi==0.141.1
+starlette==1.6.0
+pydantic==2.13.5
+uvicorn[standard]==0.52.4
+psycopg2-binary==2.9.12

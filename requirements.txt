@@ -1,8 +1,11 @@
+# Everything: local development, the test suite, and the offline passes.
+# The deployed API installs requirements-api.txt instead (see DEPLOY.md).
+
 # Shard reading — Colab / Linux only.
 # The Waymo package ships manylinux wheels only and pins an old TensorFlow, which
-# is why the shard-reading path lives in Colab and in the Dockerfile (still Python
-# 3.8). Nothing in src/ actually imports tensorflow: loader.py parses the tfrecord
-# format with struct, and only parser.py needs the waymo protobufs.
+# is why the shard-reading path lives in Colab. Nothing in src/ actually imports
+# tensorflow: loader.py parses the tfrecord format with struct, and only parser.py
+# needs the waymo protobufs.
 tensorflow
 waymo-open-dataset-tf-2-11-0
 

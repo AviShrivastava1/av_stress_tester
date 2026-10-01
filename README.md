@@ -4,6 +4,8 @@ Finds the minimum perturbation to a real Waymo Open Motion Dataset scenario that
 causes a collision — a search for how close ordinary driving already sits to
 catastrophe.
 
+Deploying the API (Render) and the frontend (Vercel): see [DEPLOY.md](DEPLOY.md).
+
 ## API
 
 A read-only HTTP layer over the scored results. Nothing here starts a
