@@ -51,12 +51,12 @@ change, that is a new batch, planned and reviewed like every other one.
 depending on availability and your usage patterns", says runtimes "time out if you are
 idle", and offers no background execution on the free tier. **The idle timeout is not
 documented**: no duration is given, and nothing says whether a running cell counts as
-activity. The full run is estimated at about 26–28 minutes with 10b skipped and
-`TOP_N = 20`. That is the earlier 17-minute estimate for 5 scenarios, plus about 8–9
-minutes for the 15 extra DE searches (roughly 30–35 s each), plus about 1–2 minutes for
-roughly four times the Pass 3 exports and geometry-verification queries over the network
-(at about 50 ms per round trip). All of these are estimates, not measurements. Pass 2
-becomes the longest single step, about 12 minutes (estimated), which is what the Pass 2
+activity. The `19fddb4` run (10b skipped, `TOP_N = 20`) took about 28 minutes, measured:
+cache build 280 s, Pass 1 157 s, Pass 2 1,049 s, Pass 3 61 s. Its Pass 2 searched 12
+scenarios and refused 8 (a refusal costs almost nothing), so about 87 s per search. The
+drift-gate batch searches 6 of those 8 as well, so expect about 9 more minutes: about 37
+minutes in total, with Pass 2 at about 26 minutes (both estimated from those
+measurements, not measured). Pass 2 is the longest single step, which is what the Pass 2
 checkpoint below is for. The run is still far inside the lifetime cap, so the realistic
 risks are an idle disconnect and a lost connection. So:
 keep the Colab tab open and in front; keep the Mac awake (`caffeinate -dims` in a
@@ -127,6 +127,11 @@ Before the session:
    enable notebook access for it. Never paste the URL into a cell.
 3. Set `DB_MODE = "external"` in cell 6, in Colab only. Don't commit that change: the
    committed default stays `"colab_local"`.
+
+**Check cell 12's output before running anything after it.** It must print
+`External database: host=<the Render host>, …`. If it prints `Postgres running, role=avi`,
+stop: the run is about to write to Colab's throwaway database, which is what happened at
+`19fddb4`. Set `DB_MODE = "external"` in cell 6 and restart from cell 1.
 
 In the session, cell 12 prints only the host, database name and sslmode, and cell 13
 prints how many stored results the database already holds, grouped by the `A_MAX` each
@@ -460,8 +465,9 @@ Compare against Block 3 v3's recorded numbers, printed inline as `[v3 measured X
 
 ### 7g — baseline replay drift sweep (cells 34–35)
 
-Full shard, `max_baseline_drift=None`. One additional sequential Drive pass; ~4 s of
-compute for ~1000 scenarios.
+Full shard, both soft gates off (`max_baseline_drift=None, max_speed_step=None`): this cell
+measures, it does not filter. One additional sequential Drive pass; ~4 s of compute for
+~1000 scenarios.
 
 **Success:** completes; `scenarios measured` is close to the shard's scenario count; the
 skip counters are small and explained. `never_valid` **must be 0** — it is structurally
@@ -469,19 +475,27 @@ unreachable, because `pick_nearest_challenger` only returns an agent sharing a v
 with the SDC, so `first_valid_index` cannot raise on it. If it is nonzero, something
 upstream changed and the sweep's assumptions need re-checking.
 
-**Also watch:** the assertion that every refusal has `reason == 'collision'`. With
-`max_baseline_drift=None` the soft gate is disabled, so a `'drift'` refusal would mean the
-kwarg does not do what Batch 1 documents — and would invalidate the whole sweep.
+**Also watch:** the assertion that every refusal has `reason == 'collision'`. With both
+soft gates off, a `'drift'` or `'speed_step'` refusal would mean a kwarg does not do what
+`perturbation_space.py` documents — and would invalidate the whole sweep.
 
-**Decision this feeds — the `max_baseline_drift` default.** Three readings, printed by the
-cell:
+**Decided (drift-gate batch).** The `19fddb4` run's 7g showed a continuous distribution with
+no valley, so any fixed threshold is a judgement. `perturbation_space.py` now checks, after
+the hard gate: a **speed-step refusal** (a vehicle challenger whose logged speed holds more
+than 1.0 m/s it cannot replay under `A_MAX`, for 1 s), then a **2 m drift backstop** (about
+one vehicle width). Drift is recorded for every scenario; the reasoning for both values is
+in the constants' comments. The cell now prints where both gates fall.
 
-- **bimodal with a clean valley** → put the threshold in the valley; 0.5 m is defensible
-  only if that is where the valley is
-- **continuous** → any threshold is arbitrary; record drift per scenario instead of gating
-  on it
-- **nearly everything under 0.5 m** → the gate is a tripwire, not a filter, and its value
-  is catching the pathological case
+**Pass criteria for 7g** (predicted by running this cell on the same shard locally, with the
+batch's code; the shard was parsed by the not-yet-reviewed descriptor-pool loader, checked
+against the `19fddb4` run's recorded 7g output, which it reproduced exactly):
+
+- the drift distribution unchanged from the `19fddb4` run: 496 measured, hard gate 7/496,
+  all-measured p50 0.431, p90 1.856, p99 14.044, max 25.582 m, 56.2% at or under 0.5 m
+- `speed-step refusals: 12 of 453 vehicle challengers`, `of which also drift past the
+  backstop: 12`, led by `ef85eea7` (held 7.181 m/s), `bf87cb57` (4.539) and `476f5ac1`
+  (3.594)
+- `drift refusals that are not speed steps: 27 (of which gapped: 6)`
 
 The by-agent-type breakdown is a separate question worth reading on its own: vehicles use
 the bicycle model, pedestrians and cyclists the linear one, and Block 2 Concept 6's
@@ -1010,6 +1024,35 @@ if it appears: it means the `/perturbed` delta and `collision_timestep` printed 
 legitimately, and it is also the signal that `B09_N`'s sample in section 10b may contain
 few or no usable comparisons.
 
+**Pass criteria for this run (the drift-gate batch).** The search is deterministic, so these
+are exact. They were computed by running all 20 Pass 2 scenarios through the batch's own
+`_stress_one` locally (same shard, same `DE_KWARGS`, the shard parsed by the not-yet-reviewed
+descriptor-pool loader), after checking that the local run reproduces the `19fddb4` run's
+recorded output exactly (`1492befc` at norm 0.022433940, t=55). Any difference means
+something changed besides the gate.
+
+- **Pass 2: 18 collisions, 2 refusals, 0 errors**, and **0 speed-step refusals**.
+- The 12 collisions of the `19fddb4` run come back unchanged.
+- The 6 scenarios the 0.5 m gate refused, now searched (norm, collision frame, and the
+  baseline's offset from the log at that frame):
+
+  | scenario | drift (m) | norm | t | offset at collision (m) |
+  |---|---|---|---|---|
+  | `8ec2910b` | 1.332 | 0.4034 | 39 | 0.248 |
+  | `c302c905` | 0.631 | 0.1109 | 59 | 0.577 |
+  | `a6bf1ade` | 0.763 | 0.0101 | 82 | 0.681 |
+  | `b1e5a345` | 0.576 | 0.0204 | 54 | 0.326 |
+  | `19043d68` | 0.525 | 0.0197 | 90 | 0.525 |
+  | `38c703d6` | 0.676 | 0.0153 | 90 | 0.672 |
+
+- **2 drift refusals**: `58d5f1b9` at 2.562 m and `504dd390` at 3.464 m
+  (`replay_infeasible by reason: drift=2`).
+- **Pass 3: `replay_refused: 0`**, and the other four refusal buckets 0 on a fresh database.
+
+Several of the new collisions have tiny norms beside offsets of 0.3–0.7 m at the collision
+frame. That is why `baseline_offset_at_collision` is recorded: it is the number to show
+beside the norm (an API/frontend batch, not this one).
+
 ---
 
 ## What to bring back
@@ -1019,7 +1062,9 @@ few or no usable comparisons.
    to run it by hand.
 2. Raw output for every cell in steps 2–6. Not summaries.
 3. For each of the five decisions: the number, and which reading it supports.
-   - `max_baseline_drift` default — from 7g
+   - drift gate — **already decided** (drift-gate batch): bring back 7g's printed gate
+     counts and Pass 2's per-scenario outcomes, checked against the pass criteria in
+     steps 5 (7g) and 6
    - `V_HEADING_MIN` / `HEADING_TRANSITION_WIDTH` / `HEADING_BLEND_SINGULARITY_MARGIN`
      calibration — from 7g-ii
    - B09 doctrine note — **already decided, nothing to bring back**: a Block 4 note is

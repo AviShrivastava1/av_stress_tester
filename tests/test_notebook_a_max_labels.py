@@ -133,7 +133,7 @@ def test_item_4_lists_every_worst_scenario_sorted_by_unexplained_fraction():
 
 # ── item 5: the Pass 3 summary prints every refusal bucket ──────────────────────
 
-def test_the_pass_3_summary_prints_all_four_refusal_buckets(monkeypatch):
+def test_the_pass_3_summary_prints_all_five_refusal_buckets(monkeypatch):
     import src.scoring.export_geometry as export_geometry
 
     summary = {
@@ -143,6 +143,10 @@ def test_the_pass_3_summary_prints_all_four_refusal_buckets(monkeypatch):
         'sdc_changed': [{'scenario_id': 'sdc-1', 'stored_sdc_idx': 0, 'computed_sdc_idx': 3}],
         'a_max_changed': [{'scenario_id': 'amax-1', 'target_idx': 2, 'recorded_a_max': 5.0,
                            'recorded_a_max_source': 'predates_provenance', 'current_a_max': 12.0}],
+        'replay_refused': [{'scenario_id': 'rr-1', 'target_idx': 1, 'reason': 'drift',
+                            'baseline_replay_error': 0.9, 'held_speed_excess': 0.0,
+                            'max_baseline_drift': 0.5, 'max_speed_step': None,
+                            'gate_settings_source': 'predates_provenance'}],
         'errors': [],
     }
     monkeypatch.setattr(export_geometry, 'export_shard_geometry', lambda *a, **k: summary)
@@ -152,7 +156,8 @@ def test_the_pass_3_summary_prints_all_four_refusal_buckets(monkeypatch):
                         'refresh_connection': lambda: None})
 
     for bucket, sid in [('perturbed_stale', 'stale-1'), ('scene_changed', 'scene-1'),
-                        ('sdc_changed', 'sdc-1'), ('a_max_changed', 'amax-1')]:
+                        ('sdc_changed', 'sdc-1'), ('a_max_changed', 'amax-1'),
+                        ('replay_refused', 'rr-1')]:
         line = next((l for l in out.splitlines() if l.startswith(f'{bucket}:')), None)
         assert line is not None, f'{bucket} is not printed'
         assert line.split(':', 1)[1].strip().startswith('1'), f'{bucket} count wrong: {line!r}'

@@ -45,9 +45,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.optimization.perturbation_space import (
-    BASELINE_DRIFT_REFUSE_M, PerturbationSpace,
-)
+from src.optimization.perturbation_space import PerturbationSpace
 from src.physics import simulator
 from src.physics.bicycle_model import A_MAX, DT, bicycle_step, invert_bicycle
 from src.physics.linear_model import A_MAX as LINEAR_A_MAX
@@ -140,7 +138,6 @@ def test_a_logged_hard_brake_between_the_old_cap_and_the_new_one_replays_faithfu
         f'a logged {HARD_BRAKE} m/s^2 stop drifted {space.baseline_replay_error:.4f} m '
         f'at zero perturbation under A_MAX={A_MAX}'
     )
-    assert space.baseline_replay_error <= BASELINE_DRIFT_REFUSE_M
 
 
 # ── T2: the cap still exists, at all three sites ─────────────────────────────────
@@ -169,7 +166,9 @@ def test_numpy_and_torch_rollouts_agree_when_the_cap_binds():
     """
     Site 3, and the numpy side of it at the same time. The logged braking is twice
     the cap, so every recovered control sits AT -A_MAX, and a da_bias of -1.5 then
-    asks both rollouts for more than the cap on every step.
+    asks both rollouts for more than the cap on every step. A log no vehicle can
+    drive, on purpose, so both soft gates are off: max_speed_step=None because the
+    speed-step refusal exists to refuse exactly this log.
 
     test_replay_contract.py's own parity test never reaches the cap (the largest
     acceleration it delivers to any clamp is 2.0 m/s^2), so the two rollouts could
@@ -181,7 +180,8 @@ def test_numpy_and_torch_rollouts_agree_when_the_cap_binds():
 
     s, v, types = _vehicle_scene(12)
     _braking_track(s, 1, v0=35.0, decel=2.0 * A_MAX)
-    space = PerturbationSpace(s, v, types, 0, 1, max_baseline_drift=None)
+    space = PerturbationSpace(s, v, types, 0, 1, max_baseline_drift=None,
+                              max_speed_step=None)
     assert np.allclose(space.base_controls[:-1, 1], -A_MAX), (
         'fixture regressed: the baseline controls must sit at the cap'
     )

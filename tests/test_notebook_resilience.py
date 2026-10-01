@@ -38,6 +38,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import src.optimization.perturbation_space as ps
 import src.physics.bicycle_model as bicycle_model
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -304,7 +305,11 @@ def _save_pass2(tmp_path, session, records):
 
 def test_run_metadata_records_everything_a_resume_must_match():
     meta = _session()['run_metadata']()
-    assert set(meta) == {'commit', 'shard_path', 'max_scenarios', 'top_n', 'de_kwargs', 'a_max'}
+    assert set(meta) == {'commit', 'shard_path', 'max_scenarios', 'top_n', 'de_kwargs', 'a_max',
+                         'replay_gates'}
+    assert meta['replay_gates'] == {'max_baseline_drift': ps.BASELINE_DRIFT_REFUSE_M,
+                                    'max_speed_step': ps.SPEED_STEP_REFUSE_MPS,
+                                    'speed_step_hold_s': ps.SPEED_STEP_HOLD_S}
     assert re.fullmatch(r'[0-9a-f]{40}', meta['commit'])
     assert meta['a_max'] == bicycle_model.A_MAX
 
@@ -327,6 +332,7 @@ def test_both_checkpoints_resume_in_a_matching_session(tmp_path):
 @pytest.mark.parametrize('key,value', [
     ('commit', '0' * 40), ('shard_path', '/elsewhere'), ('max_scenarios', 50),
     ('top_n', TOP_N + 1), ('de_kwargs', {'popsize': 15}), ('a_max', 5.0),
+    ('replay_gates', {'max_baseline_drift': 0.5, 'max_speed_step': None, 'speed_step_hold_s': 1.0}),
 ])
 def test_a_pass_1_checkpoint_from_a_different_run_is_refused(tmp_path, key, value):
     _save_pass1(tmp_path, _session(), _records())

@@ -87,6 +87,14 @@ from src.data.validity import valid_timesteps as _valid_timesteps
 # were. The historical value is the only reading that is true for both models.
 A_MAX_BEFORE_PROVENANCE = 5.0
 
+# The replay gates every result was admitted under BEFORE search_provenance recorded
+# them: the 0.5 m drift gate, and no speed-step gate (it did not exist). Historical
+# facts, read the way A_MAX_BEFORE_PROVENANCE is and for its reason: the change that
+# introduced the keys is the change that moved the values, so "today's default" would
+# replay a legacy result under gates it was never admitted under.
+DRIFT_GATE_BEFORE_PROVENANCE = 0.5
+SPEED_GATE_BEFORE_PROVENANCE = None
+
 
 # The composite index is additive — it does not redefine anything db.py created.
 # It exists to serve the API's ranked ORDER BY (fragility_score DESC, scenario_id),
@@ -753,8 +761,8 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
 
     Returns a summary dict: exported, agents_written, agents_skipped,
     perturbed_written, perturbed_stale (list of dicts), scene_changed (list of
-    dicts), sdc_changed (list of dicts), a_max_changed (list of dicts), errors
-    (list of dicts).
+    dicts), sdc_changed (list of dicts), a_max_changed (list of dicts),
+    replay_refused (list of dicts), errors (list of dicts).
 
     perturbed_stale RECORDS EACH REFUSAL INDIVIDUALLY, not as a tally. Block 5
     Concept 19: a batch that reports "982 scored, 18 skipped, here is why" is
@@ -804,6 +812,12 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
         # whose run is current but whose physics has moved on is not that.
         # Same reason sdc_changed is not folded into scene_changed.
         'a_max_changed': [],
+        # Stored deltas whose zero-delta replay, rebuilt under the gate settings the
+        # search recorded, is refused (ReplayFidelityError). Replay is deterministic, so
+        # under the same physics and the same scene this cannot happen; the a_max and
+        # scene guards above catch the known ways those change. A SEPARATE bucket, not
+        # errors: a refusal is a measured outcome with a reason, not a malformed record.
+        'replay_refused': [],
         'errors': [],
     }
     t_start = time.time()
@@ -991,10 +1005,43 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                     for key in ('heading_speed_floor', 'heading_transition_width')
                     if key in provenance
                 }
-                space = PerturbationSpace(
-                    states, validity, types, sdc_idx, int(result['target_idx']),
-                    **replay_kwargs
-                )
+
+                # THE GATES THE SEARCH WAS ADMITTED UNDER, reproduced the way the two
+                # heading parameters are: they are PerturbationSpace arguments. A
+                # result recorded before the keys existed was admitted under the
+                # historical gates (see DRIFT_GATE_BEFORE_PROVENANCE).
+                from src.optimization.perturbation_space import ReplayFidelityError
+                if 'max_baseline_drift' in provenance:
+                    gate_source = 'search_provenance'
+                    replay_kwargs['max_baseline_drift'] = provenance['max_baseline_drift']
+                    replay_kwargs['max_speed_step'] = provenance.get('max_speed_step')
+                    if 'speed_step_hold_s' in provenance:
+                        replay_kwargs['speed_step_hold_s'] = provenance['speed_step_hold_s']
+                else:
+                    gate_source = 'predates_provenance'
+                    replay_kwargs['max_baseline_drift'] = DRIFT_GATE_BEFORE_PROVENANCE
+                    replay_kwargs['max_speed_step'] = SPEED_GATE_BEFORE_PROVENANCE
+                try:
+                    space = PerturbationSpace(
+                        states, validity, types, sdc_idx, int(result['target_idx']),
+                        **replay_kwargs
+                    )
+                except ReplayFidelityError as refused:
+                    summary['replay_refused'].append({
+                        'scenario_id': sid,
+                        'target_idx': target_idx,
+                        'reason': refused.reason,
+                        'baseline_replay_error': refused.baseline_replay_error,
+                        'held_speed_excess': refused.held_speed_excess,
+                        'max_baseline_drift': replay_kwargs['max_baseline_drift'],
+                        'max_speed_step': replay_kwargs['max_speed_step'],
+                        'gate_settings_source': gate_source,
+                    })
+                    if verbose:
+                        print(f"    [replay refused] perturbed path refused: the "
+                              f"zero-delta replay fails its recorded gates "
+                              f"({refused.reason}, {gate_source})")
+                    continue
                 perturbed = space.apply(np.asarray(result['delta'], dtype=np.float32))
                 try:
                     # delta and method are what make the run id derive from THIS
@@ -1072,6 +1119,7 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
               f"{summary['agents_written']} agents, "
               f"{len(summary['perturbed_stale'])} stale exports refused, "
               f"{len(summary['a_max_changed'])} refused for a changed A_MAX, "
+              f"{len(summary['replay_refused'])} refused at replay, "
               f"{len(summary['errors'])} errors, "
               f"{time.time() - t_start:.1f}s")
     return summary

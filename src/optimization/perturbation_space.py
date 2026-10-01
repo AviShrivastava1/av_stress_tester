@@ -34,7 +34,7 @@ from src.data.validity import (
 )
 from src.danger.collision_detector import check_collision_trajectory
 from src.physics.bicycle_model import (
-    V_MAX, extract_state_from_womd as bicycle_extract,
+    A_MAX as BICYCLE_A_MAX, V_MAX, extract_state_from_womd as bicycle_extract,
 )
 from src.physics.linear_model import (
     V_HEADING_MIN,
@@ -46,14 +46,63 @@ from src.physics.simulator import (
 
 
 # Maximum baseline (zero-delta) replay error, in metres, at which a scenario is
-# still considered replayable. 0.5 m is a quarter of a standard 2.0 m vehicle
-# width — the scale at which box-overlap decisions start to flip.
+# still considered replayable. A BACKSTOP, not a filter.
 #
-# This number is NOT yet validated against real WOMD tracks; no shard has been
-# measured under the corrected integrator. Pass max_baseline_drift=None to record
-# the error without refusing on it, which is how the distribution gets measured
-# before this constant is defended as final.
-BASELINE_DRIFT_REFUSE_M = 0.5
+# THE DISTRIBUTION GIVES NO THRESHOLD, so this is a judgement. Measured over the
+# whole 496-scenario shard under A_MAX=12 (notebook 7g, max_baseline_drift=None):
+# p50 0.43 m, p90 1.86 m, p99 14.0 m, max 25.6 m, continuous with no valley. By 7g's
+# own rule any fixed value is then arbitrary. What makes 2 m defensible is a physical
+# argument plus recording every scenario's drift, not a feature of the data:
+#
+#   2 m is about one vehicle width. Beyond it the replayed challenger may sit in a
+#   different lane position from the logged one, so a collision found against it is
+#   a collision in a different scene. Below it the replay's offset is the same order
+#   as the perturbations being measured, so it is recorded beside the result
+#   (search_provenance's baseline_replay_error and baseline_offset_at_collision)
+#   rather than used to refuse.
+#
+# Replaces 0.5 m, which was never measured and refused 8 of the 20 Pass 2 slots of the
+# A_MAX=12 run; 6 of those 8 drifted 0.52-1.33 m with no speed defect at all.
+# Pass max_baseline_drift=None to record the error without refusing on it.
+BASELINE_DRIFT_REFUSE_M = 2.0
+
+# The speed-step refusal: a VEHICLE challenger whose logged speed holds more than
+# SPEED_STEP_REFUSE_MPS (m/s) of unreplayable speed for at least SPEED_STEP_HOLD_S.
+# "Unreplayable" is the part of a logged speed change beyond A_MAX: invert_bicycle
+# clips each recovered acceleration to A_MAX (about 1.2 g, above the ~1 g dry-road
+# braking limit), so the replay never gets the excess back unless the log itself
+# takes the step back. See held_speed_excess() for the exact quantity.
+#
+# WHY A NET, HELD QUANTITY AND NOT "ANY TRANSITION ABOVE A THRESHOLD". The speed
+# channel's own noise is sigma_v ~0.18 m/s per frame at the median and 0.89 m/s at
+# p99 (robust estimate over 5,525 moving, gap-free vehicle tracks in the shard), i.e.
+# 2.5 m/s^2 of apparent acceleration per transition typically and 12.6 m/s^2 at p99.
+# A single-transition rule at 12 m/s^2 therefore fires on noise: on the shard it
+# flagged 9 of the 263 vehicle challengers that replay within 0.5 m. Balanced glitch
+# pairs (a bad reading that corrects itself) cancel out of the replay's speed, so only
+# a step the log does NOT take back moves the replay off the log.
+#
+# THE THRESHOLD comes from that noise measurement: 1.0 m/s is above the p99 per-frame
+# speed noise (0.89 m/s), so noise on even the noisiest tracks cannot hold it; only a
+# step the log never takes back can.
+#
+# THE HOLD is a judgement anchored on a measurement, and stated as such. Over every
+# vehicle transition above 12 m/s^2 in the shard, the time to the next opposite-sign
+# transition above 12 m/s^2 in the same valid run is continuous: 57% within one frame,
+# 70% within 0.2 s, 91% within 1 s (the p90 is 10 frames), 96% within 2 s. 1 s is that
+# p90, so a glitch that reverses as 90% of them do is not counted as held. The refused
+# set is not sensitive to it: on the shard, holds from 0.2 s to 2 s refuse 15 to 11
+# vehicle challengers, against 12 at 1 s.
+#
+# Measured on the shard at these values: 12 vehicle challengers refused, every one of
+# which also drifts past BASELINE_DRIFT_REFUSE_M. So beside the backstop this rule's
+# job is naming the cause, which is why PerturbationSpace checks it BEFORE drift.
+#
+# Vehicles only: pedestrians and cyclists replay through linear_model, whose own
+# A_MAX (5.0) has never been measured, and their replay carries ~0.16 m/s of speed
+# error even without a step. Pass max_speed_step=None to record without refusing.
+SPEED_STEP_REFUSE_MPS = 1.0
+SPEED_STEP_HOLD_S = 1.0
 
 # Width (m/s) of the speed band, anchored at heading_speed_floor and extending
 # upward, over which a linear-model challenger's heading ramps smoothly from the
@@ -125,23 +174,39 @@ class ReplayFidelityError(ValueError):
         reason                  'collision' — the ZERO-delta replay already collides
                                   with the SDC. A "collision at ||delta|| = 0" is not
                                   a stress-test result under any reading (audit B03).
+                                'speed_step' — a vehicle challenger's logged speed
+                                  holds a step the A_MAX-limited replay cannot follow
+                                  (held_speed_excess above max_speed_step). The replay's
+                                  speed is not faithful to the log, whatever its drift.
                                 'drift'     — the zero-delta replay stays clear of the
                                   SDC but wanders further from the logged track than
                                   max_baseline_drift allows.
+                                Checked in that order, so a step that also drifts is
+                                reported as the step that caused it.
         baseline_replay_error   measured max positional error, in metres. Populated
-                                  for BOTH reasons — a collision refusal still reports
+                                  for EVERY reason — a collision refusal still reports
                                   its drift, which is the number needed to ask whether
                                   baseline collisions cluster at high drift.
         baseline_replay_collides  whether the zero-delta replay collided.
+        held_speed_excess       see held_speed_excess(); None for a non-vehicle
+                                  challenger. Populated for every reason, like
+                                  baseline_replay_error.
     """
 
-    def __init__(self, reason, baseline_replay_error, baseline_replay_collides):
+    def __init__(self, reason, baseline_replay_error, baseline_replay_collides,
+                 held_speed_excess=None):
         self.reason = reason
         self.baseline_replay_error = float(baseline_replay_error)
         self.baseline_replay_collides = bool(baseline_replay_collides)
+        self.held_speed_excess = (None if held_speed_excess is None
+                                  else float(held_speed_excess))
         if reason == 'collision':
             detail = ("the zero-perturbation replay already collides with the SDC, "
                       "so any 'caused' collision would be an artefact of the replay")
+        elif reason == 'speed_step':
+            detail = ("the logged speed holds a step beyond what the A_MAX-limited "
+                      f"replay can follow (held_speed_excess={self.held_speed_excess:.3f} "
+                      "m/s), so the replay's speed is not the logged one")
         else:
             detail = ("the zero-perturbation replay does not reproduce the logged "
                       "track closely enough to measure a perturbation against it")
@@ -193,6 +258,54 @@ class HeadingBlendSingularityError(ValueError):
         )
 
 
+def held_speed_excess(states, validity, agent_idx, dt, a_max=BICYCLE_A_MAX,
+                      hold_s=SPEED_STEP_HOLD_S):
+    """
+    The largest unreplayable speed, in m/s, that an agent's LOGGED speed channel holds
+    for at least `hold_s`.
+
+    Within each contiguous run of valid frames: every logged transition's acceleration
+    a = (v[t+1] - v[t]) / dt is split into the part an A_MAX-limited replay follows,
+    clip(a, -a_max, a_max), and the excess beyond it. The excess, accumulated as speed,
+    E(t) = sum((a - clip(a)) * dt), is exactly how far the replay's speed has fallen
+    behind (or run ahead of) the logged speed because of the cap. A glitch the log takes
+    straight back cancels out of E; a step it keeps does not. The result is the largest
+    |E| that stays at or above that level for hold_s, i.e. the max over windows of
+    hold_s/dt + 1 consecutive values of the window's minimum |E|.
+
+    Runs restart from zero at every interior gap. The replay itself does not restart (it
+    carries its speed across the gap on zero control), but the speed change across a gap
+    is not a logged transition, so it is not attributed to the speed channel here. Gaps
+    are recorded separately (has_interior_gap), and their drift is the backstop's.
+
+    0.0 when no run is long enough to hold anything. Logged speeds are read in float64
+    from the float32 states, as the replay's inverter reads them.
+    """
+    hold = int(round(hold_s / dt))
+    speed = np.hypot(states[agent_idx, :, 2].astype(np.float64),
+                     states[agent_idx, :, 3].astype(np.float64))
+    valid = np.asarray(validity[agent_idx], dtype=bool)
+    best = 0.0
+    t, n = 0, len(valid)
+    while t < n:
+        if not valid[t]:
+            t += 1
+            continue
+        start = t
+        while t < n and valid[t]:
+            t += 1
+        run = speed[start:t]
+        if len(run) < 2:
+            continue
+        a = np.diff(run) / dt
+        excess = np.abs(np.concatenate(
+            ([0.0], np.cumsum((a - np.clip(a, -a_max, a_max)) * dt))))
+        if len(excess) > hold:
+            windows = np.lib.stride_tricks.sliding_window_view(excess, hold + 1)
+            best = max(best, float(windows.min(axis=1).max()))
+    return best
+
+
 def _smoothstep(x, edge0, edge1):
     """
     Cubic Hermite smoothstep: 0 at/below edge0, 1 at/above edge1, continuous (and
@@ -225,6 +338,8 @@ class PerturbationSpace:
         max_baseline_drift: float = BASELINE_DRIFT_REFUSE_M,
         heading_speed_floor: float = V_HEADING_MIN,
         heading_transition_width: float = HEADING_TRANSITION_WIDTH,
+        max_speed_step: float = SPEED_STEP_REFUSE_MPS,
+        speed_step_hold_s: float = SPEED_STEP_HOLD_S,
     ):
         """
         Args:
@@ -268,12 +383,26 @@ class PerturbationSpace:
                         escape hatch as heading_speed_floor, for measuring the real
                         distribution before this width is defended as final. See
                         `frames_in_heading_transition_band`.
+            max_speed_step:
+                        refuse a VEHICLE challenger whose logged speed holds more
+                        than this (m/s) of unreplayable speed for speed_step_hold_s
+                        (see held_speed_excess and SPEED_STEP_REFUSE_MPS). None
+                        disables the refusal and records the measurement only — the
+                        same escape hatch, and the same warning, as
+                        max_baseline_drift. Ignored for non-vehicles.
+            speed_step_hold_s:
+                        how long (s) the excess must be held to count.
+
+        The gates run in a fixed order: the hard gate (the zero-delta replay already
+        collides), then the speed step, then drift. A speed step usually also drifts,
+        and checking it first is what makes the refusal name the cause.
 
         Raises:
             ValueError:            the challenger is never observed, or its recorded
                                    dimensions at its first valid frame are unusable.
             ReplayFidelityError:   the zero-delta replay is not faithful enough for a
-                                   perturbation measured against it to mean anything.
+                                   perturbation measured against it to mean anything:
+                                   reason 'collision', 'speed_step' or 'drift'.
             HeadingBlendSingularityError:
                                    the baseline replay's logged/derived heading
                                    blend lands close enough to the antipodal
@@ -370,6 +499,21 @@ class PerturbationSpace:
             self.frames_in_heading_transition_band = 0
             self.frames_observed = 0
 
+        # ── the speed step (see SPEED_STEP_REFUSE_MPS) ──────────────────────────
+        # Measured on the LOGGED speed channel before any replay, and recorded on
+        # every vehicle construction whether or not the gate is armed, for the reason
+        # frames_below_heading_floor is: a number that only exists where it fired
+        # cannot say how often it fires. None for a non-vehicle: the quantity is
+        # defined against the bicycle model's cap.
+        self.max_baseline_drift = max_baseline_drift
+        self.max_speed_step = max_speed_step
+        self.speed_step_hold_s = speed_step_hold_s
+        self.held_speed_excess = (
+            held_speed_excess(self.states0, validity, self.target_idx, dt,
+                              hold_s=speed_step_hold_s)
+            if self.is_vehicle else None
+        )
+
         # per-dimension box bounds (used by DE and by gradient clamping)
         self.bounds = self._default_bounds() if bounds is None else np.asarray(bounds, np.float32)
 
@@ -420,12 +564,21 @@ class PerturbationSpace:
         self.baseline_heading_blend_min_magnitude = \
             self._last_heading_blend_min_magnitude
 
+        # THE ORDER IS PART OF THE CONTRACT: hard gate, speed step, drift. On the
+        # A_MAX=12 shard every speed-step refusal also drifts past the backstop, so
+        # the speed step names the cause only because it is checked first.
         if self.baseline_replay_collides:
-            raise ReplayFidelityError('collision', self.baseline_replay_error, True)
+            raise ReplayFidelityError('collision', self.baseline_replay_error, True,
+                                      self.held_speed_excess)
+        if (max_speed_step is not None and self.held_speed_excess is not None
+                and not (self.held_speed_excess <= max_speed_step)):
+            raise ReplayFidelityError('speed_step', self.baseline_replay_error, False,
+                                      self.held_speed_excess)
         if (max_baseline_drift is not None
                 and not (self.baseline_replay_error <= max_baseline_drift)):
             # `not (<=)` rather than `>` so a non-finite error refuses too.
-            raise ReplayFidelityError('drift', self.baseline_replay_error, False)
+            raise ReplayFidelityError('drift', self.baseline_replay_error, False,
+                                      self.held_speed_excess)
 
         # ── heading-blend singularity (independent review, 2026-09-24) ──────────
         # See HEADING_BLEND_SINGULARITY_MARGIN's own comment for the finding, the
@@ -555,6 +708,12 @@ class PerturbationSpace:
         got    = replay[self.target_idx, ts, :2]
         offsets = np.linalg.norm(got - logged, axis=1)
 
+        # Kept per frame, NaN where the challenger was not observed, so a found
+        # collision can be read against the replay's offset AT its own frame (see
+        # baseline_offset_at). The max below is a whole-track upper bound on it.
+        self.baseline_offsets = np.full(self.T, np.nan)
+        self.baseline_offsets[ts] = offsets
+
         if len(offsets) == 0 or not np.all(np.isfinite(offsets)):
             # Non-finite means the rollout blew up; report it as unbounded drift so
             # the gate refuses rather than comparing NaN and silently passing.
@@ -566,6 +725,22 @@ class PerturbationSpace:
             replay, self.validity, self.sdc_idx, self.target_idx
         )
         return error, bool(collided)
+
+    def baseline_offset_at(self, t):
+        """
+        The distance, in metres, between the zero-delta replay and the LOGGED challenger
+        at global frame t: the part of a collision's geometry at that frame that no
+        perturbation caused. None when t is not a frame the challenger was observed on.
+
+        This is the number to read beside a found collision's min_perturbation, more
+        than baseline_replay_error, which is the maximum over the whole track: measured
+        on the A_MAX=12 shard, a scenario drifting 1.33 m at most was 0.25 m off at its
+        collision frame.
+        """
+        t = int(t)
+        if not (0 <= t < self.T) or not np.isfinite(self.baseline_offsets[t]):
+            return None
+        return float(self.baseline_offsets[t])
 
     def _write_back(self, traj: np.ndarray) -> np.ndarray:
         """

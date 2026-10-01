@@ -94,5 +94,10 @@ def test_the_run_time_estimate_is_restated_for_this_top_n_and_labelled():
     runbook = open(RUNBOOK).read()
     ground_rules = _flat(runbook[runbook.index('## Ground rules'):runbook.index('## Step 1')])
     assert 'estimated at about 17 minutes' not in ground_rules, 'the estimate is still the old one'
-    assert 'estimated at about 26–28 minutes' in ground_rules
-    assert 'estimates, not measurements' in ground_rules, 'the parts are not labelled as estimates'
+    assert 'estimated at about 26–28 minutes' not in ground_rules, (
+        'the estimate predates the drift-gate batch, which searches 6 more scenarios'
+    )
+    assert 'about 37 minutes in total' in ground_rules
+    assert 'estimated from those measurements, not measured' in ground_rules, (
+        'the estimate is not labelled as an estimate'
+    )

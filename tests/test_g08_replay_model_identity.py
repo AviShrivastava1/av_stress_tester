@@ -209,7 +209,9 @@ def test_G08_export_replays_under_the_recorded_heading_speed_floor(
     # The search runs under a floor ABOVE this challenger's speed — simulating "this
     # is what PerturbationSpace's class default was when Pass 2 ran".
     orig_defaults = PerturbationSpace.__init__.__defaults__
-    PerturbationSpace.__init__.__defaults__ = orig_defaults[:3] + (3.0, None)
+    # Positions 3 and 4 are heading_speed_floor and heading_transition_width; every
+    # default after them (the speed-step gate's) is kept as it is.
+    PerturbationSpace.__init__.__defaults__ = orig_defaults[:3] + (3.0, None) + orig_defaults[5:]
     try:
         result = _stress_one(states, validity, types, 0,
                              de_kwargs={'popsize': 4, 'maxiter': 5, 'seed': 1})

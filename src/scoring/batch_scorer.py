@@ -267,6 +267,7 @@ def _stress_one(states, validity, types, sdc_idx,
                 # the database was involved.
                 'baseline_replay_collides': e.baseline_replay_collides,
                 'reason': e.reason,
+                'held_speed_excess': e.held_speed_excess,
                 'challengers_total': challengers_total,
                 'challengers_searched': 0}
     except HeadingBlendSingularityError as e:
@@ -403,6 +404,25 @@ def _stress_one(states, validity, types, sdc_idx,
         # recorded value; it can only REFUSE a mismatch. replay_a_max picks the
         # model's constant by the same dispatch rule the simulator uses.
         'a_max': replay_a_max(space.target_type),
+        # THE GATES THIS RESULT WAS ADMITTED UNDER, recorded for the reason the heading
+        # parameters above are: export_shard_geometry rebuilds this space to replay the
+        # stored delta, and must do so under these values rather than whatever the
+        # module defaults are by then. Unlike a_max these ARE PerturbationSpace
+        # arguments, so the export reproduces them rather than only refusing.
+        'max_baseline_drift': space.max_baseline_drift,
+        'max_speed_step': space.max_speed_step,
+        'speed_step_hold_s': space.speed_step_hold_s,
+        # Recorded on every searched result, armed or not (None for a non-vehicle).
+        'held_speed_excess': space.held_speed_excess,
+        # The distance between the zero-delta replay and the LOGGED challenger at
+        # collision_timestep: the part of the collision's geometry no perturbation
+        # caused. Only for a found collision; None otherwise. The number to read beside
+        # min_perturbation, more than baseline_replay_error, which is the whole-track
+        # maximum (measured: 1.33 m at most, 0.25 m at the collision frame).
+        'baseline_offset_at_collision': (
+            space.baseline_offset_at(result['collision_timestep'])
+            if result.get('collision') else None
+        ),
     }
 
     # THE IDENTITY THIS RESULT WAS SEARCHED AGAINST (fix F02) — not search
@@ -479,6 +499,7 @@ def _describe_outcome(r) -> str:
         return (f"{OUTCOME_REPLAY_INFEASIBLE}: no search ran — "
                 f"reason={r.get('reason')}, "
                 f"baseline drift={r.get('baseline_replay_error')}, "
+                f"held speed excess={r.get('held_speed_excess')}, "
                 f"baseline collides={r.get('baseline_replay_collides')}")
 
     if outcome == OUTCOME_HEADING_BLEND_SINGULARITY:

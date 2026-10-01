@@ -113,7 +113,8 @@ ALTER TABLE scenario_scores ADD COLUMN IF NOT EXISTS target_idx INTEGER;
 -- used to keep none of it: a collision-refusal and a drift-refusal became
 -- indistinguishable the moment the in-memory dict went out of scope. That defeats
 -- the stated purpose of measuring baseline_replay_error at all, which is to
--- establish the real distribution before defending the 0.5 m default.
+-- establish the real distribution before defending a default (it was measured, and
+-- the 0.5 m gate replaced: see perturbation_space.BASELINE_DRIFT_REFUSE_M).
 --
 -- JSONB and not columns, for the same reason search_provenance is JSONB: these are
 -- fields of one concept ("what did the latest attempt conclude"), they travel
@@ -542,15 +543,15 @@ def resolve_outcome(result) -> str:
 _ATTEMPT_DIAGNOSTIC_FIELDS = (
     'reason',
     'baseline_replay_error',
-    # REDUNDANT TODAY, STORED ANYWAY. There are exactly two raise sites in
-    # PerturbationSpace — ('collision', err, True) and ('drift', err, False) — so
-    # this boolean is currently derivable from `reason`. It is persisted because a
-    # future gate could raise 'drift' with collides=True, and a reader who had been
-    # taught to derive it would have no way to learn the mapping had stopped being
-    # two-way. The project already makes this trade for min_ttc_all_pairs and
-    # challengers_total: record the fact, do not make a later reader re-derive an
-    # invariant from code structure that can silently change. One boolean in a JSONB
-    # blob is free; a silently-wrong derivation is not.
+    # REDUNDANT TODAY, STORED ANYWAY. PerturbationSpace raises it True only with
+    # reason 'collision' (its other raise sites, 'speed_step' and 'drift', pass
+    # False), so this boolean is currently derivable from `reason`. It is persisted
+    # because a future gate could raise another reason with collides=True, and a
+    # reader who had been taught to derive it would have no way to learn the mapping
+    # had stopped being one-to-one. The project already makes this trade for
+    # min_ttc_all_pairs and challengers_total: record the fact, do not make a later
+    # reader re-derive an invariant from code structure that can silently change. One
+    # boolean in a JSONB blob is free; a silently-wrong derivation is not.
     'baseline_replay_collides',
     # Which challenger THIS attempt selected, which is not necessarily the one the
     # stored result describes — see the target_idx column comment.
@@ -574,6 +575,11 @@ _ATTEMPT_DIAGNOSTIC_FIELDS = (
     # baseline_replay_error/baseline_replay_collides above for ReplayFidelityError.
     'baseline_heading_blend_min_magnitude',
     'margin',
+    # The speed-step measurement ReplayFidelityError carries for EVERY reason (None,
+    # and so omitted, for a non-vehicle challenger). Listed here because a field
+    # missing from this tuple is dropped silently, which is how a refusal's own
+    # evidence was lost before R07.
+    'held_speed_excess',
 )
 
 

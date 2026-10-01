@@ -28,7 +28,8 @@ DT    = 0.1    # timestep duration (seconds)
 # orders of magnitude.
 #
 # 0.5 m/s IS A DEFAULT TO BE MEASURED, NOT A CONSTANT THAT HAS BEEN DEFENDED. It has
-# exactly the status BASELINE_DRIFT_REFUSE_M has: PerturbationSpace takes
+# the status BASELINE_DRIFT_REFUSE_M had until the A_MAX=12 shard measured it (see
+# that constant's comment for what the measurement decided): PerturbationSpace takes
 # heading_speed_floor=None to switch it off, and records how much of the challenger
 # falls below it on EVERY scenario whether it is switched on or not, so the real
 # distribution of near-stationary challengers can be measured on a real shard before
