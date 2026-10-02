@@ -1,4 +1,5 @@
-import { Link, useLocation, useSearchParams } from 'react-router';
+import { useState, type FormEvent } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import type { ScenarioSummary } from '../api/client';
 import { describeError } from '../api/errors';
 import { useScenarioPages } from '../api/scenarios';
@@ -45,6 +46,8 @@ function PerturbationCell({ row }: { row: ScenarioSummary }) {
 export function ScenarioListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
+  const navigate = useNavigate();
+  const [scenarioId, setScenarioId] = useState('');
   const stressTestedOnly = searchParams.get('tested') === '1';
   const limit = parseLimit(searchParams.get('limit'));
 
@@ -65,10 +68,27 @@ export function ScenarioListPage() {
   // Concatenated in the order the pages arrived. No sort, no dedupe, no filter.
   const rows = query.data?.pages.flatMap((page) => page.items) ?? [];
 
+  function openScenario(event: FormEvent) {
+    event.preventDefault();
+    if (scenarioId.trim()) void navigate(scenarioPath(scenarioId.trim()), {
+      state: { listSearch: location.search } satisfies ListReturnState,
+    });
+  }
+
   return (
     <section>
       <div className="list-header">
-        <h1>Scenarios</h1>
+        <div><p className="eyebrow">EXPLORE THE EDGE CASES</p><h1>Scenarios</h1></div>
+        <span className="dataset-label">Waymo Open Dataset</span>
+      </div>
+      <p className="page-intro">Explore recorded driving scenes and the small changes that lead to a collision.</p>
+      <div className="list-tools">
+        <form className="scenario-lookup" onSubmit={openScenario}>
+          <label className="sr-only" htmlFor="scenario-lookup">Open by scenario ID</label>
+          <input id="scenario-lookup" type="search" placeholder="Open by scenario ID…" maxLength={256}
+            value={scenarioId} onChange={(e) => setScenarioId(e.target.value)} />
+          <button type="submit" disabled={!scenarioId.trim()}>Open <span aria-hidden="true">↗</span></button>
+        </form>
         <label className="toggle">
           <input
             type="checkbox"
@@ -82,6 +102,9 @@ export function ScenarioListPage() {
         Ranked by fragility score, most fragile first. The order comes from the server
         and is not re-sorted here.
       </p>
+      <details className="metric-guide"><summary>How to read the results</summary>
+        <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted change found by the search, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A negative PET records overlapping occupancy of a conflict zone.</p>
+      </details>
 
       {query.isPending ? (
         <p className="status" role="status">
@@ -97,7 +120,7 @@ export function ScenarioListPage() {
         </p>
       ) : (
         <>
-          <div className="table-scroll">
+          <div className="table-scroll" role="region" aria-label="Scenario results" tabIndex={0}>
             <table className="scenario-table">
               <thead>
                 <tr>

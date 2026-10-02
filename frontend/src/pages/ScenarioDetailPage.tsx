@@ -45,7 +45,8 @@ export function ScenarioDetailPage() {
   return (
     <section>
       {back}
-      <h1 className="detail-title mono">{scenarioId}</h1>
+      <div className="detail-heading"><div><p className="eyebrow">SCENARIO REPLAY</p><h1 className="detail-title mono">{scenarioId}</h1></div>
+        <span className="dataset-label">Recorded scene + simulated challenger</span></div>
       <div className="detail-grid">
         <div className="detail-side">
           {detail.isPending ? (

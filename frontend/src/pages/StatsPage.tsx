@@ -142,7 +142,8 @@ export function StatsPage() {
   return (
     <section>
       <div className="list-header">
-        <h1>Corpus</h1>
+        <div><p className="eyebrow">DATASET OVERVIEW</p><h1>Corpus</h1></div>
+        <span className="dataset-label">Waymo Open Dataset</span>
       </div>
       <p className="caption">Counts as the API reports them. Nothing on this page is summed or charted.</p>
 

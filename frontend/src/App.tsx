@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Link, NavLink, Outlet, createBrowserRouter, type RouteObject } from 'react-router';
+import { Link, NavLink, Outlet, ScrollRestoration, createBrowserRouter, type RouteObject } from 'react-router';
 import { Footer } from './components/Footer';
 import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
@@ -8,8 +8,12 @@ import { StatsPage } from './pages/StatsPage';
 function Layout({ children }: { children?: ReactNode }) {
   return (
     <div className="page">
+      <a className="skip-link" href="#main-content">Skip to content</a>
       <header className="site-header">
-        <span className="site-title">AV Scenario Stress-Tester</span>
+        <Link to="/" className="brand" aria-label="AV Scenario Stress-Tester home">
+          <span className="brand-mark" aria-hidden="true">AV</span>
+          <span className="site-title">Scenario Stress-Tester<span className="brand-subtitle">Autonomous driving · scenario analysis</span></span>
+        </Link>
         <nav className="site-nav" aria-label="Main">
           <NavLink to="/" end>
             Scenarios
@@ -17,10 +21,11 @@ function Layout({ children }: { children?: ReactNode }) {
           <NavLink to="/stats">Corpus</NavLink>
         </nav>
       </header>
-      <main>
+      <main id="main-content" tabIndex={-1}>
         {children ?? <Outlet />}
       </main>
       <Footer />
+      <ScrollRestoration />
     </div>
   );
 }

@@ -177,6 +177,7 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
         total={drawn.length}
         collisionFrame={collisionFrame}
       />
+      <p className="keyboard-hint">Focus the scene, then use <kbd>Space</kbd> to play and <kbd>←</kbd> <kbd>→</kbd> to step.</p>
       <Legend drawn={drawn} />
       {notes.map((n) => (
         <p key={n} className="note">
