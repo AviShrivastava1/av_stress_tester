@@ -4,6 +4,8 @@ import { describeError } from '../api/errors';
 import { useScenarioPages } from '../api/scenarios';
 import { OutcomeCell } from '../components/OutcomeBadge';
 import { TimeMetricCell } from '../components/TimeMetricCell';
+import { RequestError } from '../components/RequestError';
+import { formatMagnitude } from '../domain/format';
 
 // Mirrors the server's bounds on `limit` (Query(ge=1, le=max_page_size)).
 const MIN_LIMIT = 1;
@@ -27,7 +29,7 @@ export function scenarioPath(scenarioId: string): string {
 
 function PerturbationCell({ row }: { row: ScenarioSummary }) {
   if (row.min_perturbation !== null && row.min_perturbation !== undefined) {
-    return <span>{row.min_perturbation.toFixed(3)}</span>;
+    return <span title={String(row.min_perturbation)}>{formatMagnitude(row.min_perturbation)}</span>;
   }
   // NULL is never read as "safe" — the outcome column says what actually happened.
   if (!row.stress_tested && !row.stress_attempted) {
@@ -86,9 +88,7 @@ export function ScenarioListPage() {
           Loading scenarios…
         </p>
       ) : query.isError && rows.length === 0 ? (
-        <p className="status status-error" role="alert">
-          {describeError(query.error)}
-        </p>
+        <RequestError error={query.error} retry={() => query.refetch()} retrying={query.isFetching} />
       ) : rows.length === 0 ? (
         <p className="status" role="status">
           {stressTestedOnly

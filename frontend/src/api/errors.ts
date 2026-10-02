@@ -1,6 +1,8 @@
 import { API_BASE_URL, ApiError } from './client';
+import { RequestTimeoutError } from './request';
 
 export function describeError(error: unknown): string {
+  if (error instanceof RequestTimeoutError) return 'The API is taking longer than expected. Please try again.';
   if (error instanceof ApiError) {
     if (error.status === 503) {
       return 'The API is busy (all database connections in use). Try again in a moment.';

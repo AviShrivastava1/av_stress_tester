@@ -1,6 +1,7 @@
 import type { UseQueryResult } from '@tanstack/react-query';
 import type { PerturbedResponse } from '../../api/client';
-import { describeError } from '../../api/errors';
+import { RequestError } from '../../components/RequestError';
+import { formatMagnitude } from '../../domain/format';
 
 /**
  * The raw perturbation vector. `delta` and `delta_labels` both come from /perturbed,
@@ -19,7 +20,7 @@ export function PerturbationPanel({ perturbed }: { perturbed: UseQueryResult<Per
 function PerturbationBody({ perturbed }: { perturbed: UseQueryResult<PerturbedResponse> }) {
   if (perturbed.isPending) return <p className="status" role="status">Loading perturbation…</p>;
   if (perturbed.isError) {
-    return <p className="status status-error" role="alert">{describeError(perturbed.error)}</p>;
+    return <RequestError error={perturbed.error} retry={() => perturbed.refetch()} retrying={perturbed.isFetching} />;
   }
 
   const { delta, delta_labels: labels } = perturbed.data;
@@ -44,7 +45,7 @@ function PerturbationBody({ perturbed }: { perturbed: UseQueryResult<PerturbedRe
           {delta.map((value, i) => (
             <tr key={i}>
               <th scope="row">{labelled ? labels[i] : `component ${i + 1}`}</th>
-              <td className="num">{value.toFixed(4)}</td>
+              <td className="num" title={String(value)}>{formatMagnitude(value, 4)}</td>
             </tr>
           ))}
         </tbody>

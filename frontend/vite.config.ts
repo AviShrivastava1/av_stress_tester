@@ -1,7 +1,7 @@
 import react from '@vitejs/plugin-react';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
-import { requireApiBaseUrl } from './src/build/requireApiBaseUrl';
+import { requireApiBaseUrl } from './src/build/requireApiBaseUrl.ts';
 
 export default defineConfig(({ mode }) => {
   // A production build without the API's public URL would ship a site pointed at

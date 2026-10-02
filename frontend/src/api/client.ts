@@ -1,5 +1,6 @@
 import createClient from 'openapi-fetch';
 import type { components, paths } from './schema';
+import { fetchWithDeadline } from './request';
 
 // Aliases only — every shape here is generated from openapi.json.
 export type ScenarioSummary = components['schemas']['ScenarioSummary'];
@@ -12,13 +13,13 @@ export type StatsResponse = components['schemas']['StatsResponse'];
 export type HealthResponse = components['schemas']['HealthResponse'];
 
 export const API_BASE_URL: string =
-  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+  (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').trim().replace(/\/+$/, '');
 
 export const api = createClient<paths>({
   baseUrl: API_BASE_URL,
   // Looked up per call rather than captured when the client is created, so tests can
   // stub globalThis.fetch after this module has loaded.
-  fetch: (request) => globalThis.fetch(request),
+  fetch: fetchWithDeadline,
 });
 
 /**

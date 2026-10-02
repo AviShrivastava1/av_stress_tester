@@ -1,5 +1,6 @@
 import { QueryClient } from '@tanstack/react-query';
 import { ApiError } from './client';
+import { RequestTimeoutError } from './request';
 
 const MAX_BACKOFF_MS = 8000;
 
@@ -9,6 +10,7 @@ const MAX_BACKOFF_MS = 8000;
  * thing the second time.
  */
 export function shouldRetry(failureCount: number, error: unknown): boolean {
+  if (error instanceof RequestTimeoutError) return false;
   if (error instanceof ApiError) return error.status === 503 && failureCount < 3;
   return failureCount < 2;
 }

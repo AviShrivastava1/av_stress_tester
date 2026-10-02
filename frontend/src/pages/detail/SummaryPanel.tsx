@@ -1,6 +1,7 @@
 import type { ScenarioDetail } from '../../api/client';
 import { OutcomeCell } from '../../components/OutcomeBadge';
 import { TimeMetricCell } from '../../components/TimeMetricCell';
+import { formatMagnitude } from '../../domain/format';
 
 function Dash() {
   return <span className="muted">—</span>;
@@ -31,7 +32,7 @@ export function SummaryPanel({ detail, targetIdx }: { detail: ScenarioDetail; ta
           <OutcomeCell row={detail} />
         </dd>
         <dt>Min perturbation</dt>
-        <dd>{detail.min_perturbation != null ? detail.min_perturbation.toFixed(3) : <Dash />}</dd>
+        <dd>{detail.min_perturbation != null ? <span title={String(detail.min_perturbation)}>{formatMagnitude(detail.min_perturbation)}</span> : <Dash />}</dd>
         <dt>Collision frame</dt>
         <dd>{detail.collision_timestep != null ? `frame ${detail.collision_timestep}` : <Dash />}</dd>
         <dt>Challenger</dt>

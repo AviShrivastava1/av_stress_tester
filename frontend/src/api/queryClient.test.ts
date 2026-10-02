@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from './client';
 import { retryDelay, shouldRetry } from './queryClient';
+import { RequestTimeoutError } from './request';
 
 describe('retry policy', () => {
   it('retries a 503, up to three times', () => {
@@ -13,6 +14,10 @@ describe('retry policy', () => {
   it('does not retry other HTTP errors', () => {
     expect(shouldRetry(0, new ApiError(404, null, '404'))).toBe(false);
     expect(shouldRetry(0, new ApiError(500, null, '500'))).toBe(false);
+  });
+
+  it('does not retry a request that already waited out its deadline', () => {
+    expect(shouldRetry(0, new RequestTimeoutError())).toBe(false);
   });
 
   it('retries network failures twice', () => {

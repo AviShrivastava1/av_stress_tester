@@ -1,7 +1,7 @@
 import { readTimeMetric } from '../domain/metrics';
 
 const NO_INTERACTION_MEANING = {
-  ttc: 'No closing pair: the SDC never closes on another agent (999.0 sentinel, not a measurement).',
+  ttc: 'No finite collision time predicted for an SDC pair by the constant-velocity model. A closing pair can still miss.',
   pet: 'No shared conflict zone with the SDC (999.0 sentinel, not a measurement).',
 } as const;
 

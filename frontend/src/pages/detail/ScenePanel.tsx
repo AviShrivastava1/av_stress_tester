@@ -18,6 +18,7 @@ import {
 } from '../../scene/sceneModel';
 import { SceneView } from '../../scene/SceneView';
 import { usePlayback } from '../../scene/usePlayback';
+import { RequestError } from '../../components/RequestError';
 
 const GEOMETRY_ABSENT_REASON =
   'Either it has not been exported yet, or it was exported from a scene that no longer ' +
@@ -103,9 +104,8 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
     // Includes the API's deliberate 500 for inconsistent geometry: an error, shown as
     // one, never folded into the "nothing exported" empty state.
     return (
-      <p className="status status-error" role="alert">
-        Scene geometry could not be loaded. {describeError(trajectories.error)}
-      </p>
+      <RequestError context="Scene geometry could not be loaded." error={trajectories.error}
+        retry={() => trajectories.refetch()} retrying={trajectories.isFetching} />
     );
   }
   if (drawn.length === 0) return <p className="status">{NO_GEOMETRY}</p>;

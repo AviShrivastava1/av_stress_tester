@@ -1,9 +1,10 @@
 import { Link, useLocation, useParams } from 'react-router';
-import { describeError, isNotFound } from '../api/errors';
+import { isNotFound } from '../api/errors';
 import { usePerturbed, useScenarioDetail, useTrajectories } from '../api/scenarios';
 import { PerturbationPanel } from './detail/PerturbationPanel';
 import { ScenePanel } from './detail/ScenePanel';
 import { SummaryPanel } from './detail/SummaryPanel';
+import { RequestError } from '../components/RequestError';
 import type { ListReturnState } from './ScenarioListPage';
 
 function backTarget(state: unknown): string {
@@ -53,14 +54,14 @@ export function ScenarioDetailPage() {
             </section>
           ) : detail.isError ? (
             <section className="panel">
-              <p className="status status-error" role="alert">{describeError(detail.error)}</p>
+              <RequestError error={detail.error} retry={() => detail.refetch()} retrying={detail.isFetching} />
             </section>
           ) : (
             <SummaryPanel detail={detail.data} targetIdx={perturbed.data?.target_idx ?? null} />
           )}
           <PerturbationPanel perturbed={perturbed} />
         </div>
-        <ScenePanel trajectories={trajectories} perturbed={perturbed} detail={detail.data} />
+        <ScenePanel key={scenarioId} trajectories={trajectories} perturbed={perturbed} detail={detail.data} />
       </div>
     </section>
   );

@@ -165,5 +165,11 @@ def test_the_vite_config_runs_the_api_url_guard_on_every_build():
     """The guard itself is unit-tested in frontend/src/build; this pins that the config
     calls it with the mode and the VITE_ env, so a production build cannot skip it."""
     config = open(os.path.join(PROJECT, 'frontend', 'vite.config.ts')).read()
-    assert "import { requireApiBaseUrl } from './src/build/requireApiBaseUrl';" in config
+    # Keep the explicit .ts extension: Vite's forthcoming native config loader does
+    # not resolve extensionless TypeScript imports.
+    assert "import { requireApiBaseUrl } from './src/build/requireApiBaseUrl.ts';" in config
     assert "requireApiBaseUrl(mode, loadEnv(mode, '.', 'VITE_'));" in config
+    # The .ts import above does not type-check without this, and `npm run build` runs
+    # tsc before vite.
+    tsconfig = json.load(open(os.path.join(PROJECT, 'frontend', 'tsconfig.json')))
+    assert tsconfig['compilerOptions'].get('allowImportingTsExtensions') is True

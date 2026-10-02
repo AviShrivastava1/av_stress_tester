@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { HealthResponse, StatsResponse } from '../api/client';
 import { useHealth, useStats } from '../api/corpus';
-import { describeError } from '../api/errors';
+import { RequestError } from '../components/RequestError';
 import { describeOutcome, ROBUSTLY_SAFE } from '../domain/outcomes';
 
 /*
@@ -153,7 +153,7 @@ export function StatsPage() {
           </section>
         ) : stats.isError ? (
           <section className="panel">
-            <p className="status status-error" role="alert">{describeError(stats.error)}</p>
+            <RequestError error={stats.error} retry={() => stats.refetch()} retrying={stats.isFetching} />
           </section>
         ) : (
           <>
@@ -168,7 +168,7 @@ export function StatsPage() {
           {health.isPending ? (
             <p className="status" role="status">Checking…</p>
           ) : health.isError ? (
-            <p className="status status-error" role="alert">{describeError(health.error)}</p>
+            <RequestError error={health.error} retry={() => health.refetch()} retrying={health.isFetching} />
           ) : (
             <HealthPanelBody health={health.data} />
           )}
