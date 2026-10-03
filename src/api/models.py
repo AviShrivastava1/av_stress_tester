@@ -210,6 +210,28 @@ class ScenarioDetail(ScenarioSummary):
 
     delta: list[float] | None = None
 
+    # Read from search_provenance, which records them for every searched scenario. Both
+    # are distances in metres between the zero-perturbation replay of the challenger and
+    # its logged track, so both qualify the stored result. Neither is in ScenarioSummary:
+    # the ranked list does not carry them. Null means "not recorded for this result" or,
+    # for the offset, "no collision was found"; it is never 0.
+    baseline_offset_at_collision: float | None = Field(
+        default=None,
+        description="Distance in metres, at the collision frame, between the "
+                    "zero-perturbation replay of the challenger and its logged "
+                    "position. Null when no collision was found or the figure was not "
+                    "recorded for the stored result. Not comparable with "
+                    "min_perturbation, a weighted norm over components of mixed units.",
+    )
+    baseline_replay_error: float | None = Field(
+        default=None,
+        description="Largest distance in metres, over the whole track, between the "
+                    "zero-perturbation replay of the challenger and its logged "
+                    "position. Null when the figure was not recorded for the stored "
+                    "result. Not comparable with min_perturbation, a weighted norm "
+                    "over components of mixed units.",
+    )
+
 
 class ScenarioPage(BaseModel):
     """

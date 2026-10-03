@@ -606,8 +606,22 @@ def list_scenarios(
 def get_scenario(scenario_id: ScenarioId, conn=Depends(get_db)):
     """One scenario's full row, including the raw perturbation vector."""
     with dict_cursor(conn) as cur:
+        # The two replay-drift figures come out of search_provenance. jsonb_typeof is
+        # checked BEFORE the cast, so a JSON null, string, boolean, array or object
+        # (a stored non-finite value, or anything hand-written) is null here and not an
+        # error from the ::float8. A JSON integer is a number and is served as a float.
+        # A stored JSON number outside the float range would still make the cast fail
+        # with a 500: the pipeline writes only finite doubles, and the live data has none.
         cur.execute(f"""
-            SELECT {_SCORE_COLUMNS}, delta
+            SELECT {_SCORE_COLUMNS}, delta,
+                   CASE WHEN jsonb_typeof(search_provenance -> 'baseline_offset_at_collision')
+                             = 'number'
+                        THEN (search_provenance ->> 'baseline_offset_at_collision')::float8
+                   END AS baseline_offset_at_collision,
+                   CASE WHEN jsonb_typeof(search_provenance -> 'baseline_replay_error')
+                             = 'number'
+                        THEN (search_provenance ->> 'baseline_replay_error')::float8
+                   END AS baseline_replay_error
             FROM scenario_scores
             WHERE scenario_id = %s
         """, (scenario_id,))
@@ -619,7 +633,11 @@ def get_scenario(scenario_id: ScenarioId, conn=Depends(get_db)):
 
     # Built from the row, not converted from a ScenarioSummary — see _summary_fields.
     delta = [float(x) for x in row['delta']] if row['delta'] is not None else None
-    return ScenarioDetail(**_summary_fields(row), delta=delta)
+    return ScenarioDetail(
+        **_summary_fields(row), delta=delta,
+        baseline_offset_at_collision=row.get('baseline_offset_at_collision'),
+        baseline_replay_error=row.get('baseline_replay_error'),
+    )
 
 
 @router.get('/scenarios/{scenario_id}/trajectories',
