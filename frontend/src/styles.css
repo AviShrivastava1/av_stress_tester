@@ -99,6 +99,8 @@ button:disabled { cursor:default; opacity:.5; }
 .facts dt { color:var(--text-muted); }
 .facts dd { margin:0; min-width:0; overflow-wrap:anywhere; }
 .facts dd.mono { font-size:10px; line-height:1.65; }
+.facts .replay-offset { display:contents; }
+.facts dd.replay-note { grid-column:1/-1; font-size:11px; line-height:1.65; color:var(--text-muted); }
 .delta-table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:12px; }
 .delta-table th,.delta-table td { padding:9px 0; text-align:left; font-weight:normal; border-bottom:1px solid var(--border); }
 .delta-table tr:last-child th,.delta-table tr:last-child td { border-bottom:0; }

@@ -2,6 +2,7 @@ import type { ScenarioDetail } from '../../api/client';
 import { OutcomeCell } from '../../components/OutcomeBadge';
 import { TimeMetricCell } from '../../components/TimeMetricCell';
 import { formatMagnitude } from '../../domain/format';
+import { ReplayOffsetBlock } from './ReplayOffsetBlock';
 
 function Dash() {
   return <span className="muted">—</span>;
@@ -33,6 +34,7 @@ export function SummaryPanel({ detail, targetIdx }: { detail: ScenarioDetail; ta
         </dd>
         <dt>Min perturbation</dt>
         <dd>{detail.min_perturbation != null ? <span title={String(detail.min_perturbation)}>{formatMagnitude(detail.min_perturbation)}</span> : <Dash />}</dd>
+        <ReplayOffsetBlock detail={detail} />
         <dt>Collision frame</dt>
         <dd>{detail.collision_timestep != null ? `frame ${detail.collision_timestep}` : <Dash />}</dd>
         <dt>Challenger</dt>
