@@ -20,6 +20,18 @@ import { SceneView } from '../../scene/SceneView';
 import { usePlayback } from '../../scene/usePlayback';
 import { RequestError } from '../../components/RequestError';
 
+/**
+ * The scene draws ONE box size per agent, from its first observed frame, because that is all
+ * the geometry export stores. The search's exact collision check used each agent's size in
+ * every frame, so at the collision frame the drawn boxes may not touch. Shown only where the
+ * page marks a colliding pair: the perturbed path is drawn AND a collision frame is set.
+ */
+const BOX_SIZE_NOTE =
+  "Boxes are drawn at each agent's size in its first observed frame. The collision check used " +
+  "each agent's size in every frame, so at the collision frame the drawn boxes may not touch. " +
+  'Contact is decided at the precision of the stored positions, up to about a millimetre at the ' +
+  'coordinates in this data.';
+
 const GEOMETRY_ABSENT_REASON =
   'Either it has not been exported yet, or it was exported from a scene that no longer ' +
   'matches the stored score; the API does not distinguish the two.';
@@ -127,6 +139,8 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
     const note = perturbedPathNote(detail, perturbed.data);
     if (note !== null) notes.push(note);
   }
+  // Not tied to the playhead: unlike the reference-frame note above, it describes how every frame is drawn.
+  if (collisionFrame !== null) notes.push(BOX_SIZE_NOTE);
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     // Bound to the scene frame only; the scrubber and buttons sit outside it and keep
