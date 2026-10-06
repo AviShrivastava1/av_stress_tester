@@ -590,7 +590,10 @@ class PerturbationSpace:
         # Checked AFTER the replay-fidelity gates above, not instead of them: a
         # baseline that already collides or already drifts too far is refused for
         # that reason first, with its own, more specific diagnosis.
-        if self.baseline_heading_blend_min_magnitude < HEADING_BLEND_SINGULARITY_MARGIN:
+        if (not self.is_vehicle and self.heading_speed_floor is not None
+                and self.heading_transition_width and (
+                not np.isfinite(self.baseline_heading_blend_min_magnitude)
+                or self.baseline_heading_blend_min_magnitude < HEADING_BLEND_SINGULARITY_MARGIN)):
             raise HeadingBlendSingularityError(
                 self.baseline_heading_blend_min_magnitude,
                 HEADING_BLEND_SINGULARITY_MARGIN,
@@ -990,8 +993,11 @@ class PerturbationSpace:
         # close THIS call came to the degenerate point, regardless of whether the
         # fallback below actually fired. magnitude.size is 0 only when this
         # function is called on an empty frame range, which apply() never does.
-        if magnitude.size:
-            self._last_heading_blend_min_magnitude = float(np.min(magnitude))
+        # Invalid padding of any value is not an observation: it must neither refuse
+        # an ordinary track nor hide a real minimum.
+        observed_magnitude = magnitude[self.validity[self.target_idx, t0:end]]
+        if observed_magnitude.size:
+            self._last_heading_blend_min_magnitude = float(np.min(observed_magnitude))
         # THE DEGENERATE-CASE THRESHOLD — CORRECTED A SECOND TIME, BY INDEPENDENT
         # REVIEW, AFTER THE FIRST FIX SHIPPED WITHOUT RE-MEASURING IT.
         #
