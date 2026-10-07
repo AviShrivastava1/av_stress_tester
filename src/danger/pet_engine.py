@@ -1,6 +1,7 @@
 import numpy as np
 from src.danger.collision_detector import get_corners
 from shapely.geometry import Polygon, LineString
+from shapely.ops import unary_union
 
 
 PET_INFINITY = 999.0    # sentinel for pairs whose paths never cross
@@ -94,6 +95,55 @@ def _occupancy_visits(states: np.ndarray, validity: np.ndarray,
     return [(int(enter), int(leave)) for enter, leave in visits]
 
 
+def _atomic_geometry_parts(geometry):
+    """Yield non-collection pieces from any Shapely geometry."""
+    if geometry.is_empty:
+        return
+    children = getattr(geometry, 'geoms', None)
+    if children is None:
+        yield geometry
+        return
+    for child in children:
+        yield from _atomic_geometry_parts(child)
+
+
+def _conflict_components(conflict_zone) -> list:
+    """Return the spatially connected components of a conflict-zone geometry.
+
+    A MultiPolygon's members are normally the desired components, but an intersection
+    can also return a GeometryCollection or split one connected line into several
+    pieces. Grouping pieces that intersect keeps touching pieces together and prevents
+    visits in two genuinely disconnected places from being paired as if they happened
+    in one zone.
+    """
+    parts = list(_atomic_geometry_parts(conflict_zone))
+    if len(parts) < 2:
+        return parts
+
+    parent = list(range(len(parts)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        root_i, root_j = find(i), find(j)
+        if root_i != root_j:
+            parent[root_j] = root_i
+
+    for i, part in enumerate(parts):
+        for j in range(i):
+            if part.intersects(parts[j]):
+                union(i, j)
+
+    groups = {}
+    for i, part in enumerate(parts):
+        groups.setdefault(find(i), []).append(part)
+    return [unary_union(group) for group in groups.values()]
+
+
 def compute_pet_pair(
     states: np.ndarray,
     validity: np.ndarray,
@@ -108,8 +158,9 @@ def compute_pet_pair(
     PET is the time gap between one agent clearing the shared conflict zone and
     the other agent entering it. A small positive PET is a near-miss.
 
-    EACH AGENT OCCUPIES THE ZONE AS A SET OF DISJOINT VISITS, NOT ONE SPAN, and the
-    result is the minimum over every pairing of one A-visit with one B-visit:
+    THE SPATIAL CONFLICT ZONE IS FIRST SPLIT INTO CONNECTED COMPONENTS. Within each
+    component, each agent occupies the zone as a set of disjoint visits, not one span,
+    and the result is the minimum over every pairing of one A-visit with one B-visit:
 
         pet = min over (i, j) of  max(enter_Bj - exit_Ai, enter_Ai - exit_Bj) * DT
 
@@ -121,23 +172,22 @@ def compute_pet_pair(
     whenever `b` happened to cross first; on a real WOMD shard that was 56% of
     sampled crossing pairs, a third of which were safely sequenced.)
 
-    The outer min over visit pairs is the audit B06 fix. With a single visit each it
-    collapses to exactly the expression above, so nothing about the crossing-order
-    correction is re-litigated — it is that formula applied to every pair of visits
-    instead of to one merged span per agent.
+    The outer min over components and visit pairs is the audit B06 fix completed. With
+    one component and a single visit each it collapses to exactly the expression above,
+    so nothing about the crossing-order correction is re-litigated.
 
     WHY MIN IS THE RIGHT AGGREGATOR, since this is the load-bearing claim:
 
       * Per pair, `max(...) <= 0` iff `enter_Bj <= exit_Ai` AND `enter_Ai <= exit_Bj`,
-        which is exactly the condition for those two closed intervals to overlap. So
-        a negative per-pair value means genuine simultaneous presence, with no gap in
-        the logic.
-      * Visits PARTITION each agent's presence in the zone, so if any instant has
-        both agents present it falls inside exactly one visit of each, that pair
-        overlaps, and the min is negative. If no such instant exists, no pair
-        overlaps, every pair is non-negative, and so is the min. The guarantee that
-        "negative means genuine overlap" therefore transfers exactly, not
-        approximately.
+        which is exactly the condition for those two closed intervals to overlap. So a
+        negative per-pair value means the two visits share at least one frame: both
+        agents' boxes intersected the component at the same time. A visit is a box
+        intersecting the component; it does not mean the two boxes overlapped each other.
+      * Visits partition each agent's presence IN ONE CONNECTED COMPONENT. If any
+        frame has both agents' boxes intersecting that component, one visit pair
+        overlaps and the minimum is negative. Visits from different components are
+        never paired; being in different places at the same time is not an
+        encroachment.
       * A temporally distant, irrelevant visit pair cannot spuriously win the min:
         mismatched pairs produce one large positive and one large negative term, and
         the inner max always selects the large positive one. Distant pairs can only
@@ -156,10 +206,11 @@ def compute_pet_pair(
         path_b:   optional pre-built swept polygon for agent_b.
 
     Returns:
-        PET in seconds — the smallest gap over all visit pairings. Negative means
-        the two agents were genuinely in the zone at the same time. PET_INFINITY if
-        the agents' swept paths never overlap or if either agent never actually
-        enters the spatial conflict zone.
+        PET in seconds — the smallest gap over all visit pairings within a component.
+        Negative means both agents' boxes intersected the same connected component of
+        the conflict zone during a common frame; it does not mean their boxes
+        overlapped each other. PET_INFINITY if the agents' swept paths never overlap,
+        or if no component of the zone is entered by both agents.
     """
     # spatial conflict zone — where both agents' swept paths overlap
     if path_a is None:
@@ -175,19 +226,21 @@ def compute_pet_pair(
     if conflict_zone.is_empty:
         return PET_INFINITY  # paths never cross spatially
 
-    visits_a = _occupancy_visits(states, validity, agent_a, conflict_zone)
-    visits_b = _occupancy_visits(states, validity, agent_b, conflict_zone)
+    pet = PET_INFINITY
+    for component in _conflict_components(conflict_zone):
+        visits_a = _occupancy_visits(states, validity, agent_a, component)
+        visits_b = _occupancy_visits(states, validity, agent_b, component)
+        if not visits_a or not visits_b:
+            # Swept paths can overlap in a thin sliver that neither sampled box
+            # actually occupies. That component contributes no temporal claim.
+            continue
+        component_pet = min(
+            max(enter_b - exit_a, enter_a - exit_b)
+            for enter_a, exit_a in visits_a
+            for enter_b, exit_b in visits_b
+        ) * DT
+        pet = min(pet, component_pet)
 
-    if not visits_a or not visits_b:
-        # swept paths overlap, but at least one agent's box never actually
-        # reaches the zone (thin slivers from the polygon intersection)
-        return PET_INFINITY
-
-    pet = min(
-        max(enter_b - exit_a, enter_a - exit_b)
-        for enter_a, exit_a in visits_a
-        for enter_b, exit_b in visits_b
-    ) * DT
     return float(pet)
 
 
