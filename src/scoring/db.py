@@ -30,6 +30,7 @@ variables (PGHOST, PGDATABASE, PGUSER, PGPASSWORD), so no credentials live in co
 """
 
 import hashlib
+import numbers
 import os
 
 import psycopg2
@@ -627,6 +628,18 @@ def _describe_nonfinite(value: float) -> str:
     return 'inf' if value > 0 else '-inf'
 
 
+def _is_numpy_scalar(value) -> bool:
+    """
+    True for a NumPy scalar (an instance of numpy.generic: float32, int64, bool_, str_ ...),
+    False for an array of any shape and for everything that is not NumPy.
+
+    Decided from the type's inheritance chain, so numpy is not imported: this module does
+    not depend on it. A "has .item()" test would not do: a 0-d array has .item() and a
+    longer array raises on it, and an array is not a scalar.
+    """
+    return any(c.__module__ == 'numpy' and c.__name__ == 'generic' for c in type(value).__mro__)
+
+
 def _sanitize_for_json(value, path=''):
     """
     Replace every non-finite float with None, and report what was replaced.
@@ -676,8 +689,25 @@ def _sanitize_for_json(value, path=''):
     if isinstance(value, bool):
         return value, {}
 
-    if isinstance(value, float) and not math.isfinite(value):
-        return None, {path: _describe_nonfinite(value)}
+    # NumPy scalars are not JSON-serializable (`json.dumps(np.float32(0.5))` raises
+    # TypeError), and the offline search produces them naturally. Replaced here by the
+    # Python value each stands for, so everything below sees ordinary Python numbers.
+    # np.bool_ is neither Integral nor Real, which is why it is handled at this step.
+    # A float32 is stored as its widened value (float(np.float32(0.1)) is
+    # 0.10000000149011612), not rounded to the shortest decimal.
+    if _is_numpy_scalar(value):
+        value = value.item()
+        if isinstance(value, bool):
+            return value, {}
+
+    if isinstance(value, numbers.Integral):
+        return int(value), {}
+
+    if isinstance(value, numbers.Real):
+        normalized = float(value)
+        if not math.isfinite(normalized):
+            return None, {path: _describe_nonfinite(normalized)}
+        return normalized, {}
 
     return value, {}
 
