@@ -193,6 +193,19 @@ ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
 -- forever, with nothing to compare against on read. Same column, same carve-out,
 -- same read-side predicate as scene_fingerprint — see get_trajectories.
 ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS sdc_idx INTEGER;
+
+-- The agent's box size at EVERY exported frame. length_m and width_m above stay what they
+-- were, the size at the first valid frame; collision verification, the DE archive and PET
+-- all build each frame's box from that frame's own size, so the scalar cannot reproduce
+-- what they used.
+--
+-- lengths_m[i] and widths_m[i] describe the same vertex as path's i-th point and headings[i];
+-- all four are built from one list of valid frames. An element is NULL where the recorded
+-- size is not finite or not above zero (the rule PerturbationSpace._valid_dimension applies),
+-- so the array keeps its length and NaN/Infinity never reach the API's JSON. A column that is
+-- NULL as a whole means "not recorded": a row exported before these columns existed.
+ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS lengths_m DOUBLE PRECISION[];
+ALTER TABLE scenario_agents ADD COLUMN IF NOT EXISTS widths_m  DOUBLE PRECISION[];
 """
 
 
@@ -280,6 +293,20 @@ class SdcIndexChangedError(RuntimeError):
             f"sdc_idx {computed_sdc_idx!r}, but the stored row describes sdc_idx "
             f"{stored_sdc_idx!r}"
         )
+
+
+def _per_frame_sizes(values):
+    """
+    One box dimension per exported frame, as Python floats; None where the recorded value
+    is unusable. Usable is exactly what PerturbationSpace._valid_dimension requires: finite
+    and above zero. float() of a float32 is exact, so each element is the value the collision
+    check's get_corners reads after it promotes its inputs.
+    """
+    out = []
+    for value in values:
+        value = float(value)
+        out.append(value if np.isfinite(value) and value > 0.0 else None)
+    return out
 
 
 def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
@@ -409,6 +436,10 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
             # vertex back to a frame without a second lookup.
             wkt = _linestring_m_wkt(xs, ys, ts.astype(float))
             headings = [float(h) for h in states[i, ts, 4]]
+            # Per-frame sizes, from the same `ts` as the path and headings so element k is
+            # vertex k's size. The scalars below are unchanged.
+            lengths_m = _per_frame_sizes(states[i, ts, 5])
+            widths_m = _per_frame_sizes(states[i, ts, 6])
 
             # length/width are physical constants of the agent; read them from the
             # first valid timestep rather than assuming index 0 was observed.
@@ -432,8 +463,8 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
                 INSERT INTO scenario_agents
                     (scenario_id, agent_idx, agent_type, is_sdc,
                      length_m, width_m, n_points, headings, path, scene_fingerprint,
-                     sdc_idx)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s, %s)
+                     sdc_idx, lengths_m, widths_m)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, 0), %s, %s, %s, %s)
                 ON CONFLICT (scenario_id, agent_idx) DO UPDATE SET
                     agent_type        = EXCLUDED.agent_type,
                     is_sdc            = EXCLUDED.is_sdc,
@@ -443,11 +474,14 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
                     headings          = EXCLUDED.headings,
                     path              = EXCLUDED.path,
                     scene_fingerprint = EXCLUDED.scene_fingerprint,
-                    sdc_idx           = EXCLUDED.sdc_idx
+                    sdc_idx           = EXCLUDED.sdc_idx,
+                    lengths_m         = EXCLUDED.lengths_m,
+                    widths_m          = EXCLUDED.widths_m
             """, (
                 scenario_id, int(i), int(types[i]), bool(i == sdc_idx),
                 float(states[i, t0, 5]), float(states[i, t0, 6]),
                 len(ts), headings, wkt, stored_fingerprint, stored_sdc_idx,
+                lengths_m, widths_m,
             ))
             written += 1
 
