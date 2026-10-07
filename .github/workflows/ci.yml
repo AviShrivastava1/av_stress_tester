@@ -1,0 +1,154 @@
+# Continuous integration: the full Python suite against a real PostgreSQL/PostGIS service
+# (the lock-sensitive persistence tests only mean something there), and the frontend's
+# typecheck, tests and production build.
+#
+# This workflow deploys nothing and uses no repository secrets. Every database credential
+# below is a throwaway value for a database that exists only for the duration of one job.
+# (Vercel and Render redeploy on any push to main, with or without this file.)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python tests (PostGIS 17.11 / 3.6.4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # Production runs PostgreSQL 17.11 with PostGIS 3.6. This is the closest published
+        # image: its config blob (read from the registry on 2026-10-06, image built
+        # 2026-08-31) says PG_VERSION=17.11 and POSTGIS_VERSION=3.6.4, and the digest below
+        # is the multi-architecture index digest of the 17-3.6-alpine tag at that time.
+        # Bumping the digest is a manual decision: re-read the config blob first.
+        # KNOWN DIFFERENCE: this image is Alpine (musl libc); production is not known to be.
+        # There is no Debian 3.6 tag (17-3.5 is PostgreSQL 17.5 / PostGIS 3.5.2).
+        image: postgis/postgis:17-3.6-alpine@sha256:a8ffa9afeea4ad6eada171fa2afdb57cd3eb90f92ce20156aa2cb8411d70e0cd
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-only-throwaway
+          POSTGRES_DB: av_stress_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d av_stress_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # The names src/scoring/db.py and src/api/config.py read. POSTGRES_USER is a
+      # superuser, which CREATE EXTENSION postgis needs.
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: ci
+      PGPASSWORD: ci-only-throwaway
+      PGDATABASE: av_stress_ci
+      AV_CLAIMS_DB: "1"
+      AV_AUDIT_DB: "1"
+      AV_ROBUSTNESS_DB: "1"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
+      - name: Install dependencies
+        # requirements.txt cannot be installed as written on Python 3.11: waymo-open-dataset-
+        # tf-2-11-0 requires numpy==1.21.5 and tensorflow==2.11, and TensorFlow 2.11 has no
+        # wheel newer than cp310 (pip reports ResolutionImpossible). The shard-reading path
+        # lives in Colab. So exactly those two lines are dropped here, and the step FAILS if
+        # anything else is dropped or either line is missing. pytest is in neither file.
+        # Dependencies are not cached: a stale cache must not be able to hide a failure.
+        run: |
+          set -euo pipefail
+          for name in tensorflow waymo-open-dataset-tf-2-11-0; do
+            count=$(grep -c -x -F "$name" requirements.txt || true)
+            if [ "$count" -ne 1 ]; then
+              echo "expected exactly one '$name' line in requirements.txt, found $count"
+              exit 1
+            fi
+          done
+          grep -v -x -F -e tensorflow -e waymo-open-dataset-tf-2-11-0 requirements.txt > "$RUNNER_TEMP/requirements-ci.txt"
+          before=$(wc -l < requirements.txt)
+          after=$(wc -l < "$RUNNER_TEMP/requirements-ci.txt")
+          removed=$((before - after))
+          if [ "$removed" -ne 2 ]; then
+            echo "expected to remove exactly 2 lines, removed $removed"
+            exit 1
+          fi
+          echo "--- requirements.txt without tensorflow and waymo-open-dataset-tf-2-11-0 ---"
+          cat "$RUNNER_TEMP/requirements-ci.txt"
+          echo "--- requirements-api.txt ---"
+          cat requirements-api.txt
+          echo "--- installing ---"
+          python -m pip install -r "$RUNNER_TEMP/requirements-ci.txt" -r requirements-api.txt pytest
+          echo "--- pip freeze ---"
+          python -m pip freeze
+
+      - name: Database service versions
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+          with psycopg2.connect(host=os.environ['PGHOST'], port=os.environ['PGPORT'], user=os.environ['PGUSER'],
+                                password=os.environ['PGPASSWORD'], dbname=os.environ['PGDATABASE']) as conn:
+              with conn.cursor() as cur:
+                  cur.execute('SELECT version()')
+                  print(cur.fetchone()[0])
+                  cur.execute('SELECT postgis_version()')
+                  print('PostGIS', cur.fetchone()[0])
+          PY
+
+      - name: Test suite
+        # The two deselected tests need waymo_open_dataset, which cannot be installed on
+        # Python 3.11 (see above). Nothing else is skipped or deselected.
+        run: >-
+          python -m pytest tests -q -rf
+          --deselect tests/test_audit_core.py::test_B05_corrupt_next_record_does_not_overwrite_previous_success
+          --deselect tests/test_audit_core.py::test_control_parser_preserves_valid_states_and_flags
+
+  frontend:
+    name: Frontend (typecheck, tests, build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # frontend/.nvmrc says 22: the newest 22.x, which satisfies engines ^22.22.2.
+          node-version-file: frontend/.nvmrc
+
+      - name: Install
+        run: |
+          node --version
+          npm --version
+          npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npx vitest run
+
+      - name: Production build
+        # The build refuses to run without an https API URL (src/build/requireApiBaseUrl.ts);
+        # this one is a placeholder that is never contacted. `npm run build` is the command
+        # Vercel runs.
+        env:
+          VITE_API_BASE_URL: https://api.example.invalid
+        run: npm run build
