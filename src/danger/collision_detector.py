@@ -2,6 +2,12 @@ import numpy as np
 from shapely.geometry import Polygon
 
 
+# Names the geometry that decides contact. Bump it whenever that geometry changes, so a
+# result verified under an older predicate can be told apart from one verified under this
+# one. Nothing in src/ reads it yet.
+COLLISION_GEOMETRY_VERSION = 'oriented-box-float64-v1'
+
+
 def get_corners(x: float, y: float, theta: float, length: float, width: float) -> np.ndarray:
     """
     Compute the 4 corners of an agent's oriented bounding box in global coordinates.
@@ -24,6 +30,14 @@ def get_corners(x: float, y: float, theta: float, length: float, width: float) -
     Returns:
         corners: shape (4, 2) — four (x, y) corner points in global frame
     """
+    # The state tensor is stored as float32, but geometry arithmetic must not stay
+    # there. At the kilometre-scale local coordinates WOMD uses, adding a half-length
+    # in float32 can move an edge by several tenths of a millimetre. Two genuinely
+    # separated edges can therefore round onto the same coordinate and make Shapely's
+    # exact predicate report contact. Promotion cannot recover precision already lost
+    # in storage; it does prevent a second, avoidable rounding while constructing the
+    # boxes that decide the headline collision result.
+    x, y, theta, length, width = map(float, (x, y, theta, length, width))
     L, W = length / 2, width / 2
 
     # corners in local frame (car points along x-axis)
@@ -32,17 +46,17 @@ def get_corners(x: float, y: float, theta: float, length: float, width: float) -
         [ L, -W],   # front left
         [-L, -W],   # rear left
         [-L,  W],   # rear right
-    ])
+    ], dtype=np.float64)
 
     # rotation matrix for heading theta
     cos_t, sin_t = np.cos(theta), np.sin(theta)
     R = np.array([
         [cos_t, -sin_t],
         [sin_t,  cos_t]
-    ])
+    ], dtype=np.float64)
 
     # rotate corners and translate to global frame
-    global_corners = (R @ local_corners.T).T + np.array([x, y])
+    global_corners = (R @ local_corners.T).T + np.array([x, y], dtype=np.float64)
     return global_corners
 
 
