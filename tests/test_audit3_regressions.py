@@ -1485,7 +1485,8 @@ def test_A04_the_round_trip_still_prefers_the_real_challenger(pconn):
                           space.apply(np.asarray(result['delta'], dtype=np.float32)),
                           validity, int(result['target_idx']),
                           delta=result['delta'], method=result.get('method'),
-                          scene_fingerprint=db.compute_scene_fingerprint(*scene))
+                          scene_fingerprint=db.compute_scene_fingerprint(*scene),
+                          search_provenance=result.get('search_provenance'))
 
     with TestClient(app) as client:
         env, printed = _exec_api_cells(pconn, client, 'a04ok', result)

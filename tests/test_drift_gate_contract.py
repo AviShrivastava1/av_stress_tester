@@ -485,9 +485,15 @@ def test_a_legacy_result_replays_under_the_historical_drift_gate(gconn, tmp_path
 @requires_db
 def test_a_legacy_result_replays_with_no_speed_gate(gconn, tmp_path, _scene_parser, monkeypatch):
     """The speed gate did not exist before the keys: a legacy result is never refused for it."""
+    from src.scoring import db
     _assert_today_refuses_the_step_scene()
     result = _search_and_store(gconn, 'step', monkeypatch)
-    summary = _export(gconn, tmp_path, 'step', _without_gate_keys(result))
+    # A legacy RESULT is one whose provenance lacks the gate keys. The row must say so too: store the
+    # legacy-shaped result through the real writer, so the row's identity and the exporter's agree and
+    # the test is about replay settings, which is its subject, not about identity.
+    legacy = _without_gate_keys(result)
+    db.update_stress_results(gconn, {'step': dict(legacy)})
+    summary = _export(gconn, tmp_path, 'step', legacy)
     assert summary['replay_refused'] == [], summary['replay_refused']
     assert summary['perturbed_written'] == 1, summary
 

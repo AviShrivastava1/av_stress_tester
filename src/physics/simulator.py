@@ -14,6 +14,11 @@ TYPE_VEHICLE    = 1
 TYPE_PEDESTRIAN = 2
 TYPE_CYCLIST    = 3
 
+# Bump when replay equations or write-back semantics change in a way that can change
+# the trajectory produced by an otherwise identical perturbation. Recorded in every
+# result's search provenance, and so folded into its stress_run_id.
+REPLAY_MODEL_VERSION = 'kinematic-replay-v1'
+
 
 def replay_a_max(agent_type: int) -> float:
     """

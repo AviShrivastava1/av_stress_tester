@@ -4,7 +4,8 @@ from shapely.geometry import Polygon
 
 # Names the geometry that decides contact. Bump it whenever that geometry changes, so a
 # result verified under an older predicate can be told apart from one verified under this
-# one. Nothing in src/ reads it yet.
+# one. Recorded in every result's search provenance (src/scoring/batch_scorer.py), and so
+# folded into its stress_run_id.
 COLLISION_GEOMETRY_VERSION = 'oriented-box-float64-v1'
 
 

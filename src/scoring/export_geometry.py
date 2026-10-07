@@ -141,8 +141,8 @@ ALTER TABLE perturbed_paths ADD COLUMN IF NOT EXISTS stress_run_id TEXT;
 -- Audit A02: which SCENE this geometry was built from. Symmetric with stress_run_id
 -- above, and for the same reason it exists on both tables: a path can be paired with
 -- a result only if the RUN and the SCENE both agree. stress_run_id alone is not
--- enough — a re-parsed scene that happens to produce the same optimal delta yields
--- the same run id, and the join would pair a new result with old-scene geometry.
+-- enough — replay/search provenance can coincide across two different parsed scenes,
+-- so a matching run id is not evidence that the underlying states/validity/types do.
 ALTER TABLE perturbed_paths ADD COLUMN IF NOT EXISTS scene_fingerprint TEXT;
 
 -- The same column on the BASELINE side, and it closes a window rather than narrowing
@@ -489,20 +489,30 @@ class StaleExportError(RuntimeError):
     merely that something was.
     """
 
-    def __init__(self, scenario_id, attempted_run_id, current_run_id):
+    def __init__(self, scenario_id, attempted_run_id, current_run_id, pre_v2_identity=False):
         self.scenario_id = scenario_id
         self.attempted_run_id = attempted_run_id
         self.current_run_id = current_run_id
-        super().__init__(
+        self.pre_v2_identity = bool(pre_v2_identity)
+        message = (
             f"refusing to publish geometry for {scenario_id!r}: it was built from "
             f"run {attempted_run_id!r}, but the stored result is run "
             f"{current_run_id!r}"
         )
+        if pre_v2_identity:
+            message += (
+                ". The stored result carries the pre-v2 run identity: its id covers "
+                "only the scenario, target, delta and method, not the search "
+                "provenance, so geometry built from a result with provenance cannot be "
+                "paired with it. Rerun Pass 2 for this scenario so the result is "
+                "stamped with the current identity, then export its geometry."
+            )
+        super().__init__(message)
 
 
 def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_idx,
                           stress_run_id=None, delta=None, method=None,
-                          scene_fingerprint=None):
+                          scene_fingerprint=None, search_provenance=None):
     """
     Write the challenger's PERTURBED trajectory — the Phase 4 answer, made visible.
 
@@ -544,9 +554,9 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     scene_fingerprint); a row with none keeps exporting under the same carve-out.
 
     With `delta` and `method` supplied, the run id is DERIVED FROM THE CONTENT being
-    exported — compute_stress_run_id(scenario_id, target_idx, delta, method), the
-    same function and the same four inputs update_stress_results used to stamp the
-    result — and the write publishes only if that id is still the persisted one.
+    exported — compute_stress_run_id(scenario_id, target_idx, delta, method,
+    search_provenance), the same function and inputs update_stress_results used to
+    stamp the result — and the write publishes only if that id is still persisted.
 
     The audit's repro, which this refuses: persist result A, persist a newer result
     B, then export using A's result dict. Before R01 the API served B's delta beside
@@ -560,6 +570,12 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
                        the reason spelled out at the refusal below.
         delta:         the perturbation this trajectory was rebuilt from.
         method:        'de' or 'de+autograd', as recorded on the result.
+        search_provenance: the settings/model record persisted with the result. It is
+                       folded into the run id, so it must be supplied whenever the
+                       result carries one; omitting it derives the previous identity,
+                       which does not match a result stamped with its provenance (the
+                       export is refused as stale). A result stored without provenance
+                       is exported without it.
         scene_fingerprint: compute_scene_fingerprint of the scene this trajectory was
                        built from (audit A02). Supplying it is what makes the export
                        verifiable against a re-parse; omitting it on a fingerprinted
@@ -595,7 +611,9 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
     # otherwise fall back to the pre-R01 lookup, with the caveat in the docstring.
     if stress_run_id is None and delta is not None:
         from src.scoring.db import compute_stress_run_id
-        stress_run_id = compute_stress_run_id(scenario_id, target_idx, delta, method)
+        stress_run_id = compute_stress_run_id(
+            scenario_id, target_idx, delta, method, search_provenance,
+        )
 
     with conn.cursor() as cur:
         cur.execute("SELECT stress_run_id, scene_fingerprint FROM scenario_scores "
@@ -734,7 +752,13 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
         # re-run the wrong pass.
         if scene_fingerprint is not None and current_scene != scene_fingerprint:
             raise SceneChangedError(scenario_id, current_scene, scene_fingerprint)
-        raise StaleExportError(scenario_id, stress_run_id, current_run)
+        # A row written before the provenance was part of the identity carries the
+        # previous id. Said as what it is, with what to do, instead of a bare id mismatch.
+        pre_v2 = False
+        if search_provenance is not None and delta is not None and current_run is not None:
+            from src.scoring.db import compute_stress_run_id
+            pre_v2 = current_run == compute_stress_run_id(scenario_id, target_idx, delta, method)
+        raise StaleExportError(scenario_id, stress_run_id, current_run, pre_v2_identity=pre_v2)
 
     conn.commit()
     return True
@@ -1079,6 +1103,7 @@ def export_shard_geometry(conn, shard_path, scenario_ids, stress_results=None,
                         conn, sid, perturbed, validity, int(result['target_idx']),
                         delta=result['delta'], method=result.get('method'),
                         scene_fingerprint=stored_fingerprint,
+                        search_provenance=result.get('search_provenance'),
                     )
                 except StaleExportError as stale:
                     # A refused export is a NORMAL outcome of a delayed or retried

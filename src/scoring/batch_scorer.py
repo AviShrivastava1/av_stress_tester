@@ -203,7 +203,8 @@ def _stress_one(states, validity, types, sdc_idx,
         pick_nearest_challenger,
     )
     from src.optimization.scipy_optimizer import optimize_scenario
-    from src.physics.simulator import replay_a_max
+    from src.danger.collision_detector import COLLISION_GEOMETRY_VERSION
+    from src.physics.simulator import REPLAY_MODEL_VERSION, replay_a_max
     from src.scoring.db import (
         OUTCOME_COLLISION_FOUND, OUTCOME_HEADING_BLEND_SINGULARITY,
         OUTCOME_NO_CHALLENGER, OUTCOME_NO_COLLISION_FOUND,
@@ -334,6 +335,11 @@ def _stress_one(states, validity, types, sdc_idx,
     # no_collision_found row is indistinguishable from a thorough search, when in
     # fact it is one challenger under a finite stochastic budget.
     result['search_provenance'] = {
+        # Explicit code-contract versions. The parameters below describe today's values;
+        # these identify equation/write-back and contact-predicate changes that cannot be
+        # recovered from a numeric setting alone. Both feed stress_run_id.
+        'replay_model_version': REPLAY_MODEL_VERSION,
+        'collision_geometry_version': COLLISION_GEOMETRY_VERSION,
         # Which kinematic model produced this delta, and therefore which units its four
         # components carry (audit B13). Recorded as the DIRECT fact — the model actually
         # dispatched to — rather than left to be inferred downstream from agent type,

@@ -30,6 +30,7 @@ variables (PGHOST, PGDATABASE, PGUSER, PGPASSWORD), so no credentials live in co
 """
 
 import hashlib
+import json
 import numbers
 import os
 
@@ -144,9 +145,11 @@ ALTER TABLE scenario_scores
 -- behind it are not. A parser fix, a reinterpreted protobuf, or simply a different
 -- shard carrying the same id — upsert_scores conflicts on scenario_id ALONE and
 -- overwrites `shard`, so that collision is structural, not hypothetical — produces a
--- genuinely different scene under an unchanged key. Every identifier this project had
--- until now (stress_run_id, and the B14 join built on it) is a function of the
--- PERTURBATION, never of the scene, so none of them could see it.
+-- genuinely different scene under an unchanged key. stress_run_id is not a scene
+-- fingerprint: ids written before the provenance was included cover the perturbation,
+-- and current ids also cover the search provenance. Neither hashes the complete
+-- states/validity/types input, so neither can establish which parsed scene the result
+-- belongs to.
 --
 -- A THIRD OWNER, and this is the part worth reading twice. Batch 2 established two
 -- column groups on this table: the latest pass, and the last verified result. This
@@ -216,29 +219,63 @@ OUTCOME_HEADING_BLEND_SINGULARITY = 'heading_blend_singularity'
 OUTCOMES_SEARCH_RAN = frozenset({OUTCOME_COLLISION_FOUND, OUTCOME_NO_COLLISION_FOUND})
 
 
-def compute_stress_run_id(scenario_id, target_idx, delta, method) -> str:
+def compute_stress_run_id(scenario_id, target_idx, delta, method,
+                          search_provenance=None) -> str:
     """
-    A short, deterministic identifier for one stress-test run (audit B14).
+    A short, deterministic identifier for one stress-test result (audit B14).
 
     Stamped on the scenario_scores row and on the perturbed_paths row exported from
     it, so a result and the geometry drawn beside it can be proven to describe the
     same run rather than merely assumed to.
 
-    Deliberately a CONTENT HASH and not a UUID. The project forbids behaviour that
-    depends on wall-clock or randomness, and a content hash additionally gives
-    idempotence for free: re-running the identical delta produces the identical id,
-    so a re-export is a no-op, while any change to the delta produces a different id
-    and is therefore detectable.
+    Deliberately a CONTENT HASH and not a UUID. For a result with search provenance the
+    content includes it: the same delta replayed under a different heading blend,
+    acceleration cap, collision predicate, bound or search budget is not silently
+    treated as the same result. This is load-bearing for the read-side join: otherwise
+    old geometry can keep matching a newly verified row merely because its four delta
+    components happened not to change.
 
-    delta components are formatted with repr(float(...)), which round-trips a
-    binary64 exactly — the same rule _linestring_m_wkt uses for coordinates — so the
-    id cannot drift with float formatting or numpy scalar repr.
+    A result with NO provenance (None) keeps the previous spelling exactly: that is the
+    compatibility path for hand-built callers and for rows stored before the
+    provenance was included, and it is why a bare call with four arguments is
+    unchanged. A result with provenance (including an empty record) uses a canonical,
+    sorted-key JSON object tagged version 2. _json_safe is applied before encoding, so
+    NumPy scalars and non-finite diagnostics follow the same persistence boundary as
+    the JSONB column itself: the writer (which hashes the sanitised record it stores)
+    and the exporter (which may hash the raw one) derive the same id.
+
+    COMPARABLE WITHIN ONE SESSION, NOT GUARANTEED ACROSS MACHINES. The provenance holds
+    measured floats (baseline_replay_error, held_speed_excess and similar) that can
+    differ in the last digit between numpy builds or machines, and the id changes with
+    them. The writer and the exporter run in the same session on the same values, which
+    is the case this identity has to get right; an id recomputed elsewhere from the
+    stored record is expected to match only because JSONB returns each value as it was
+    written (pinned by a test).
 
     Uses hashlib, NOT the builtin hash(), which is salted per process by
     PYTHONHASHSEED and would produce a different id on every run.
     """
-    components = '|'.join(repr(float(x)) for x in (delta if delta is not None else ()))
-    canonical = f'{scenario_id}|{int(target_idx)}|{components}|{method or ""}'
+    components = [float(x) for x in (delta if delta is not None else ())]
+    if search_provenance is None:
+        # Byte-for-byte the previous canonical form. Do not add a prefix: doing so would
+        # invalidate every stored id without changing its meaning.
+        component_text = '|'.join(repr(x) for x in components)
+        canonical = f'{scenario_id}|{int(target_idx)}|{component_text}|{method or ""}'
+    else:
+        canonical = json.dumps(
+            {
+                'version': 2,
+                'scenario_id': str(scenario_id),
+                'target_idx': int(target_idx),
+                'delta': components,
+                'method': method or '',
+                'search_provenance': _json_safe(search_provenance),
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]
 
 
@@ -911,13 +948,16 @@ def update_stress_results(conn, results):
                 method = r.get('method') if search_ran else None
                 target_idx = r.get('target_idx')
 
-                run_id = (compute_stress_run_id(sid, target_idx, delta, method)
-                          if search_ran and target_idx is not None else None)
-
                 # Sanitized at the ONE place every JSONB value passes through (audit
                 # A03), rather than trusting each producer to have remembered.
                 provenance = _json_safe(r.get('search_provenance'))
                 diagnostics = _json_safe(_attempt_diagnostics(r))
+
+                # AFTER the sanitising, from the record that is about to be stored: the id
+                # covers the provenance, and the exporter derives it again from the same
+                # record (compute_stress_run_id sanitises it itself, idempotently).
+                run_id = (compute_stress_run_id(sid, target_idx, delta, method, provenance)
+                          if search_ran and target_idx is not None else None)
 
                 # WHAT THIS ATTEMPT WAS SEARCHED AGAINST (fix F02), captured by
                 # _stress_one at entry — see its own comment. None for every outcome
