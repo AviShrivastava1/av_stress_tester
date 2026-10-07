@@ -1171,6 +1171,7 @@ def test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak(tmp_p
                test.
     """
     import importlib.util
+    import re
     import subprocess
 
     if os.environ.get(_F06_SUBPROCESS_GUARD_ENV) == '1':
@@ -1229,7 +1230,15 @@ def test_F06_the_two_named_victims_fail_only_on_missing_waymo_not_the_leak(tmp_p
                 f'{node_id} did not fail the expected way '
                 f'(outcome={outcomes[node_id]!r}):\n{output[-3000:]}'
             )
-        assert output.count("ModuleNotFoundError: No module named 'waymo_open_dataset'") == 2, (
+        # Count TRACEBACK lines only (`E   <exception>`, one per failed test). The
+        # `-rpf` summary lines (`FAILED <nodeid> - <message>`) carry the same message
+        # when pytest runs on CI (CI=true) or in a wide terminal, and trim it away
+        # otherwise, so a bare substring count changes with the environment.
+        missing_waymo = re.findall(
+            r"^E[ \t]+ModuleNotFoundError: No module named 'waymo_open_dataset'[ \t]*$",
+            output, flags=re.MULTILINE,
+        )
+        assert len(missing_waymo) == 2, (
             f'expected exactly the standard missing-waymo failure for both named tests:\n'
             f'{output[-3000:]}'
         )
