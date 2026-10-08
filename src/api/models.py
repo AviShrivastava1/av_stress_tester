@@ -252,6 +252,14 @@ class AgentTrack(BaseModel):
 
     `path`, `timesteps` and `headings` are index-aligned: element i of each
     describes the same vertex. Coordinates are LOCAL PLANAR METRES, not lon/lat.
+
+    `lengths_m` and `widths_m` are index-aligned with them too: element i is the
+    agent's box size at vertex i, which is the size the collision check used at that
+    frame. A null ELEMENT means the recorded size at that frame was unusable (not
+    finite, or not above zero). A null ARRAY means this agent was exported before
+    per-frame sizes were recorded, or the database has no such columns; `length_m` and
+    `width_m` (read at the first valid frame) are all there is then. The scalars are
+    unchanged and remain what they were.
     """
 
     agent_idx: int
@@ -259,6 +267,8 @@ class AgentTrack(BaseModel):
     is_sdc: bool
     length_m: float | None = None
     width_m: float | None = None
+    lengths_m: list[float | None] | None = None
+    widths_m: list[float | None] | None = None
     path: list[list[float]]       # [[x, y], ...]
     timesteps: list[float]        # the M ordinate — which frame each vertex is
     headings: list[float]         # radians; needed to draw a rotated box, not a dot

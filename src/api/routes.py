@@ -10,6 +10,7 @@ through one helper here so the summary and detail paths cannot drift apart.
 
 import base64
 import json
+import math
 import unicodedata
 from typing import Annotated
 
@@ -40,6 +41,15 @@ _SCORE_COLUMNS = """
 """
 
 
+# The per-frame size columns of scenario_agents, as the two reads of it select them. The second
+# form is what a database without the columns gets (see _columns_exist): the rows then carry the
+# same keys with NULL arrays, so nothing downstream branches. Both are fixed text, never built
+# from input.
+_SIZE_COLUMNS = "sa.lengths_m, sa.widths_m"
+_NO_SIZE_COLUMNS = ("NULL::double precision[] AS lengths_m, "
+                    "NULL::double precision[] AS widths_m")
+
+
 # ── guards ──────────────────────────────────────────────────────────────────────
 
 def _table_exists(cur, table: str) -> bool:
@@ -68,6 +78,37 @@ def _table_exists(cur, table: str) -> bool:
     check inline, so the codebase has one idea here, not two.
     """
     cur.execute('SELECT to_regclass(%s) IS NOT NULL AS present', (table,))
+    return bool(cur.fetchone()['present'])
+
+
+def _columns_exist(cur, table: str, columns) -> bool:
+    """
+    Does this table have ALL of these columns?
+
+    The same pattern as _table_exists, for the same three reasons, applied to columns:
+    "the database predates (or was restored to a state before) these columns" is a normal
+    state to answer, not an exception to catch; a precheck tolerates exactly that and nothing
+    else, so a genuine failure (a permission error on a column that exists, a corrupt row)
+    still raises; and a failed statement would poison the transaction of a pooled connection.
+
+    It exists because the API can be running while the database changes underneath it: a
+    rollback to a backup taken before scenario_agents had per-frame sizes drops the columns
+    from a live API's tables. Asked on every request that is about to read them, never cached
+    in the process, so a restore in either direction is followed without a restart.
+
+    One indexed pg_attribute lookup (to_regclass makes a missing table a plain False, as in
+    _table_exists). Dropped columns stay in the catalog flagged attisdropped, so they are
+    excluded. A table with only some of the columns counts as not having them: no schema this
+    project has produced has one without the other.
+    """
+    columns = list(columns)
+    cur.execute("""
+        SELECT count(*) = %s AS present
+          FROM pg_attribute
+         WHERE attrelid = to_regclass(%s)
+           AND attname = ANY(%s)
+           AND attnum > 0 AND NOT attisdropped
+    """, (len(columns), table, columns))
     return bool(cur.fetchone()['present'])
 
 
@@ -254,6 +295,7 @@ def _geojson_xy(geojson_str: str) -> list[list[float]]:
 
 def _make_track(row, *, geojson, measures, agent_idx, is_sdc,
                 agent_type=None, length_m=None, width_m=None,
+                lengths_m=None, widths_m=None,
                 label='') -> AgentTrack:
     """
     Assemble an AgentTrack, refusing to guess if the pieces do not line up.
@@ -275,6 +317,15 @@ def _make_track(row, *, geojson, measures, agent_idx, is_sdc,
 
     So: raise. A 500 that names the mismatch is strictly better than a chart that
     looks right and is not.
+
+    THE PER-FRAME SIZES FOLLOW THE SAME RULE. `lengths_m` and `widths_m` describe the same
+    vertices too, so a non-null array must be exactly as long as the path: no padding, no
+    truncation. They are also all-or-nothing. The exporter writes both in one statement, so
+    exactly one being NULL is a partially written or hand-edited row, and serving one of
+    them would let a client draw a box from a per-frame length and a scalar width. A stored
+    element that is not finite is refused by name rather than left to fail in the JSON
+    encoder (which would be an unnamed 500) and rather than turned into null (a guess).
+    Null ELEMENTS are normal: the export stores one where the recorded size was unusable.
     """
     path = _geojson_xy(geojson)
     timesteps = [float(m) for m in (measures or [])]
@@ -288,16 +339,73 @@ def _make_track(row, *, geojson, measures, agent_idx, is_sdc,
                     f"{len(headings)} headings. Refusing to pad or truncate."),
         )
 
+    if (lengths_m is None) != (widths_m is None):
+        missing, present = (('lengths_m', 'widths_m') if lengths_m is None
+                            else ('widths_m', 'lengths_m'))
+        raise HTTPException(
+            status_code=500,
+            detail=(f"Geometry inconsistent for {label}: {missing} is NULL but {present} "
+                    f"is not. Refusing to serve half of the per-frame sizes."),
+        )
+    if lengths_m is not None:
+        if len(lengths_m) != len(path) or len(widths_m) != len(path):
+            raise HTTPException(
+                status_code=500,
+                detail=(f"Geometry inconsistent for {label}: "
+                        f"{len(path)} coordinates, {len(lengths_m)} lengths_m, "
+                        f"{len(widths_m)} widths_m. Refusing to pad or truncate."),
+            )
+        for name, values in (('lengths_m', lengths_m), ('widths_m', widths_m)):
+            for i, value in enumerate(values):
+                if value is not None and not math.isfinite(value):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(f"Geometry inconsistent for {label}: {name}[{i}] is "
+                                f"{value!r}, which is neither a finite number nor NULL. "
+                                f"Refusing to serve it."),
+                    )
+
     return AgentTrack(
         agent_idx=agent_idx,
         agent_type=agent_type,
         is_sdc=is_sdc,
         length_m=length_m,
         width_m=width_m,
+        lengths_m=lengths_m,
+        widths_m=widths_m,
         path=path,
         timesteps=timesteps,
         headings=headings,
     )
+
+
+def _require_borrowed_sizes_to_fit(baseline, perturbed, scenario_id) -> None:
+    """
+    The perturbed track has no sizes of its own: it carries the baseline row's arrays, which
+    are aligned with the BASELINE's frames. They describe the perturbed path only if both
+    cover the same frames. The two exports take them from the same validity of the same scene,
+    and the read side matches both on that scene, so this holds for everything the pipeline
+    writes. It is checked anyway, because when it does not hold the sizes would be attached to
+    the wrong moments in time, which is the failure _make_track exists to refuse.
+
+    Only when the borrowed arrays exist: a row with no arrays has nothing to misalign, and
+    serves exactly what it served before. The array LENGTH against the perturbed path is
+    already checked in _make_track, for each track against its own path, and both tracks carry
+    the same arrays, so by the time this runs the two frame lists have the same length and only
+    their values can differ. This compares the values and names the first difference.
+    """
+    if baseline is None or perturbed.lengths_m is None:
+        return
+    base_frames, pert_frames = baseline.timesteps, perturbed.timesteps
+    for i, (b, p) in enumerate(zip(base_frames, pert_frames)):
+        if b != p:
+            raise HTTPException(
+                status_code=500,
+                detail=(f"Geometry inconsistent for {scenario_id} agent {perturbed.agent_idx} "
+                        f"(perturbed): the per-frame sizes follow the baseline's frames, but the "
+                        f"first difference is at index {i} ({b} in the baseline, {p} in the "
+                        f"perturbed path). Refusing to attach them."),
+            )
 
 
 # ── cursor encoding ─────────────────────────────────────────────────────────────
@@ -706,9 +814,17 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
         # export_scenario_agents's own FOR UPDATE check is the write-time half. Same
         # IS NOT DISTINCT FROM carve-out as scene_fingerprint: a legacy pair (NULL on
         # both sides) keeps serving exactly what it always served.
-        cur.execute("""
+        #
+        # THE PER-FRAME SIZES ARE SELECTED ONLY IF THE COLUMNS EXIST. A database restored from
+        # a backup that predates them would otherwise turn this route into a 500 for every
+        # scenario; with them absent the agents come back with null arrays and the scalars,
+        # which is exactly what a row exported before the columns existed already gets.
+        size_columns = (_SIZE_COLUMNS
+                        if _columns_exist(cur, 'scenario_agents', ('lengths_m', 'widths_m'))
+                        else _NO_SIZE_COLUMNS)
+        cur.execute(f"""
             SELECT sa.agent_idx, sa.agent_type, sa.is_sdc,
-                   sa.length_m, sa.width_m, sa.headings,
+                   sa.length_m, sa.width_m, {size_columns}, sa.headings,
                    ST_AsGeoJSON(sa.path) AS geojson,
                    ARRAY(SELECT ST_M(dp.geom)
                            FROM ST_DumpPoints(sa.path) dp
@@ -732,6 +848,7 @@ def get_trajectories(scenario_id: ScenarioId, conn=Depends(get_db)):
             agent_idx=r['agent_idx'], is_sdc=r['is_sdc'],
             agent_type=r['agent_type'],
             length_m=r['length_m'], width_m=r['width_m'],
+            lengths_m=r['lengths_m'], widths_m=r['widths_m'],
             label=f"{scenario_id} agent {r['agent_idx']}",
         )
         for r in rows
@@ -776,9 +893,10 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
         # to base_row=None, a shape the code below already handles.
         #
         # That degraded shape has a consequence worth knowing: agent_type, length_m and
-        # width_m are read off base_row, so a perturbed track served without
-        # scenario_agents carries a real path and NULL dimensions — drawable as a line,
-        # not as a box. Pinned by test_only_one_geometry_table_present_still_degrades.
+        # width_m (and the per-frame lengths_m / widths_m) are read off base_row, so a
+        # perturbed track served without scenario_agents carries a real path and NULL
+        # dimensions — drawable as a line, not as a box. Pinned by
+        # test_only_one_geometry_table_present_still_degrades.
         pert_row = None
         if _table_exists(cur, 'perturbed_paths'):
             # Join on stress_run_id, so a path exported from an OLDER delta is simply
@@ -865,9 +983,13 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
             # because it has no earlier read to race against; copying it here would
             # reopen exactly the window R03 closed. pert_row matching proves nothing
             # about this table — see the comment above this whole block.
-            cur.execute("""
+            # Per-frame size columns only if they exist; see get_trajectories.
+            size_columns = (_SIZE_COLUMNS
+                            if _columns_exist(cur, 'scenario_agents', ('lengths_m', 'widths_m'))
+                            else _NO_SIZE_COLUMNS)
+            cur.execute(f"""
                 SELECT sa.agent_idx, sa.agent_type, sa.is_sdc,
-                       sa.length_m, sa.width_m, sa.headings,
+                       sa.length_m, sa.width_m, {size_columns}, sa.headings,
                        ST_AsGeoJSON(sa.path) AS geojson,
                        ARRAY(SELECT ST_M(dp.geom)
                                FROM ST_DumpPoints(sa.path) dp
@@ -885,6 +1007,7 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
                     agent_idx=base_row['agent_idx'], is_sdc=base_row['is_sdc'],
                     agent_type=base_row['agent_type'],
                     length_m=base_row['length_m'], width_m=base_row['width_m'],
+                    lengths_m=base_row['lengths_m'], widths_m=base_row['widths_m'],
                     label=f"{scenario_id} agent {base_row['agent_idx']} (baseline)",
                 )
 
@@ -897,8 +1020,11 @@ def get_perturbed(scenario_id: ScenarioId, conn=Depends(get_db)):
                 agent_type=base_row['agent_type'] if base_row else None,
                 length_m=base_row['length_m'] if base_row else None,
                 width_m=base_row['width_m'] if base_row else None,
+                lengths_m=base_row['lengths_m'] if base_row else None,
+                widths_m=base_row['widths_m'] if base_row else None,
                 label=f"{scenario_id} agent {pert_row['target_idx']} (perturbed)",
             )
+            _require_borrowed_sizes_to_fit(baseline, perturbed, scenario_id)
 
         # LABEL RESOLUTION DOES NOT NEED THE PERTURBED PATH (audit B13, reached via
         # R06's target_idx column).

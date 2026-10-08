@@ -279,6 +279,48 @@
             ],
             "title": "Width M"
           },
+          "lengths_m": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lengths M"
+          },
+          "widths_m": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Widths M"
+          },
           "path": {
             "items": {
               "items": {
@@ -313,7 +355,7 @@
           "headings"
         ],
         "title": "AgentTrack",
-        "description": "One agent's path through space and time.\n\n`path`, `timesteps` and `headings` are index-aligned: element i of each\ndescribes the same vertex. Coordinates are LOCAL PLANAR METRES, not lon/lat."
+        "description": "One agent's path through space and time.\n\n`path`, `timesteps` and `headings` are index-aligned: element i of each\ndescribes the same vertex. Coordinates are LOCAL PLANAR METRES, not lon/lat.\n\n`lengths_m` and `widths_m` are index-aligned with them too: element i is the\nagent's box size at vertex i, which is the size the collision check used at that\nframe. A null ELEMENT means the recorded size at that frame was unusable (not\nfinite, or not above zero). A null ARRAY means this agent was exported before\nper-frame sizes were recorded, or the database has no such columns; `length_m` and\n`width_m` (read at the first valid frame) are all there is then. The scalars are\nunchanged and remain what they were."
       },
       "HTTPValidationError": {
         "properties": {
