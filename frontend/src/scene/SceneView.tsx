@@ -3,15 +3,18 @@ import { describeAgentType } from '../domain/agentTypes';
 import {
   footprint,
   frontCentre,
-  hasDimensions,
+  largestDimension,
   niceScaleLength,
+  observationAt,
   padBounds,
-  poseAt,
   segments,
+  sizeSummary,
   toSvg,
   trackBounds,
   viewBox,
+  type Observation,
   type Point,
+  type TrackGeometry,
 } from './geometry';
 import type { DrawnTrack, Role } from './sceneModel';
 
@@ -29,12 +32,39 @@ function svgPoints(points: readonly Point[]): string {
   return points.map((p) => toSvg(p).join(',')).join(' ');
 }
 
-function describeTrack(d: DrawnTrack): string {
+/**
+ * The sizes a track is drawn with, for a title. A track drawn from the scalars keeps its
+ * one-decimal size. A track drawn from per-frame sizes gives each dimension as one value only
+ * if it never varies, otherwise as the range its boxes take, to two decimals: the differences
+ * between frames are a few centimetres, which one decimal would hide.
+ */
+function describeSize(track: TrackGeometry): string {
+  const s = sizeSummary(track);
+  if (s.kind === 'none') return 'dimensions unknown';
+  if (s.kind === 'scalar') return `${s.length.toFixed(1)} × ${s.width.toFixed(1)} m`;
+  const span = (r: { min: number; max: number }) =>
+    r.min === r.max ? r.min.toFixed(2) : `${r.min.toFixed(2)}–${r.max.toFixed(2)}`;
+  return s.length.min === s.length.max && s.width.min === s.width.max
+    ? `${span(s.length)} × ${span(s.width)} m`
+    : `length ${span(s.length)} m, width ${span(s.width)} m`;
+}
+
+function describeBase(d: DrawnTrack): string {
   const t = d.track;
-  const dims = hasDimensions(t)
-    ? `${t.length_m!.toFixed(1)} × ${t.width_m!.toFixed(1)} m`
-    : 'dimensions unknown';
-  return `${ROLE_LABEL[d.role]} · agent ${t.agent_idx} · ${describeAgentType(t.agent_type).label} · ${dims}`;
+  return `${ROLE_LABEL[d.role]} · agent ${t.agent_idx} · ${describeAgentType(t.agent_type).label}`;
+}
+
+/** The static path title: the sizes the track is drawn with, which may vary by frame. */
+function describeTrack(d: DrawnTrack): string {
+  return `${describeBase(d)} · ${describeSize(d.track)}`;
+}
+
+/** The footprint title: for a per-frame track, the size drawn at THIS frame. */
+function describeFootprint(d: DrawnTrack, o: Observation, frame: number): string {
+  if (o.source === 'scalar') return describeTrack(d);
+  return o.size === null
+    ? `${describeBase(d)} · size not recorded at frame ${frame}`
+    : `${describeBase(d)} · ${o.size.length.toFixed(2)} × ${o.size.width.toFixed(2)} m at frame ${frame}`;
 }
 
 export interface SceneViewProps {
@@ -59,10 +89,8 @@ interface Layout {
 function computeLayout(drawn: DrawnTrack[], focus: DrawnTrack[]): Layout | null {
   const raw = trackBounds(focus.map((d) => d.track)) ?? trackBounds(drawn.map((d) => d.track));
   if (raw === null) return null;
-  const largest = Math.max(
-    0,
-    ...focus.filter((d) => hasDimensions(d.track)).map((d) => Math.max(d.track.length_m!, d.track.width_m!)),
-  );
+  // The largest box any focused track can show at ANY frame: the layout does not change with the frame.
+  const largest = Math.max(0, ...focus.map((d) => largestDimension(d.track)));
   const span0 = Math.max(raw.maxX - raw.minX, raw.maxY - raw.minY);
   const vb = viewBox(padBounds(raw, (largest || DEFAULT_MARGIN_M) + 0.05 * span0));
   const span = Math.max(vb.width, vb.height);
@@ -125,8 +153,9 @@ function FootprintLayer({
   return (
     <>
       {drawn.map((d) => {
-        const pose = poseAt(d.track, frame);
-        if (pose === null) return null;
+        const observation = observationAt(d.track, frame);
+        if (observation === null) return null;
+        const { pose, size } = observation;
         const colliding = atCollision && (d.role === 'sdc' || d.role === 'challenger_perturbed');
         const ghost = d.role === 'challenger_logged' && hasPerturbed;
         const className = [
@@ -139,7 +168,7 @@ function FootprintLayer({
           .filter(Boolean)
           .join(' ');
 
-        if (!hasDimensions(d.track)) {
+        if (size === null) {
           const [cx, cy] = toSvg([pose.x, pose.y]);
           return (
             <circle
@@ -153,11 +182,11 @@ function FootprintLayer({
               r={dotRadius}
               vectorEffect="non-scaling-stroke"
             >
-              <title>{describeTrack(d)}</title>
+              <title>{describeFootprint(d, observation, frame)}</title>
             </circle>
           );
         }
-        const length = d.track.length_m!;
+        const { length, width } = size;
         return (
           <g
             key={`fp-${d.key}`}
@@ -166,9 +195,9 @@ function FootprintLayer({
             data-shape="box"
             data-colliding={colliding || undefined}
           >
-            <title>{describeTrack(d)}</title>
+            <title>{describeFootprint(d, observation, frame)}</title>
             <polygon
-              points={svgPoints(footprint(pose, length, d.track.width_m!))}
+              points={svgPoints(footprint(pose, length, width))}
               vectorEffect="non-scaling-stroke"
             />
             <line

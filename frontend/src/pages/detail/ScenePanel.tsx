@@ -3,7 +3,7 @@ import { useMemo, useState, type KeyboardEvent } from 'react';
 import type { PerturbedResponse, ScenarioDetail, TrajectoryResponse } from '../../api/client';
 import { describeError } from '../../api/errors';
 import { describeAgentType, type AgentKind } from '../../domain/agentTypes';
-import { chooseReferenceFrame, poseAt } from '../../scene/geometry';
+import { chooseReferenceFrame, perFrameSizes, poseAt } from '../../scene/geometry';
 import { PlaybackControls } from '../../scene/PlaybackControls';
 import { frameRange } from '../../scene/playback';
 import {
@@ -21,16 +21,37 @@ import { usePlayback } from '../../scene/usePlayback';
 import { RequestError } from '../../components/RequestError';
 
 /**
- * The scene draws ONE box size per agent, from its first observed frame, because that is all
- * the geometry export stores. The search's exact collision check used each agent's size in
- * every frame, so at the collision frame the drawn boxes may not touch. Shown only where the
- * page marks a colliding pair: the perturbed path is drawn AND a collision frame is set.
+ * How the colliding pair's boxes are drawn, in three cases. Shown only where the page marks a
+ * colliding pair: the perturbed path is drawn AND a collision frame is set.
+ *
+ * A track exported without per-frame sizes (or whose arrays do not fit its path) is drawn at ONE
+ * size, from its first observed frame. The search's exact collision check used each agent's size
+ * in every frame, so at the collision frame such boxes may not touch. A track with per-frame
+ * sizes is drawn at the size stored for the frame shown, which is the size the check used.
+ *
+ * The pair is the SDC and the perturbed challenger, whichever of them are drawn.
  */
-const BOX_SIZE_NOTE =
+const BOX_SIZE_NOTE_SCALAR =
   "Boxes are drawn at each agent's size in its first observed frame. The collision check used " +
   "each agent's size in every frame, so at the collision frame the drawn boxes may not touch. " +
   'Contact is decided at the precision of the stored positions, up to about a millimetre at the ' +
   'coordinates in this data.';
+const BOX_SIZE_NOTE_PER_FRAME =
+  "Boxes are drawn at each agent's stored size for the frame shown, the size the collision check used. " +
+  'Contact is decided at the precision of the stored positions, up to about a millimetre at the ' +
+  'coordinates in this data.';
+const BOX_SIZE_NOTE_MIXED =
+  "Some boxes are drawn at the agent's size in its first observed frame, because no per-frame sizes " +
+  "are stored for that agent. The collision check used each agent's size in every frame, so at the " +
+  'collision frame the drawn boxes may not touch. Contact is decided at the precision of the stored ' +
+  'positions, up to about a millimetre at the coordinates in this data.';
+
+function boxSizeNote(drawn: DrawnTrack[]): string {
+  const pair = drawn.filter((d) => d.role === 'sdc' || d.role === 'challenger_perturbed');
+  const perFrame = pair.filter((d) => perFrameSizes(d.track) !== null).length;
+  if (perFrame === 0) return BOX_SIZE_NOTE_SCALAR;
+  return perFrame === pair.length ? BOX_SIZE_NOTE_PER_FRAME : BOX_SIZE_NOTE_MIXED;
+}
 
 const GEOMETRY_ABSENT_REASON =
   'Either it has not been exported yet, or it was exported from a scene that no longer ' +
@@ -140,7 +161,7 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
     if (note !== null) notes.push(note);
   }
   // Not tied to the playhead: unlike the reference-frame note above, it describes how every frame is drawn.
-  if (collisionFrame !== null) notes.push(BOX_SIZE_NOTE);
+  if (collisionFrame !== null) notes.push(boxSizeNote(drawn));
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     // Bound to the scene frame only; the scrubber and buttons sit outside it and keep

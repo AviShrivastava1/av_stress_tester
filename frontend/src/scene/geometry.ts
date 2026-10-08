@@ -17,6 +17,8 @@ export interface TrackGeometry {
   headings: number[];
   length_m?: number | null;
   width_m?: number | null;
+  lengths_m?: readonly (number | null)[] | null;
+  widths_m?: readonly (number | null)[] | null;
 }
 
 export interface Pose {
@@ -66,15 +68,20 @@ export function segments(track: TrackGeometry): Point[][] {
  * no interpolation: `timesteps` is ascending, so a binary search suffices.
  */
 export function poseAt(track: TrackGeometry, frame: number): Pose | null {
+  const i = indexAt(track, frame);
+  if (i === null) return null;
+  const [x, y] = pointAt(track, i);
+  return { x, y, heading: track.headings[i]! };
+}
+
+/** The vertex index at which the agent was observed at `frame`, or null. */
+export function indexAt(track: TrackGeometry, frame: number): number | null {
   let lo = 0;
   let hi = track.timesteps.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const t = track.timesteps[mid]!;
-    if (t === frame) {
-      const [x, y] = pointAt(track, mid);
-      return { x, y, heading: track.headings[mid]! };
-    }
+    if (t === frame) return mid;
     if (t < frame) lo = mid + 1;
     else hi = mid - 1;
   }
@@ -191,4 +198,109 @@ export function chooseReferenceFrame(
   }
   const earliest = Math.min(...nonEmpty.map((t) => t.timesteps[0]!));
   return { kind: 'earliest_observed', frame: earliest };
+}
+
+/** The size an agent's box is drawn at, in metres. */
+export interface BoxSize {
+  length: number;
+  width: number;
+}
+
+/**
+ * Where an agent was at a frame and the box it is drawn with there. `size` is null where no
+ * box can be drawn (the agent draws as a dot). `source` says which sizes were consulted:
+ * the per-frame arrays, or the scalar length_m / width_m.
+ */
+export interface Observation {
+  pose: Pose;
+  size: BoxSize | null;
+  source: 'per_frame' | 'scalar';
+}
+
+/** What a title may say about the sizes a track is drawn with. */
+export type SizeSummary =
+  | { kind: 'none' }
+  | { kind: 'scalar'; length: number; width: number }
+  | { kind: 'per_frame'; length: { min: number; max: number }; width: { min: number; max: number } };
+
+/**
+ * The per-frame size arrays, or null when this track is not drawn from them: either is
+ * missing, or either is not exactly as long as the path. Both arrays or neither, never one
+ * and never a prefix: an array that does not line up with the path says nothing reliable
+ * about any vertex. (The API refuses such a track with a 500, so the length test is a guard
+ * for a state that should not arrive.)
+ */
+export function perFrameSizes(
+  track: TrackGeometry,
+): { lengths: readonly (number | null)[]; widths: readonly (number | null)[] } | null {
+  const lengths = track.lengths_m;
+  const widths = track.widths_m;
+  if (!lengths || !widths) return null;
+  if (lengths.length !== track.path.length || widths.length !== track.path.length) return null;
+  return { lengths, widths };
+}
+
+/**
+ * Where the agent was AT `frame` and the box it has there, or null if it was not observed.
+ *
+ * The collision check builds each box from the size recorded at the frame it is checking, so a
+ * track with per-frame sizes is drawn the same way: the pose and the size are read at ONE
+ * vertex index, the one `indexAt` finds, so they cannot describe different frames. An element
+ * that is null, not finite or not above zero draws a dot, never the scalar: a box needs a
+ * length and a width that were measured at that frame. A track without usable per-frame
+ * arrays is drawn from the scalars, exactly as it always was.
+ */
+export function observationAt(track: TrackGeometry, frame: number): Observation | null {
+  const i = indexAt(track, frame);
+  if (i === null) return null;
+  const [x, y] = pointAt(track, i);
+  const pose: Pose = { x, y, heading: track.headings[i]! };
+
+  const sizes = perFrameSizes(track);
+  if (sizes !== null) {
+    const length = sizes.lengths[i];
+    const width = sizes.widths[i];
+    return { pose, size: usable(length) && usable(width) ? { length, width } : null, source: 'per_frame' };
+  }
+  return {
+    pose,
+    size: hasDimensions(track) ? { length: track.length_m!, width: track.width_m! } : null,
+    source: 'scalar',
+  };
+}
+
+/**
+ * The largest dimension of any box this track can be drawn with at any frame: what the margin
+ * around the view must clear. 0 when nothing can be drawn.
+ */
+export function largestDimension(track: TrackGeometry): number {
+  const sizes = perFrameSizes(track);
+  if (sizes === null) return hasDimensions(track) ? Math.max(track.length_m!, track.width_m!) : 0;
+  let largest = 0;
+  for (let i = 0; i < sizes.lengths.length; i++) {
+    const length = sizes.lengths[i];
+    const width = sizes.widths[i];
+    if (usable(length) && usable(width)) largest = Math.max(largest, length, width);
+  }
+  return largest;
+}
+
+/** The sizes a track is drawn with, summarised for a title: one size, or the range over its boxes. */
+export function sizeSummary(track: TrackGeometry): SizeSummary {
+  const sizes = perFrameSizes(track);
+  if (sizes === null) {
+    return hasDimensions(track)
+      ? { kind: 'scalar', length: track.length_m!, width: track.width_m! }
+      : { kind: 'none' };
+  }
+  let length: { min: number; max: number } | null = null;
+  let width: { min: number; max: number } | null = null;
+  for (let i = 0; i < sizes.lengths.length; i++) {
+    const l = sizes.lengths[i];
+    const w = sizes.widths[i];
+    if (!usable(l) || !usable(w)) continue;
+    length = length === null ? { min: l, max: l } : { min: Math.min(length.min, l), max: Math.max(length.max, l) };
+    width = width === null ? { min: w, max: w } : { min: Math.min(width.min, w), max: Math.max(width.max, w) };
+  }
+  return length === null || width === null ? { kind: 'none' } : { kind: 'per_frame', length, width };
 }
