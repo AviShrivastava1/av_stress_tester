@@ -6,6 +6,8 @@ under a kinematic model, and searches for the smallest change to that agent's mo
 makes its oriented bounding box intersect the self-driving car's. The results are stored
 in PostgreSQL/PostGIS, served by a read-only API, and replayed frame by frame in a web app.
 
+Deployed site: https://av-stress-tester.vercel.app/ (it shows stored results only).
+
 Deploying the API (Render) and the frontend (Vercel): see [DEPLOY.md](DEPLOY.md).
 How a scene becomes a stored result is also described on the site's Method page.
 
