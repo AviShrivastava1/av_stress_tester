@@ -448,6 +448,19 @@ def _encode_cursor(fragility_score: float, scenario_id: str) -> str:
     return base64.urlsafe_b64encode(payload.encode('utf-8')).decode('ascii')
 
 
+# The longest cursor _encode_cursor can produce, derived from the id bound enforced below
+# (_MAX_SCENARIO_ID_LEN). json.dumps writes non-ASCII as \uXXXX escapes, so the worst id is one of
+# astral characters, 12 bytes each (a surrogate pair); 64 more bytes cover '{"f":,"s":""}' and the
+# longest float repr (24 characters). The cap is twice the base64 length of that, so it cannot refuse
+# a cursor the server minted, and it exists so a client cannot make the server base64-decode and
+# JSON-parse an arbitrarily large query string. (uvicorn 0.52.4 on its own refuses a request line of
+# about 64 kB with a 400 before it reaches here; the cap is for any other way in.)
+_MAX_CURSOR_JSON_BYTES = 12 * _MAX_SCENARIO_ID_LEN + 64
+_MAX_CURSOR_LEN = 2 * 4 * ((_MAX_CURSOR_JSON_BYTES + 2) // 3)
+
+_MALFORMED_CURSOR = "Malformed cursor. Pass back a next_cursor value verbatim."
+
+
 def _decode_cursor(cursor: str) -> tuple[float, str]:
     """
     Decode a cursor, or fail with 422.
@@ -455,22 +468,51 @@ def _decode_cursor(cursor: str) -> tuple[float, str]:
     A malformed cursor is a bad REQUEST, not a server fault — the client sent
     something we cannot parse. Letting the base64/JSON error escape would produce a
     500 and page whoever is on call for what is really a client bug.
+
+    WHAT IS ACCEPTED is exactly what _encode_cursor writes: a finite float score and a
+    string id, in that canonical form (decoded and re-encoded, it must equal the string
+    that came in). That makes "pass a next_cursor back verbatim" the rule rather than a
+    request. Anything else is refused, because the alternatives are all silent:
+      * NaN, +-inf and 1e999 make `fragility_score < f0` true for every row (Postgres
+        sorts NaN above every number), so the response would be the FIRST page again,
+        with a 200, and a client that followed it could loop;
+      * float()/str() would turn "2.0", true, 5, null or [1] into positions nobody minted;
+      * trailing junk, extra keys, whitespace or "2" for "2.0" decode to a usable
+        position that is not what the server sent.
+    A finite score and a string id that no page produced are a valid POSITION and are
+    accepted: the cursor is unsigned, so it cannot be told from a real one.
+
+    The exceptions are listed, not blanketed. json.loads raises RecursionError on deeply
+    nested input and float(int) raises OverflowError on a huge integer literal; neither
+    is a ValueError. UnicodeError covers a non-ASCII string (ValueError already includes
+    it, and binascii.Error and JSONDecodeError, so this is written out for the reader).
     """
+    if len(cursor) > _MAX_CURSOR_LEN:
+        raise HTTPException(status_code=422, detail=_MALFORMED_CURSOR)
     try:
         payload = json.loads(base64.urlsafe_b64decode(cursor.encode('ascii')))
-        fragility_score, scenario_id = float(payload['f']), str(payload['s'])
-    except Exception:
-        raise HTTPException(
-            status_code=422,
-            detail="Malformed cursor. Pass back a next_cursor value verbatim.",
-        )
+        if not isinstance(payload, dict):
+            raise ValueError('cursor payload is not an object')
+        raw_score, scenario_id = payload.get('f'), payload.get('s')
+        if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
+            raise ValueError('cursor score is not a number')
+        if not isinstance(scenario_id, str):
+            raise ValueError('cursor id is not a string')
+        fragility_score = float(raw_score)
+        if not math.isfinite(fragility_score):
+            raise ValueError('cursor score is not finite')
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
+        raise HTTPException(status_code=422, detail=_MALFORMED_CURSOR)
 
     # Decoding SUCCEEDING is not the same as the payload being usable (audit B17). A
     # cursor whose 's' carries a NUL byte parses cleanly here and then fails at the
     # psycopg2 layer, which surfaces as a 500 for what is a malformed request. The
     # check sits outside the try so its own 422 is not swallowed and relabelled by the
-    # blanket handler above.
+    # handler above.
     _reject_unstorable_text(scenario_id, 'Cursor scenario id')
+
+    if _encode_cursor(fragility_score, scenario_id) != cursor:
+        raise HTTPException(status_code=422, detail=_MALFORMED_CURSOR)
     return fragility_score, scenario_id
 
 

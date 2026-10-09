@@ -502,6 +502,23 @@ def test_control_characters_in_the_cursor_payload_are_rejected(conn, client, bad
 
 
 @requires_db
+@pytest.mark.parametrize('payload', ['{"f":NaN,"s":"a"}', '{"f":Infinity,"s":"a"}', '{"f":1e999,"s":"a"}'])
+def test_a_non_finite_cursor_is_refused_not_served_as_a_restart_from_the_top(conn, client, payload):
+    """
+    Before this was refused, `fragility_score < 'NaN'` (Postgres sorts NaN above every number)
+    was true for every row, so the response was the FIRST page again, with a 200. A client that
+    followed such a cursor would repeat page 1 for ever.
+    """
+    for sid, score in [('a', 3.0), ('b', 2.0), ('c', 1.0)]:
+        db.upsert_scores(conn, [dict(scenario_id=sid, shard='synthetic', n_agents=2,
+                                     min_ttc=9.0, min_pet=9.0, fragility_score=score)])
+    cursor = base64.urlsafe_b64encode(payload.encode()).decode()
+    response = client.get('/scenarios', params={'cursor': cursor, 'limit': 10})
+    assert response.status_code == 422, response.text
+    assert response.json() == {'detail': 'Malformed cursor. Pass back a next_cursor value verbatim.'}
+
+
+@requires_db
 @pytest.mark.parametrize('suffix', ['', '/trajectories', '/perturbed'])
 def test_every_scenario_route_validates_its_path_parameter(conn, client, suffix):
     """The dependency is applied to all three, so a new route cannot quietly skip it."""
