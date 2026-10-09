@@ -238,14 +238,10 @@ VITE_API_BASE_URL=https://api.example.invalid npm run build
 
 The code is released under the [MIT License](LICENSE).
 
-<!-- TODO(Avi): confirm against the Waymo Open Dataset license. -->
 Raw Waymo Open Motion Dataset TFRecords are not in this repository (`/data/` and
 `*.tfrecord` are git-ignored). The site shows trajectories derived from the dataset for
 20 scenarios, with the attribution Waymo's license requires on every page. The data
 remains under Waymo's terms.
-
-<!-- TODO(Avi): DEPLOY.md quotes Vercel's Hobby plan as "non-commercial, personal use only".
-Decide whether this README should say anything about that. It is deliberately not repeated here. -->
 
 ## Author
 
