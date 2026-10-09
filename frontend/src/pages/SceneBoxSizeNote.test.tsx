@@ -85,6 +85,7 @@ describe('box-size note: when it is shown', () => {
     open();
     await screen.findByTestId('frame-readout');
     expect(note()).toBeInTheDocument();
+    expect(note()).toBeVisible();
     expect(note()?.tagName).toBe('P');
     expect(note()).toHaveClass('note');
   });
@@ -149,7 +150,7 @@ describe('box-size note: when it is not shown', () => {
   it('when the geometry request fails', async () => {
     open({ trajectories: serverError });
     await settled();
-    await screen.findByText(/Scene geometry could not be loaded/);
+    expect(await screen.findByText(/Scene geometry could not be loaded/)).toBeVisible();
     expect(note()).not.toBeInTheDocument();
   });
 
@@ -157,13 +158,16 @@ describe('box-size note: when it is not shown', () => {
     open({ perturbed: 'pending' });
     await screen.findByTestId('frame-readout');
     expect(screen.getByText('Loading the perturbed path…')).toBeInTheDocument();
+    expect(screen.getByText('Loading the perturbed path…')).toBeVisible();
     expect(note()).not.toBeInTheDocument();
   });
 
   it('when the perturbed request fails', async () => {
     open({ perturbed: serverError });
     await screen.findByTestId('frame-readout');
-    expect(await screen.findByText(/The perturbed path could not be loaded/)).toBeInTheDocument();
+    const failedNote = await screen.findByText(/The perturbed path could not be loaded/);
+    expect(failedNote).toBeInTheDocument();
+    expect(failedNote).toBeVisible();
     expect(note()).not.toBeInTheDocument();
   });
 });
@@ -277,9 +281,11 @@ describe('box-size note: playback does not remove or change it', () => {
     open();
     await screen.findByTestId('frame-readout');
     expect(screen.getByText(/Positions at frame 25, the first colliding frame/)).toBeInTheDocument();
+    expect(screen.getByText(/Positions at frame 25, the first colliding frame/)).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Step forward one frame' }));
     expect(screen.queryByText(/Positions at frame 25, the first colliding frame/)).not.toBeInTheDocument();
     expect(note()).toBeInTheDocument();
+    expect(note()).toBeVisible();
   });
 
   it('is shown once, not repeated', async () => {

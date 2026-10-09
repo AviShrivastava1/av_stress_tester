@@ -68,6 +68,7 @@ describe('playback — before the viewer touches anything', () => {
     await openScene();
     expect(frameShown()).toBe(25);
     expect(screen.getByText(/Positions at frame 25, the first colliding frame/)).toBeInTheDocument();
+    expect(screen.getByText(/Positions at frame 25, the first colliding frame/)).toBeVisible();
     expect(readout()).toMatch(/frame 25 of 0–90 · 4 of 4 tracks observed/);
     expect(playButton()).toHaveAccessibleName('Play');
   });

@@ -11,6 +11,7 @@ import {
   canFocusInteraction,
   focusTracks,
   perturbedPathNote,
+  perturbedTrackDrawn,
   referenceFrameNote,
   type DrawnTrack,
   type Focus,
@@ -98,10 +99,26 @@ export interface ScenePanelProps {
   detail: ScenarioDetail | undefined;
 }
 
+/**
+ * The interval between frames in the data: Waymo Open Motion Dataset scenarios are recorded at
+ * 10 Hz, the same `DT = 0.1` the backend's replay models and PET use (src/physics/bicycle_model.py,
+ * src/danger/pet_engine.py). It is the data's spacing, not a playback rate: playback rates are
+ * offered in frames per second (scene/playback.ts) and are not real time.
+ */
+const FRAME_INTERVAL_S = 0.1;
+
 export function ScenePanel(props: ScenePanelProps) {
+  // "Recorded vs perturbed" only when a perturbed track is drawn; otherwise it is just the recording.
+  const comparing = perturbedTrackDrawn(props.trajectories.data?.agents, props.perturbed.data);
   return (
     <section className="panel panel-scene">
-      <h2>Scene</h2>
+      <div className="scene-panel-heading">
+        <div>
+          <p className="panel-kicker">{comparing ? 'RECORDED VS PERTURBED, FRAME BY FRAME' : 'RECORDED SCENE'}</p>
+          <h2>Replay</h2>
+        </div>
+        <span>{FRAME_INTERVAL_S} s / frame</span>
+      </div>
       <SceneBody {...props} />
     </section>
   );

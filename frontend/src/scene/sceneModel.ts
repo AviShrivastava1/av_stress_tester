@@ -50,6 +50,18 @@ export function buildScene(
   return drawn.sort((a, b) => DRAW_ORDER[a.role] - DRAW_ORDER[b.role]);
 }
 
+/**
+ * Whether the scene draws a perturbed track: the geometry has loaded and the response carries one.
+ * The same condition as `buildScene`'s, named once so the page's words ("compare", "simulated
+ * challenger") are only used when the comparison is on screen.
+ */
+export function perturbedTrackDrawn(
+  agents: AgentTrack[] | undefined,
+  perturbed: PerturbedResponse | undefined,
+): boolean {
+  return agents !== undefined && Boolean(perturbed?.perturbed);
+}
+
 export type Focus = 'interaction' | 'scene';
 
 /** The interaction focus needs both sides of the interaction to be drawable. */

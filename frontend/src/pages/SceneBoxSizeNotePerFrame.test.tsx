@@ -83,6 +83,7 @@ describe('box-size note: which text', () => {
     await screen.findByTestId('frame-readout');
     expect(shown()).toEqual([expected]);
     expect(screen.getAllByText(expected)).toHaveLength(1);
+    expect(screen.getByText(expected)).toBeVisible();
   });
 
   it('judges the SDC and the perturbed challenger only, not the logged challenger or other agents', async () => {

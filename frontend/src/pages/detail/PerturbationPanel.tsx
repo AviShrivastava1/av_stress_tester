@@ -11,6 +11,7 @@ import { formatMagnitude } from '../../domain/format';
 export function PerturbationPanel({ perturbed }: { perturbed: UseQueryResult<PerturbedResponse> }) {
   return (
     <section className="panel">
+      <p className="panel-kicker">SEARCH RESULT</p>
       <h2>Perturbation</h2>
       <PerturbationBody perturbed={perturbed} />
     </section>

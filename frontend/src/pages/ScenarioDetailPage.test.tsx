@@ -118,7 +118,9 @@ describe('ScenarioDetailPage — collision scenario', () => {
     );
     renderApp(`/scenarios/${ID}`);
 
-    expect(await screen.findByText(/Positions at frame 25, the first colliding frame/)).toBeInTheDocument();
+    const openingNote = await screen.findByText(/Positions at frame 25, the first colliding frame/);
+    expect(openingNote).toBeInTheDocument();
+    expect(openingNote).toBeVisible();
     expect(footprints()).toEqual([
       { role: 'sdc', shape: 'box', colliding: true, ghost: false },
       { role: 'challenger_logged', shape: 'box', colliding: false, ghost: true },
@@ -207,9 +209,11 @@ describe('ScenarioDetailPage — reference frame without a collision', () => {
     stubFetch(server({ trajectories: ok(makeTrajectories([sdc, lateAgent])) }));
     renderApp(`/scenarios/${ID}`);
 
-    expect(
-      await screen.findByText(/Positions at frame 20, the earliest frame where all 2 focused tracks are observed/),
-    ).toBeInTheDocument();
+    const sharedFrameNote = await screen.findByText(
+      /Positions at frame 20, the earliest frame where all 2 focused tracks are observed/,
+    );
+    expect(sharedFrameNote).toBeInTheDocument();
+    expect(sharedFrameNote).toBeVisible();
     expect(footprints().map((f) => f.role)).toEqual(['other', 'sdc']);
   });
 
@@ -219,7 +223,9 @@ describe('ScenarioDetailPage — reference frame without a collision', () => {
     stubFetch(server({ trajectories: ok(makeTrajectories([early, late])) }));
     renderApp(`/scenarios/${ID}`);
 
-    expect(await screen.findByText(/No frame has all 2 focused tracks observed together/)).toBeInTheDocument();
+    const fallbackNote = await screen.findByText(/No frame has all 2 focused tracks observed together/);
+    expect(fallbackNote).toBeInTheDocument();
+    expect(fallbackNote).toBeVisible();
   });
 
   it('does not use the collision frame when the perturbed path is not drawn', async () => {
@@ -232,9 +238,11 @@ describe('ScenarioDetailPage — reference frame without a collision', () => {
     );
     renderApp(`/scenarios/${ID}`);
 
-    expect(
-      await screen.findByText(/A stored result exists, but no perturbed path matching it has been exported/),
-    ).toBeInTheDocument();
+    const missingPathNote = await screen.findByText(
+      /A stored result exists, but no perturbed path matching it has been exported/,
+    );
+    expect(missingPathNote).toBeInTheDocument();
+    expect(missingPathNote).toBeVisible();
     expect(screen.queryByText(/first colliding frame/)).not.toBeInTheDocument();
     expect(footprints().some((f) => f.colliding)).toBe(false);
   });
