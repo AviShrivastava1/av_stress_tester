@@ -608,11 +608,28 @@ def list_scenarios(
 
     ORDERING
     --------
-    `ORDER BY fragility_score DESC, scenario_id` is byte-identical to
-    ranker.rank_scenarios' sort key `(-fragility_score, str(scenario_id))`. That
-    equivalence is deliberate: if the API and the batch pipeline ordered
-    differently, "rank 3" would mean two different scenarios depending on who you
-    asked, which is indefensible in a safety audit.
+    The API orders by `fragility_score DESC, scenario_id`: the same two keys, in the
+    same directions, as ranker.rank_scenarios' sort key
+    `(-fragility_score, str(scenario_id))`. The intent is deliberate: if the API and
+    the batch pipeline ordered differently, "rank 3" would mean two different
+    scenarios depending on who you asked.
+
+    WHAT IS GUARANTEED, AND WHAT DEPENDS ON THE DATABASE. Rows with DIFFERENT scores
+    come out in the same order from both. Rows that TIE are ordered by scenario_id,
+    and there the two sides use different comparators: PostgreSQL sorts the TEXT
+    column by the database's collation, Python sorts `str` by code point. They agree
+    for the ids in the tests (lowercase ASCII, such as `syn_medium_a` before
+    `syn_medium_b`) and under the C collation. They can disagree under a locale
+    collation, for example for ids that differ in case or punctuation. This
+    repository does not record which collation the hosted database uses, and the
+    check in tests/test_api.py that the API order equals rank_scenarios' order uses
+    only lowercase ASCII ids, so it cannot tell the two apart. "Byte-identical" holds
+    only under the C collation; do not rely on it for other ids.
+
+    PAGINATION DOES NOT DEPEND ON THAT. The ORDER BY and the cursor predicate below
+    compare scenario_id as the same column under the same collation, so every row is
+    served exactly once, in a stable order, whichever collation is in use. Only
+    agreement with the batch ranker's order among tied rows is conditional.
 
     The scenario_id tiebreak is LOAD-BEARING, not cosmetic. Without a unique second
     key, rows tied on fragility_score have no defined order, and the same row can
