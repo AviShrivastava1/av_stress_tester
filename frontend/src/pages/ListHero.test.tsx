@@ -42,7 +42,7 @@ const CARDS = [
 ] as const;
 
 const INTRO =
-  'Open a scene to replay it. Where the search found a collision, the replay compares the recorded challenger ' +
+  'Open a scene to replay it. Where the search found a collision, the replay compares the recorded motion ' +
   'with the smallest collision-producing perturbation it found.';
 
 const GUIDE =
@@ -136,9 +136,9 @@ describe('the explorer under it', () => {
     expect(screen.queryByText(/Min change/)).not.toBeInTheDocument();
   });
 
-  it('still shows the ranking caption and the table, unchanged by this diff', async () => {
+  it('still shows the ranking caption and the table (their wording is pinned in ListTable.test.tsx)', async () => {
     await openList();
-    expect(screen.getByText(/Ranked by fragility score, most fragile first\. The order comes from the server/)).toBeVisible();
+    expect(screen.getByText(/^Ranked by fragility score, most fragile first\./)).toBeVisible();
     expect(screen.getByRole('columnheader', { name: 'Min perturbation' })).toBeInTheDocument();
   });
 });

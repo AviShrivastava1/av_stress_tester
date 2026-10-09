@@ -87,6 +87,34 @@ const HERO_CARDS = [
   ['Provenance stored with each result', 'Scene identity, run provenance, read-only production API.'],
 ] as const;
 
+/*
+ * The words on the ranked table. What backs each one:
+ *
+ *   "Ranked by fragility score, most fragile first"
+ *       GET /scenarios (src/api/routes.py list_scenarios) orders by fragility_score descending, and
+ *       ranker.rank_scenarios (src/scoring/ranker.py) sorts the same way, so rank 1 is the most fragile; this page
+ *       renders the rows in the order the server returns them and does not sort
+ *   "Equal scores are tie-broken by scenario ID"
+ *       the second ORDER BY key in list_scenarios is scenario_id, and the cursor predicate there
+ *       (fragility_score = the cursor's score AND scenario_id after the cursor's id) pages through ties in the
+ *       same order; ranker.rank_scenarios breaks ties on str(scenario_id) as well. The table shows the score to three
+ *       decimals but the tie is on the stored value, so two rows can look equal and not be tied
+ *   "position within a tie does not mean one scenario is more fragile than another"
+ *       a tie is equal fragility_score, so the scenario_id order carries no information about fragility
+ *   "Min perturbation is the smallest found by a finite search, not a proven minimum"
+ *       the Differential Evolution budget in search_provenance (scipy_optimizer.optimize_scenario)
+ *   header "Timing" and its title "Minimum TTC and PET over pairs involving the SDC"
+ *       min_ttc and min_pet are the values danger_score.score_scenario stores from compute_min_ttc_sdc
+ *       (src/danger/ttc_engine.py) and compute_min_pet_sdc (src/danger/pet_engine.py), which restrict to pairs
+ *       that involve the SDC; the two labels' own titles say time-to-collision and post-encroachment time
+ *   header "Search result"
+ *       the cell is OutcomeCell (components/OutcomeBadge.tsx): the stored stress_outcome, or the last attempt
+ *   headers "Min perturbation", "Agents"
+ *       scenario_scores.min_perturbation and scenario_scores.n_agents (the latter was already so labelled)
+ */
+const TTC_TITLE = 'Minimum time-to-collision over pairs involving the SDC';
+const PET_TITLE = 'Minimum post-encroachment time over pairs involving the SDC';
+
 export function scenarioPath(scenarioId: string): string {
   return `/scenarios/${encodeURIComponent(scenarioId)}`;
 }
@@ -183,7 +211,7 @@ export function ScenarioListPage() {
         <span className="dataset-label">Waymo Open Dataset</span>
       </div>
       <p className="page-intro">
-        Open a scene to replay it. Where the search found a collision, the replay compares the recorded challenger
+        Open a scene to replay it. Where the search found a collision, the replay compares the recorded motion
         with the smallest collision-producing perturbation it found.
       </p>
       <div className="list-tools">
@@ -203,8 +231,9 @@ export function ScenarioListPage() {
         </label>
       </div>
       <p className="caption">
-        Ranked by fragility score, most fragile first. The order comes from the server
-        and is not re-sorted here.
+        Ranked by fragility score, most fragile first. Equal scores are tie-broken by scenario ID; position within
+        a tie does not mean one scenario is more fragile than another. Min perturbation is the smallest found by a
+        finite search, not a proven minimum.
       </p>
       <details className="metric-guide"><summary>How to read the results</summary>
         <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted perturbation found by the finite search, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A negative PET means two agents occupied the same connected conflict zone at overlapping times.</p>
@@ -231,14 +260,9 @@ export function ScenarioListPage() {
                   <th scope="col" className="num">#</th>
                   <th scope="col">Scenario</th>
                   <th scope="col" className="num">Fragility</th>
-                  <th scope="col" className="num" title="Minimum time-to-collision over pairs involving the SDC">
-                    Min TTC
-                  </th>
-                  <th scope="col" className="num" title="Minimum post-encroachment time over pairs involving the SDC">
-                    Min PET
-                  </th>
+                  <th scope="col" className="num timing-col" title="Minimum TTC and PET over pairs involving the SDC">Timing</th>
+                  <th scope="col">Search result</th>
                   <th scope="col" className="num">Min perturbation</th>
-                  <th scope="col">Outcome</th>
                   <th scope="col" className="num">Agents</th>
                 </tr>
               </thead>
@@ -255,17 +279,21 @@ export function ScenarioListPage() {
                       </Link>
                     </td>
                     <td className="num">{row.fragility_score.toFixed(3)}</td>
-                    <td className="num">
-                      <TimeMetricCell value={row.min_ttc ?? null} metric="ttc" />
-                    </td>
-                    <td className="num">
-                      <TimeMetricCell value={row.min_pet ?? null} metric="pet" />
-                    </td>
-                    <td className="num">
-                      <PerturbationCell row={row} />
+                    <td className="num timing-col">
+                      <div className="timing-line">
+                        <span className="timing-label" title={TTC_TITLE}>TTC</span>{' '}
+                        <TimeMetricCell value={row.min_ttc ?? null} metric="ttc" />
+                      </div>
+                      <div className="timing-line">
+                        <span className="timing-label" title={PET_TITLE}>PET</span>{' '}
+                        <TimeMetricCell value={row.min_pet ?? null} metric="pet" />
+                      </div>
                     </td>
                     <td>
                       <OutcomeCell row={row} />
+                    </td>
+                    <td className="num">
+                      <PerturbationCell row={row} />
                     </td>
                     <td className="num">{row.n_agents ?? <span className="muted">—</span>}</td>
                   </tr>

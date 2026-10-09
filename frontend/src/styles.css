@@ -248,3 +248,6 @@ kbd { font:inherit; border:1px solid var(--border); border-radius:3px; padding:1
 @media(max-width:1000px) { .project-hero { grid-template-columns:minmax(0,1fr) minmax(290px,.8fr); gap:32px; } }
 @media(max-width:820px) { .project-hero { grid-template-columns:minmax(0,1fr); } .hero-system { max-width:620px; } .proof-strip { grid-template-columns:minmax(0,1fr); } .proof-strip article { border-right:0; border-bottom:1px solid var(--border); } .proof-strip article:last-child { border-bottom:0; } }
 @media(max-width:560px) { .project-hero { margin-top:14px; padding:26px 20px; border-radius:16px; } .hero-system { padding:16px; } .hero-system-head, .hero-system li div { align-items:flex-start; flex-direction:column; } .hero-system li small { text-align:left; } .proof-strip article { padding:18px; } .explorer-section { padding-top:48px; } }
+.scenario-table .timing-col { width:1%; } /* the column takes the width of its content, so each label sits by its value */
+.timing-line { display:flex; justify-content:space-between; gap:10px; }
+.timing-label { color:var(--text-muted); font-size:11px; letter-spacing:.3px; cursor:help; }
