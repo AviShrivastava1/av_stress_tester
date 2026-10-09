@@ -84,7 +84,10 @@ def test_step_6_states_the_tie_caveat():
     assert 'at least a quarter and fewer than half' in paragraph and 'p75 100' in paragraph, (
         'the tie share is not stated from the Pass 1 fragility percentiles'
     )
-    assert 'not re-derived here' in paragraph
+    # Where the numbers come from is stated: the executed notebook's printed percentiles, and a count taken from
+    # the stored scores. (This used to say "not re-derived here", which was true until the 62ab1a6 re-run.)
+    assert 'as the executed notebook printed them' in paragraph, 'the percentiles do not say where they come from'
+    assert 'counted from the stored scores' in paragraph, 'the tie count does not say where it comes from'
     assert f'not the {top_n} most fragile' in paragraph, (
         'it does not say the selection is an ID-ordered slice of the tied scenarios'
     )
@@ -97,7 +100,7 @@ def test_the_run_time_estimate_is_restated_for_this_top_n_and_labelled():
     assert 'estimated at about 26–28 minutes' not in ground_rules, (
         'the estimate predates the drift-gate batch, which searches 6 more scenarios'
     )
-    assert 'about 37 minutes in total' in ground_rules
-    assert 'estimated from those measurements, not measured' in ground_rules, (
-        'the estimate is not labelled as an estimate'
-    )
+    # The timings are now a measured run's own printed ones, and anything computed from them is labelled derived
+    # (this used to restate an estimate, "about 37 minutes in total ... not measured", before the 62ab1a6 re-run).
+    assert 'Its own printed timings' in ground_rules, 'the timings are not attributed to a measured run'
+    assert 'Derived from those, not printed' in ground_rules, 'the derived figures are not labelled as derived'

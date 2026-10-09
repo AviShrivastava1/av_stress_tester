@@ -43,10 +43,13 @@ Homebrew's `postgresql@17` client:
 read -rs AV_STRESS_DATABASE_URL && export AV_STRESS_DATABASE_URL
 psql "$AV_STRESS_DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS postgis"
 /opt/homebrew/opt/postgresql@17/bin/pg_restore --no-owner --no-privileges \
-    -d "$AV_STRESS_DATABASE_URL" av_stress_amax12.dump
+    -d "$AV_STRESS_DATABASE_URL" av_stress_rerun_62ab1a6.dump
 ```
 
-The dump was made without privileges, so step 2 must run after a restore as well.
+The dump holds the three tables and no extension, which is why PostGIS is created first. It was
+made without privileges, so step 2 must run after a restore as well. To replace the data in a
+database that already serves the site, do not use this command: see "Replacing the data in a
+live database" below.
 
 ### 2. A read-only role for the API
 
@@ -83,6 +86,13 @@ ALTER ROLE av_api_ro SET default_transaction_read_only = on;
 - `ALTER DEFAULT PRIVILEGES` covers tables created **later**, but only tables created by
   the role that runs it. Run it as the default user, which is the owner the notebook
   writes as, so a table a later pass creates is readable by the API without a new grant.
+  **A restore that drops and recreates the three tables depends on it.** The dump carries
+  no privileges, so after such a restore the API role can read the new tables only through
+  this default. Check it before any restore, as the user that will run it (the query is in
+  "Replacing the data in a live database").
+- The `GRANT` is on the whole table, so a column added later (for example the per-frame
+  size columns `lengths_m` and `widths_m` of `scenario_agents`) is readable without a new
+  grant. `tests/test_geometry_per_frame_sizes.py` checks this.
 - The `GRANT` is the guarantee. `default_transaction_read_only` is a second layer, which a
   session could switch off.
 - The geometry endpoints call PostGIS functions and read `spatial_ref_sys`, both of which
@@ -179,11 +189,160 @@ every push is a production deploy anyway. If a preview is ever wanted, its branc
    (`stress_tested` counts stored search results; the 2 drift refusals are
    `replay_infeasible`. `with_geometry` is the run's Pass 3 `exported: 20`.)
 3. The list pages through all 100 scenarios.
-4. A detail page draws its scene and plays back, for example `8ec2910b`, one of the six the
-   2 m backstop admitted. A 500 here most likely means a missing grant (step 2).
+4. A detail page draws its scene and plays back, for example `8ec2910b`, one of the six
+   scenarios with a stored result whose baseline drift is above the old 0.5 m gate (the 2 m
+   backstop admits them). A 500 here most likely means a missing grant (step 2).
+   `GET /scenarios/8ec2910bbae8e13a/trajectories` returns, for every agent, `lengths_m`
+   and `widths_m` with as many elements as `path`; the page's note under the scene says boxes
+   are drawn at each agent's stored size for the frame shown. Null arrays on every agent
+   mean the data was exported before the per-frame columns existed.
 5. A direct link to a detail page loads, and so does a refresh on `/stats`.
 6. The browser console shows no CORS errors.
 
 If the API is unreachable, the site shows "Loading…" through two retries, then "Could not
 reach the API at <URL>". That is accurate: a Render error page carries no CORS headers, so
 the browser reports a network failure.
+
+## Replacing the data in a live database
+
+The hosted database's stored results were replaced once, after the geometry export began
+storing each agent's box size at every frame. The method below was rehearsed on a local
+scratch database and then run once on the hosted database. Nothing in it is automated: the
+account owner runs each command, and the database URL is entered at a silent prompt, as
+above (`read -rs`, never typed into a command).
+
+It replaces the three tables, dropped and recreated inside one transaction. PostGIS, the API
+role and its grants are not touched. That is why the dump must not contain the extension,
+and why the default privileges of step 2 must already be in place.
+
+### 1. Dump the new data
+
+On the machine that produced it, list the tables with `-t`. Do not dump the extension:
+
+```
+pg_dump --format=custom --no-owner --no-privileges \
+    -t scenario_scores -t scenario_agents -t perturbed_paths \
+    -f new_data.dump -d "$SOURCE_DATABASE_URL"
+pg_restore -l new_data.dump | grep -c EXTENSION
+```
+
+The last command must print `0` (`grep -c` also exits with status 1 when it counts none, which
+is the result wanted here). `pg_dump --exclude-extension` exists only from version 17;
+the Colab runtime's `pg_dump` was 16, so the tables are named instead. A script that carried
+the extension would, run with `--clean`, drop PostGIS and everything that depends on it. The
+`pg_dump` must match the source server's major version, and the `pg_restore` that loads the
+dump must be at least as new as that `pg_dump`, and its `psql` at least as new as it.
+
+### 2. Back up what is there, and fingerprint it
+
+Dump the live tables the same way into `backup.dump`, with a client that matches the live
+server (Homebrew's `postgresql@17` for a 17 server). Then fingerprint the three tables. Every
+connection that only reads sets `PGOPTIONS='-c default_transaction_read_only=on'`, so the
+server refuses a write made by mistake:
+
+```
+export PG17=/opt/homebrew/opt/postgresql@17/bin
+read -rs AV_STRESS_DATABASE_URL && export AV_STRESS_DATABASE_URL
+PGOPTIONS='-c default_transaction_read_only=on' $PG17/pg_dump --format=custom --no-owner --no-privileges \
+    -t scenario_scores -t scenario_agents -t perturbed_paths \
+    -f backup.dump -d "$AV_STRESS_DATABASE_URL"
+PGOPTIONS='-c default_transaction_read_only=on' $PG17/psql -X -At "$AV_STRESS_DATABASE_URL" <<'SQL'
+SET timezone = 'UTC';
+SELECT 'scenario_scores', count(*), md5(string_agg(t::text, E'\n' ORDER BY scenario_id)) FROM scenario_scores t
+UNION ALL
+SELECT 'scenario_agents', count(*), md5(string_agg(t::text, E'\n' ORDER BY scenario_id, agent_idx)) FROM scenario_agents t
+UNION ALL
+SELECT 'perturbed_paths', count(*), md5(string_agg(t::text, E'\n' ORDER BY scenario_id)) FROM perturbed_paths t;
+SQL
+```
+
+Save the output. The same query is run again after the restore, against the live database
+and against a scratch database that the new dump was restored into; the two must be equal.
+A fingerprint that differs from the backup's just before the restore means the backup is
+stale: stop and take it again.
+
+### 3. Pre-checks on the live database (read-only)
+
+Run these as the user that will run the restore, with the same `PGOPTIONS`:
+
+```
+export PGOPTIONS='-c default_transaction_read_only=on'
+$PG17/psql -X -At "$AV_STRESS_DATABASE_URL" -c "SHOW server_version" -c "SELECT current_user"
+```
+
+The default privileges must exist for that user, for tables in `public`, and give `av_api_ro`
+`SELECT`. The dump carries no privileges, so the recreated tables get theirs from here only:
+
+```sql
+SELECT defaclrole::regrole, defaclnamespace::regnamespace, defaclobjtype, defaclacl
+FROM pg_default_acl;
+```
+
+One row must name that user, schema `public` and object type `r`, with `av_api_ro=r/` in its
+ACL. If it is missing, run the `ALTER DEFAULT PRIVILEGES` of step 2 as that user first.
+
+The restore drops the tables, so nothing else may depend on them. This must return no rows
+(a view, a foreign key from another table, a trigger or a policy on them would be broken or
+dropped):
+
+```sql
+SELECT n.nspname || '.' || c.relname || ' (' || c.relkind::text || ')'
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+  AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+  AND c.relname NOT IN ('scenario_scores', 'scenario_agents', 'perturbed_paths', 'spatial_ref_sys')
+  AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass
+                  AND d.objid = c.oid AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e');
+```
+
+### 4. Generate the script, set its lock timeout, run it
+
+```
+unset PGOPTIONS
+$PG17/pg_restore --clean --if-exists --single-transaction --no-owner --no-privileges \
+    -f restore.sql new_data.dump
+sed 's/^SET lock_timeout = 0;$/SET lock_timeout = 30000;/' restore.sql > restore_with_lock_timeout.sql
+diff restore.sql restore_with_lock_timeout.sql
+grep -c EXTENSION restore.sql
+$PG17/psql -X -q -v ON_ERROR_STOP=1 -f restore_with_lock_timeout.sql "$AV_STRESS_DATABASE_URL"
+```
+
+Before the last command: the first connects to nothing, so `restore.sql` can be read first;
+`diff` must show exactly one changed line, the `SET lock_timeout` line; `grep` must print
+`0`. The last command is the only one that writes. It prints one small `set_config` table,
+which is the script clearing its search path and is normal; any `ERROR` is not.
+
+**Why `sed` and not `PGOPTIONS='-c lock_timeout=...'`.** Every script `pg_restore` writes
+begins `SET lock_timeout = 0;`, which replaces whatever the connection started with. In the
+rehearsal, a restore blocked by an open reader waited the whole step limit with
+`lock_timeout` set to 2 s through `PGOPTIONS`; it never failed on the lock. With the line
+edited in the script, the same blocked restore fails on the lock.
+
+The script carries its own `BEGIN` and `COMMIT`, and `ON_ERROR_STOP=1` ends the session at the
+first error, so a failure rolls back and leaves the old tables in place. If it fails, compare
+the fingerprint with the one taken just before to see that nothing changed, and do not retry
+until the cause is known.
+
+### 5. After the restore
+
+The restored tables have no planner statistics, and the API role must be able to read them:
+
+```sql
+ANALYZE scenario_scores;
+ANALYZE scenario_agents;
+ANALYZE perturbed_paths;
+SELECT t, has_table_privilege('av_api_ro', 'public.' || t, 'SELECT')
+FROM unnest(ARRAY['scenario_scores', 'scenario_agents', 'perturbed_paths']) AS t;
+SELECT c, has_column_privilege('av_api_ro', 'public.scenario_agents', c, 'SELECT')
+FROM unnest(ARRAY['lengths_m', 'widths_m']) AS c;
+```
+
+Every privilege must be `t`. Then take the fingerprint of step 2 again and compare it with
+the scratch restore's, and go through "Checks, in order" below.
+
+### 6. Undoing it
+
+The same three commands of step 4, with `backup.dump` in place of `new_data.dump`, put the old
+tables back. This was rehearsed on the scratch database. While a database without the per-frame
+size columns is in place, the API answers with null `lengths_m` and `widths_m` on every agent,
+and the scene draws each box at its single size, instead of failing.

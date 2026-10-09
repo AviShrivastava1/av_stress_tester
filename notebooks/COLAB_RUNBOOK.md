@@ -51,14 +51,17 @@ change, that is a new batch, planned and reviewed like every other one.
 depending on availability and your usage patterns", says runtimes "time out if you are
 idle", and offers no background execution on the free tier. **The idle timeout is not
 documented**: no duration is given, and nothing says whether a running cell counts as
-activity. The `19fddb4` run (10b skipped, `TOP_N = 20`) took about 28 minutes, measured:
-cache build 280 s, Pass 1 157 s, Pass 2 1,049 s, Pass 3 61 s. Its Pass 2 searched 12
-scenarios and refused 8 (a refusal costs almost nothing), so about 87 s per search. The
-drift-gate batch searches 6 of those 8 as well, so expect about 9 more minutes: about 37
-minutes in total, with Pass 2 at about 26 minutes (both estimated from those
-measurements, not measured). Pass 2 is the longest single step, which is what the Pass 2
-checkpoint below is for. The run is still far inside the lifetime cap, so the realistic
-risks are an idle disconnect and a lost connection. So:
+activity. The re-run at `62ab1a6` (10b skipped, `TOP_N = 20`, the drift-gate batch's search)
+is the measured reference. Its own printed timings: shard cache build 264.4 s
+(`[CACHE-TIMING] shard cache build`), Pass 1 151.0 s (`Pass 1 done`), Pass 2 1,521.1 s for 20
+scenarios, 18 searched and 2 refused for drift (`Pass 2 done`), Pass 3 59.4 s (`elapsed` in the
+Pass 3 summary). Derived from those, not printed: the four add up to 1,995.9 s, about 33
+minutes, not counting the setup before the cache build or the dump after Pass 3; Pass 2 is
+about 25 minutes of it; and if the two refusals cost nothing, a search took about 84.5 s
+(1,521.1 / 18), where the notebook prints 76.1 s per scenario over all 20. Pass 2 is the
+longest single step, which is what the Pass 2 checkpoint below is for. The run is still far
+inside the lifetime cap, so the realistic risks are an idle disconnect and a lost
+connection. So:
 keep the Colab tab open and in front; keep the Mac awake (`caffeinate -dims` in a
 terminal, left running until the dump is done); and run in blocks — cells 1–13, read the
 pre-write report, then the rest.
@@ -167,6 +170,25 @@ pg_restore --no-owner -d av_stress_amax12 av_stress_amax12.dump
 Point the local API at it with `PGDATABASE=av_stress_amax12`; that is the real-scale data
 the frontend is checked against. Afterwards, external access can be restricted or turned
 off: a Render-hosted API connects through the internal URL.
+
+**The re-run at `62ab1a6` dumped inside Colab, and only the three tables.** It used the
+runtime's own throwaway Postgres (`DB_MODE = 'colab_local'`; server, `pg_dump` and
+`pg_restore` all 16.15, PostGIS 3.4, as its version gate printed), so the dump was made
+before anything left Colab. Its cell ran
+`pg_dump --format=custom --no-owner --no-privileges -t scenario_scores -t scenario_agents -t perturbed_paths`:
+`--exclude-extension` exists only from pg_dump 17, so the extension is kept out by naming the
+tables, and the cell then asserted that `pg_restore -l` listed exactly 14 entries, none of
+them an EXTENSION. It also refused to run unless `pg_dump`'s major version equalled the
+server's, `pg_restore`'s equalled `pg_dump`'s, and `pg_dump` was no newer than 17, because
+the `pg_restore` that loads the dump is 17. Replacing the data in the hosted database from
+such a dump is described in DEPLOY.md, "Replacing the data in a live database".
+
+That re-run was started from scratch cells that are not committed (they sit beside the
+notebook's cells and are not part of it): a fresh clone of `main` whose `HEAD` was asserted
+to be the pinned commit, equal to `origin/main`, with a clean tree; a checkpoint folder named
+for that commit, with any existing folder or old `av_stress_*.pkl` checkpoint moved aside and
+never deleted; and a check after each pass that its checkpoint was computed, not resumed
+(`Pass 1 computed 100, resumed 0`, `Pass 2 computed 20 stress results, resumed 0`).
 
 ---
 
@@ -988,8 +1010,9 @@ perturbation and playback instead of 5, not any measurement in this run. The S1�
 checks don't depend on `TOP_N` either: 7g–7g-v read the whole shard through the cache.
 10b keeps its own `B09_N`, so its sample never depends on Pass 2's size. **The tie
 caveat:** at least a quarter and fewer than half of the 100 scenarios tie at the maximum
-fragility score, 100 (the first real run's Pass 1 fragility percentiles: p50 57.1429,
-p75 100.0000; not re-derived here). 100 is Pass 1's ceiling, TTC and PET both at their
+fragility score, 100 (the re-run's Pass 1 fragility percentiles, as the executed notebook
+printed them: p50 57.1429, p75 100.0000; 28 of the 100 stored scores are at the maximum,
+counted from the stored scores). 100 is Pass 1's ceiling, TTC and PET both at their
 0.01 s floor. `rank_scenarios` breaks ties by scenario ID, and at least 25 scenarios tie at
 the maximum, so all 20 selected fall inside the tie: the 20 are the first 20 by scenario ID
 among the most fragile, not the 20 most fragile. The site's description of its data should
@@ -1024,34 +1047,55 @@ if it appears: it means the `/perturbed` delta and `collision_timestep` printed 
 legitimately, and it is also the signal that `B09_N`'s sample in section 10b may contain
 few or no usable comparisons.
 
-**Pass criteria for this run (the drift-gate batch).** The search is deterministic, so these
-are exact. They were computed by running all 20 Pass 2 scenarios through the batch's own
-`_stress_one` locally (same shard, same `DE_KWARGS`, the shard parsed by the not-yet-reviewed
-descriptor-pool loader), after checking that the local run reproduces the `19fddb4` run's
-recorded output exactly (`1492befc` at norm 0.022433940, t=55). Any difference means
-something changed besides the gate.
+**Pass criteria (checked against the re-run at `62ab1a6`).** The search is deterministic for a
+fixed commit; across commits it is not bit-identical (second bullet). Each criterion says where
+it was checked: the executed notebook's printed output, or the stored results.
 
-- **Pass 2: 18 collisions, 2 refusals, 0 errors**, and **0 speed-step refusals**.
-- The 12 collisions of the `19fddb4` run come back unchanged.
-- The 6 scenarios the 0.5 m gate refused, now searched (norm, collision frame, and the
-  baseline's offset from the log at that frame):
+- **Pass 2: 18 collisions, 2 refusals, 0 errors**, and **0 speed-step refusals.** Checked: the
+  executed notebook's `PASS 2 AGGREGATES` printed `collision found: 18`, `replay_infeasible: 2`,
+  `error: 0` and `replay_infeasible by reason: drift=2`, with no speed-step reason; the stored
+  scores hold 18 `collision_found` and 2 `replay_infeasible`.
+- **The 12 collisions of the `19fddb4` run come back at the same target agent and the same
+  collision frame, with norms that differ slightly.** The 12 are derived, not recorded: the 18
+  collisions in the hosted database before this re-run, minus the six listed below. Checked
+  against those earlier stored results: all 12 are present, all with the same target and the
+  same collision frame; their norms differ from the earlier ones by at most 2.3e-4 relative
+  (median 5.5e-5), and over all 17 scenarios that have a collision in both data sets, by at
+  most 6.6e-4. For example `1492befc`: 0.02243394 before, 0.02243386 now, t=55 in both. The
+  earlier results carry no `collision_geometry_version` and these carry
+  `oriented-box-float64-v1`; what else differs between the two runs' code was not isolated
+  here, so the cause of the small differences is not claimed.
+- **The set of 18 differs by one scenario.** The earlier 18 contained `c302c905`; these contain
+  `c549c69c` in its place. `c302c905`'s `min_pet` changed from -1.3 to +1.3 between the two
+  data sets, which lowers its fragility score from 100 to 57.47 and takes it out of the top 20
+  (rank 32 in this re-run's Pass 1 ranking); `c549c69c` is rank 20.
+- **Six scenarios with a stored result have a baseline drift above the old 0.5 m gate**, which
+  the 2 m backstop admits (stored `baseline_replay_error`, `min_perturbation`,
+  `collision_timestep`, `baseline_offset_at_collision`):
 
   | scenario | drift (m) | norm | t | offset at collision (m) |
   |---|---|---|---|---|
   | `8ec2910b` | 1.332 | 0.4034 | 39 | 0.248 |
-  | `c302c905` | 0.631 | 0.1109 | 59 | 0.577 |
+  | `c549c69c` | 0.922 | 0.0089 | 90 | 0.922 |
   | `a6bf1ade` | 0.763 | 0.0101 | 82 | 0.681 |
+  | `38c703d6` | 0.676 | 0.0153 | 90 | 0.672 |
   | `b1e5a345` | 0.576 | 0.0204 | 54 | 0.326 |
   | `19043d68` | 0.525 | 0.0197 | 90 | 0.525 |
-  | `38c703d6` | 0.676 | 0.0153 | 90 | 0.672 |
 
-- **2 drift refusals**: `58d5f1b9` at 2.562 m and `504dd390` at 3.464 m
-  (`replay_infeasible by reason: drift=2`).
+  The earlier data's six were the same except that `c302c905` (drift 0.631 m, norm 0.1109,
+  t=59, offset 0.577 m) stood where `c549c69c` stands now.
+- **2 drift refusals**: `58d5f1b9` at 2.562 m and `504dd390` at 3.464 m (the printed
+  `baseline drift=` values; `replay_infeasible by reason: drift=2`). The same two scenarios
+  were refused in the earlier data.
 - **Pass 3: `replay_refused: 0`**, and the other four refusal buckets 0 on a fresh database.
+  Checked: the Pass 3 summary has `replay_refused`, `perturbed_stale`, `scene_changed`,
+  `sdc_changed`, `a_max_changed` and `errors` all empty, and `exported: 20`,
+  `agents_written: 1658`, `agents_skipped: 21`, `perturbed_written: 18`.
 
-Several of the new collisions have tiny norms beside offsets of 0.3–0.7 m at the collision
-frame. That is why `baseline_offset_at_collision` is recorded: it is the number to show
-beside the norm (an API/frontend batch, not this one).
+Several of these collisions have norms of 0.01 to 0.02 beside offsets of 0.3 to 0.9 m at the
+collision frame. That is why `baseline_offset_at_collision` is recorded: it is the number to
+show beside the norm, and the scenario detail page now does (the replay offset and
+whole-track drift are served and shown since `817d1b1` and `e074bfd`).
 
 ---
 
