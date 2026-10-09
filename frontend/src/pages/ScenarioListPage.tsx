@@ -123,12 +123,12 @@ function PerturbationCell({ row }: { row: ScenarioSummary }) {
   if (row.min_perturbation !== null && row.min_perturbation !== undefined) {
     return <span title={String(row.min_perturbation)}>{formatMagnitude(row.min_perturbation)}</span>;
   }
-  // NULL is never read as "safe" — the outcome column says what actually happened.
+  // NULL is never read as "safe" — the Search result column says what actually happened.
   if (!row.stress_tested && !row.stress_attempted) {
     return <span className="muted">not tested</span>;
   }
   return (
-    <span className="muted" title="No stored perturbation. See the outcome column.">
+    <span className="muted" title="No stored perturbation. See the Search result column.">
       —
     </span>
   );

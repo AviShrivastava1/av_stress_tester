@@ -128,3 +128,14 @@ describe('the Timing cell', () => {
     expect(within(cell(bodyRow(table, 0), COL.timing)).queryByText('overlap')).not.toBeInTheDocument();
   });
 });
+
+describe('the Min perturbation cell when there is nothing stored', () => {
+  it('points at the column that is now called "Search result", not at "the outcome column"', async () => {
+    const table = await openList([
+      makeRow({ scenario_id: 'synthetic-0001', stress_attempted: true, last_attempt_outcome: 'replay_infeasible' }),
+    ]);
+    const dash = within(cell(bodyRow(table, 0), COL.perturbation)).getByText('—');
+    expect(dash).toHaveAttribute('title', 'No stored perturbation. See the Search result column.');
+    expect(within(table).getByRole('columnheader', { name: 'Search result' })).toBeInTheDocument();
+  });
+});
