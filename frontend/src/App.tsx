@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Link, NavLink, Outlet, ScrollRestoration, createBrowserRouter, type RouteObject } from 'react-router';
 import { Footer } from './components/Footer';
 import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
+import { MethodPage } from './pages/MethodPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
 import { StatsPage } from './pages/StatsPage';
 
@@ -18,6 +19,7 @@ function Layout({ children }: { children?: ReactNode }) {
           <NavLink to="/" end>
             Scenarios
           </NavLink>
+          <NavLink to="/method">Method</NavLink>
           <NavLink to="/stats">Corpus</NavLink>
         </nav>
       </header>
@@ -56,6 +58,7 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <ScenarioListPage /> },
       { path: 'scenarios/:scenarioId', element: <ScenarioDetailPage /> },
+      { path: 'method', element: <MethodPage /> },
       { path: 'stats', element: <StatsPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
