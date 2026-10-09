@@ -10,11 +10,15 @@ import { renderApp } from '../test/renderApp';
 /*
  * A note under the scene about how the boxes are drawn.
  *
- * The page draws ONE box size per agent, from its first observed frame, because that is all
- * the export stores. The search's exact collision check used each agent's size in every
- * frame, so at the collision frame the drawn boxes may not touch even though the check saw
- * contact. The note says so, conditionally, and only where the page marks a colliding pair:
- * when the perturbed path is drawn AND a collision frame is set.
+ * Every track in this file has no per-frame size arrays, which is how data exported before
+ * the per-frame columns existed arrives. The page then draws ONE box size per agent, from its
+ * first observed frame, and this is the note it shows. The search's exact collision check used
+ * each agent's size in every frame, so at the collision frame such boxes may not touch even
+ * though the check saw contact. The note says so, conditionally, and only where the page marks
+ * a colliding pair: when the perturbed path is drawn AND a collision frame is set.
+ *
+ * Tracks WITH per-frame arrays, and the other two texts of the note, are in
+ * SceneBoxSizeNotePerFrame.test.tsx.
  */
 
 const NOTE =

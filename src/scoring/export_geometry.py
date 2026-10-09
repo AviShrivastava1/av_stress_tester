@@ -441,8 +441,10 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
             lengths_m = _per_frame_sizes(states[i, ts, 5])
             widths_m = _per_frame_sizes(states[i, ts, 6])
 
-            # length/width are physical constants of the agent; read them from the
-            # first valid timestep rather than assuming index 0 was observed.
+            # length_m/width_m are ONE size per agent, read at the first valid timestep
+            # rather than assuming index 0 was observed. They are not constants: the size
+            # recorded at each frame varies, which is why lengths_m/widths_m above carry it
+            # per frame. These scalars stay for readers that draw a single size.
             t0 = int(ts[0])
 
             # scene_fingerprint is the value THIS ROW was verified against, taken
