@@ -753,8 +753,15 @@ class PerturbationSpace:
         """
         Insert the re-simulated challenger trajectory into a fresh copy of states,
         aligned so that traj row k lands on GLOBAL frame t0 + k (audit B01).
-        Rebuilds [x, y, vx, vy, heading]; length/width are physical constants and
-        are left unchanged.
+        Rebuilds [x, y, vx, vy, heading] from t0 onward. Columns 5 and 6 (length, width)
+        are not written: every frame keeps its logged value, copied unchanged, and those
+        values can differ from frame to frame. The collision check reads each frame's own
+        size (collision_detector.check_collision_trajectory), and so do the Differential
+        Evolution objective that feeds the archive (scipy_optimizer._signed_gap) and PET
+        (pet_engine.get_path_polygon and _occupancy_visits); the export stores them per
+        frame as lengths_m and widths_m. The rollout itself uses one length, read at the
+        first valid frame (target_len), for the bicycle model's wheelbase; that is a
+        separate, fixed quantity.
 
         Frames before t0 keep their logged contents. The agent was not observed
         then, so those frames are invalid and every consumer skips them — leaving
