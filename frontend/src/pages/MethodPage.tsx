@@ -12,6 +12,23 @@
  *   05  src/scoring/export_geometry.py, src/api/ (no write route), scene/geometry.ts (observationAt)
  * Principles: outcomes.ts and batch_scorer (distinct failure statuses), requirements-api.txt
  * (no TensorFlow or shard at request time), the scene_fingerprint / search_provenance columns.
+ *
+ * The fifth limit, on pedestrian and cyclist replay, sentence by sentence:
+ *   "less well measured than vehicle replay"
+ *       perturbation_space.py, the comment above SPEED_STEP_REFUSE_MPS: the linear model's A_MAX (5.0)
+ *       "has never been measured" and its replay "carries ~0.16 m/s of speed error even without a step";
+ *       the vehicle side was measured (the comments above BASELINE_DRIFT_REFUSE_M and SPEED_STEP_REFUSE_MPS)
+ *   "the recorded heading when the agent is slow and the heading implied by its motion when it is faster,
+ *    blending between them over a narrow speed band"
+ *       perturbation_space.py _linear_heading: the logged heading below heading_speed_floor (V_HEADING_MIN),
+ *       the velocity-derived heading from the floor plus HEADING_TRANSITION_WIDTH upward, a smoothstep blend in between
+ *   "near that band a very small change can turn a box a long way while its centre barely moves"
+ *       _linear_heading's docstring ("NOT fixed — above the floor the 1/|v| sensitivity remains"), and
+ *       tests/test_heading_candidate_artifact.py (a weighted norm of 0.001 moved the heading 0.67 rad, the centre 4 cm)
+ *   "Vehicles use the bicycle model, which carries heading as part of its state, and are not affected by this"
+ *       src/physics/simulator.py ForwardSimulator.step (TYPE_VEHICLE -> bicycle_step); _linear_heading's
+ *       docstring ("Vehicles never reach this function")
+ * Nothing here is a count: the page carries no data numbers, which go stale.
  */
 const PIPELINE = [
   {
@@ -80,6 +97,11 @@ const LIMITS = [
   'The browser draws each box at the size recorded for that frame, which is the size the collision check used. ' +
     'Data exported before per-frame sizes were stored is drawn at one size per agent, and the note under the ' +
     'scene says so.',
+  'Pedestrian and cyclist replay is less well measured than vehicle replay. For these agents the model uses the ' +
+    'recorded heading when the agent is slow and the heading implied by its motion when it is faster, blending ' +
+    'between them over a narrow speed band; near that band a very small change can turn a box a long way while ' +
+    'its centre barely moves. Vehicles use the bicycle model, which carries heading as part of its state, and are ' +
+    'not affected by this.',
 ] as const;
 
 export function MethodPage() {

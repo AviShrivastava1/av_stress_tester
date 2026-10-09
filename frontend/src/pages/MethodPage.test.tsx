@@ -78,6 +78,11 @@ const LIMITS = [
   'The browser draws each box at the size recorded for that frame, which is the size the collision check used. ' +
     'Data exported before per-frame sizes were stored is drawn at one size per agent, and the note under the ' +
     'scene says so.',
+  'Pedestrian and cyclist replay is less well measured than vehicle replay. For these agents the model uses the ' +
+    'recorded heading when the agent is slow and the heading implied by its motion when it is faster, blending ' +
+    'between them over a narrow speed band; near that band a very small change can turn a box a long way while ' +
+    'its centre barely moves. Vehicles use the bicycle model, which carries heading as part of its state, and are ' +
+    'not affected by this.',
 ] as const;
 
 async function openMethod() {
@@ -141,7 +146,7 @@ describe('the Method page', () => {
     }
   });
 
-  it('states what the output does not mean, in four visible bullets, the fourth describing what the browser does now', async () => {
+  it('states what the output does not mean, in five visible bullets, the fourth describing what the browser does now', async () => {
     await openMethod();
     expect(screen.getByText('INTERPRETATION')).toBeVisible();
     const section = screen.getByRole('heading', { name: 'What the output does—and does not—mean', level: 2 }).closest('section')!;
@@ -151,6 +156,18 @@ describe('the Method page', () => {
     const fourth = bullets[3]!.textContent!;
     expect(fourth).not.toMatch(/first-observed|first observed/);
     expect(fourth).not.toMatch(/currently draws/);
+  });
+
+  it('says that pedestrian and cyclist replay is less well measured, and why, in a bullet that is visible', async () => {
+    await openMethod();
+    const section = screen.getByRole('heading', { name: 'What the output does—and does not—mean', level: 2 }).closest('section')!;
+    const bullet = within(section).getByText(/^Pedestrian and cyclist replay is less well measured than vehicle replay\./);
+    expect(bullet.tagName).toBe('LI');
+    expect(bullet).toBeVisible();
+    expect(bullet.closest('details')).toBeNull();
+    expect(bullet).toHaveTextContent('narrow speed band');
+    expect(bullet).toHaveTextContent('are not affected by this');
+    expect(bullet.textContent).not.toMatch(/\d/);   // no counts: the page carries no data numbers
   });
 
   it('hides nothing in a collapsed element', async () => {
