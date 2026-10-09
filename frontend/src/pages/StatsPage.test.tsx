@@ -208,6 +208,8 @@ describe('navigation', () => {
     expect(within(nav).getByRole('link', { name: 'Scenarios' })).not.toHaveClass('active');
 
     await userEvent.click(within(nav).getByRole('link', { name: 'Scenarios' }));
-    expect(await screen.findByRole('heading', { name: 'Scenarios', level: 1 })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'How small a change turns a recorded driving scene into a collision?', level: 1 }),
+    ).toBeInTheDocument();
   });
 });

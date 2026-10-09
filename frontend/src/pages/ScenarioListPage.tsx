@@ -24,6 +24,69 @@ export interface ListReturnState {
   listSearch: string;
 }
 
+/*
+ * The words at the top of the list. Every sentence describes code that exists in this repository, and
+ * none claims the site computes anything live or certifies anything. What backs each one:
+ *
+ *   eyebrow "AUTONOMOUS-VEHICLE SCENARIO STRESS-TESTING"
+ *       the scenes are Waymo Open Motion Dataset scenarios (src/data/parser.py ScenarioParser); "stress-testing"
+ *       is src/scoring/batch_scorer.py stress_test_scenarios
+ *   h1 "How small a change turns a recorded driving scene into a collision?"
+ *       the question scenario_scores.min_perturbation answers: the smallest perturbation found by
+ *       src/optimization/scipy_optimizer.py optimize_scenario that makes check_collision_trajectory
+ *       (src/danger/collision_detector.py) report contact
+ *   lede "...smallest model-constrained change that produces geometric contact, then lets you inspect each stored
+ *         result frame by frame"
+ *       model-constrained: the bicycle and linear replay models (src/physics/bicycle_model.py, linear_model.py)
+ *       via src/optimization/perturbation_space.py PerturbationSpace; geometric contact: collision_detector.py;
+ *       stored result, frame by frame: scenario_scores / perturbed_paths, replayed by scene/SceneView.tsx
+ *       and scene/PlaybackControls.tsx
+ *   "Explore the results" / "How the system works": the explorer below, and the /method route (pages/MethodPage.tsx)
+ *   technology stack: Python (.python-version), SciPy (scipy_optimizer.py, differential_evolution), PyTorch
+ *       (src/optimization/autograd_optimizer.py `import torch`, requirements.txt; the refinement is optional), PostGIS
+ *       (src/scoring/export_geometry.py), FastAPI (src/api/main.py), React (frontend/package.json)
+ *   pipeline
+ *       Rank          src/danger/ttc_engine.py (SDC-restricted, db.py documents it), src/danger/pet_engine.py
+ *       Perturb       PerturbationSpace: four dimensions per model (perturbation_space.py), search in scipy_optimizer.py
+ *       Verify        perturbation_space.ReplayFidelityError (the replay gates) and collision_detector.get_corners
+ *                     (oriented boxes)
+ *       Publish       src/scoring/export_geometry.py export_shard_geometry -> PostGIS -> src/api/routes.py -> this app
+ *       "offline search · stored results"  the API has no endpoint that runs the optimizer (src/api/__init__.py)
+ *       "a stored result you can replay, with the settings that produced it"  scenario_scores.search_provenance
+ *                     (src/scoring/db.py) and the replay in scene/SceneView.tsx
+ *   highlight cards
+ *       Kinematic replay      src/physics/bicycle_model.py and linear_model.py; the fidelity refusals are
+ *                             ReplayFidelityError and the status replay_infeasible (batch_scorer._stress_one)
+ *       Global search, optional refinement
+ *                             scipy_optimizer.optimize_scenario (Differential Evolution); autograd_optimizer.refine_scenario
+ *                             runs only when _stress_one(use_autograd=True); collision_detector.get_corners promotes to float64
+ *       Provenance stored with each result
+ *                             db.compute_scene_fingerprint, db.compute_stress_run_id, the search_provenance column;
+ *                             the read-only role av_api_ro (DEPLOY.md step 2) and an API with no write route (src/api/routes.py)
+ *   explorer eyebrow "STORED RESULTS" and its introduction
+ *       rows read from scenario_scores by GET /scenarios (routes.list_scenarios); a collision's replay compares
+ *       the logged track with the perturbed one from perturbed_paths (export_perturbed_path); "the smallest ...
+ *       it found" is min_perturbation
+ *   metric guide
+ *       fragility: src/danger/danger_score.py; "not a collision probability": README.md; "weighted": the weighted
+ *       norm in optimize_scenario (and the note in pages/detail/ReplayOffsetBlock.tsx); "finite search": the
+ *       Differential Evolution budget recorded in search_provenance (de_popsize, de_maxiter); TTC and PET:
+ *       ttc_engine.py, pet_engine.py; "None": no finite value (components/TimeMetricCell.tsx); negative PET:
+ *       pet_engine._conflict_components (two agents inside the same connected conflict zone at overlapping times)
+ */
+const HERO_STACK = ['Python', 'SciPy', 'PyTorch', 'PostGIS', 'FastAPI', 'React'] as const;
+const HERO_PIPELINE = [
+  ['Rank', 'SDC-restricted TTC + PET'],
+  ['Perturb', 'Bounded 4-D kinematic search'],
+  ['Verify', 'Replay gates + oriented boxes'],
+  ['Publish', 'PostGIS → API → browser replay'],
+] as const;
+const HERO_CARDS = [
+  ['Kinematic replay', 'Bicycle and linear motion models, with explicit fidelity refusals.'],
+  ['Global search, optional refinement', 'Differential Evolution, optional gradient refinement, float64 oriented-box verification.'],
+  ['Provenance stored with each result', 'Scene identity, run provenance, read-only production API.'],
+] as const;
+
 export function scenarioPath(scenarioId: string): string {
   return `/scenarios/${encodeURIComponent(scenarioId)}`;
 }
@@ -76,12 +139,53 @@ export function ScenarioListPage() {
   }
 
   return (
-    <section>
+    <>
+      <section className="project-hero">
+        <div className="hero-copy">
+          <p className="eyebrow hero-eyebrow">AUTONOMOUS-VEHICLE SCENARIO STRESS-TESTING</p>
+          <h1>How small a change turns a recorded driving scene into a collision?</h1>
+          <p className="hero-lede">
+            This project searches recorded driving scenes for the smallest model-constrained change that produces
+            geometric contact, then lets you inspect each stored result frame by frame.
+          </p>
+          <div className="hero-actions">
+            <a className="button-link button-primary" href="#scenario-explorer">Explore the results</a>
+            <Link className="text-link" to="/method">How the system works <span aria-hidden="true">→</span></Link>
+          </div>
+          <ul className="stack-list" role="list" aria-label="Technology stack">
+            {HERO_STACK.map((item) => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+
+        <div className="hero-system" role="group" aria-label="Analysis pipeline">
+          <div className="hero-system-head">
+            <span>Analysis pipeline</span>
+            <span className="system-status">offline search · stored results</span>
+          </div>
+          <ol>
+            {HERO_PIPELINE.map(([name, what], i) => (
+              <li key={name}><span>{String(i + 1).padStart(2, '0')}</span><div><strong>{name}</strong><small>{what}</small></div></li>
+            ))}
+          </ol>
+          <p className="hero-system-result"><span aria-hidden="true">↳</span> A stored result you can replay, with the settings that produced it.</p>
+        </div>
+      </section>
+
+      <section className="proof-strip" aria-label="Project highlights">
+        {HERO_CARDS.map(([title, body], i) => (
+          <article key={title}><span>{String(i + 1).padStart(2, '0')}</span><div><strong>{title}</strong><p>{body}</p></div></article>
+        ))}
+      </section>
+
+      <section id="scenario-explorer" className="explorer-section">
       <div className="list-header">
-        <div><p className="eyebrow">EXPLORE THE EDGE CASES</p><h1>Scenarios</h1></div>
+        <div><p className="eyebrow">STORED RESULTS</p><h2 className="section-title">Scenario explorer</h2></div>
         <span className="dataset-label">Waymo Open Dataset</span>
       </div>
-      <p className="page-intro">Explore recorded driving scenes and the small changes that lead to a collision.</p>
+      <p className="page-intro">
+        Open a scene to replay it. Where the search found a collision, the replay compares the recorded challenger
+        with the smallest collision-producing perturbation it found.
+      </p>
       <div className="list-tools">
         <form className="scenario-lookup" onSubmit={openScenario}>
           <label className="sr-only" htmlFor="scenario-lookup">Open by scenario ID</label>
@@ -103,7 +207,7 @@ export function ScenarioListPage() {
         and is not re-sorted here.
       </p>
       <details className="metric-guide"><summary>How to read the results</summary>
-        <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted change found by the search, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A negative PET records overlapping occupancy of a conflict zone.</p>
+        <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted perturbation found by the finite search, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A negative PET means two agents occupied the same connected conflict zone at overlapping times.</p>
       </details>
 
       {query.isPending ? (
@@ -191,6 +295,7 @@ export function ScenarioListPage() {
           </div>
         </>
       )}
-    </section>
+      </section>
+    </>
   );
 }
