@@ -22,8 +22,9 @@ import { renderApp } from '../test/renderApp';
  * The matching guard for the list and the detail page is the /\bsafe\b/i assertion in
  * ScenarioListPage.test.tsx.
  *
- * Only visible text (textContent) is linted. Tooltips such as the no-collision meaning ("not a safety
- * certificate") are negations in `title` attributes and are not part of it.
+ * Only visible text is linted (`title` attributes are not). The negation "not a safety certificate" is
+ * visible text on /stats (frontend/src/domain/outcomes.ts, `describeOutcome`), which is why ALLOWED_DENIALS
+ * exists.
  */
 
 afterEach(() => {
