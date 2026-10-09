@@ -251,3 +251,5 @@ kbd { font:inherit; border:1px solid var(--border); border-radius:3px; padding:1
 .scenario-table .timing-col { width:1%; } /* the column takes the width of its content, so each label sits by its value */
 .timing-line { display:flex; justify-content:space-between; gap:10px; }
 .timing-label { color:var(--text-muted); font-size:11px; letter-spacing:.3px; cursor:help; }
+.site-footer .footer-project { display:flex; flex-wrap:wrap; gap:2px 12px; margin-bottom:10px; }
+.site-footer .footer-project strong { color:var(--text); font-weight:650; }

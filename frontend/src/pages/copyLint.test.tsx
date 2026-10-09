@@ -14,7 +14,8 @@ import { renderApp } from '../test/renderApp';
  *   live        nothing on this site is computed live: the search runs offline and the API reads stored rows
  *   safety      the project is not a safety certificate
  *   end-to-end  the offline stages are run by hand in Colab; the site does not automate them
- *   adversarial only the one backed subtitle may say it (added with the chrome diff, see ALLOWED_SUBTITLES)
+ *   adversarial only the brand subtitle "Adversarial scenario search" may say it (ALLOWED_SUBTITLES): the search is a
+ *               search for a perturbation that produces contact, see App.tsx
  *
  * "safe" is forbidden on the list, the Method page and the detail page, but NOT on /stats: the Corpus
  * page lists the server's `robustly_safe` count under the label ROBUSTLY_SAFE.label ("robustly safe",
@@ -33,8 +34,8 @@ afterEach(() => {
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
 
-/** The one sentence that may say "adversarial", once the chrome diff adds it. Empty until then. */
-const ALLOWED_SUBTITLES: string[] = [];
+/** The one phrase that may say "adversarial": the brand subtitle in the header of every page. */
+const ALLOWED_SUBTITLES: string[] = ['Adversarial scenario search'];
 
 /**
  * Phrases that contain a banned word only to DENY the claim. There is exactly one, on `main` since before
@@ -86,6 +87,10 @@ describe('the matcher itself', () => {
     ['safety and safe', ['safety', 'safe']],
     ['This is a statement about the search, not a safety certificate.', []],
     ['a safety certificate', ['safety']],
+    ['Adversarial scenario search', []],
+    ['An adversarial pipeline', ['adversarial']],
+    ['Recorded scene · adversarial challenger', ['adversarial']],
+    ['Adversarial scenario search, and an adversarial reading of it', ['adversarial']],
     ['proves it is safe: not a safety certificate', ['safe']],
   ])('%s -> %j', (text, expected) => {
     expect(violations(text)).toEqual(expected);

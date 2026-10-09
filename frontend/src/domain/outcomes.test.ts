@@ -21,6 +21,12 @@ describe('outcome vocabulary', () => {
     expect(meaning).not.toBe('');
   });
 
+  it('says what a found collision is: an oriented-box intersection at the stored coordinate precision', () => {
+    expect(describeOutcome('collision_found').meaning).toBe(
+      'A perturbation produced an oriented-box intersection at the stored coordinate precision.',
+    );
+  });
+
   it('gives every outcome its own label', () => {
     const labels = OUTCOMES.map((o) => describeOutcome(o).label);
     expect(new Set(labels).size).toBe(OUTCOMES.length);

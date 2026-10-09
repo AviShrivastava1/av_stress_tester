@@ -6,6 +6,14 @@ import { MethodPage } from './pages/MethodPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
 import { StatsPage } from './pages/StatsPage';
 
+/*
+ * Brand subtitle "Adversarial scenario search"
+ *     the project searches for a perturbation that produces contact: src/optimization/scipy_optimizer.py
+ *     optimize_scenario minimises the size of a bounded change to one agent's motion subject to
+ *     src/danger/collision_detector.py check_collision_trajectory reporting a collision. The word names that
+ *     search for inputs that cause failure; it is an optimiser, not an opposing agent. copyLint.test.tsx allows
+ *     this exact phrase and no other use of "adversarial".
+ */
 function Layout({ children }: { children?: ReactNode }) {
   return (
     <div className="page">
@@ -13,7 +21,7 @@ function Layout({ children }: { children?: ReactNode }) {
       <header className="site-header">
         <Link to="/" className="brand" aria-label="AV Scenario Stress-Tester home">
           <span className="brand-mark" aria-hidden="true">AV</span>
-          <span className="site-title">Scenario Stress-Tester<span className="brand-subtitle">Autonomous driving · scenario analysis</span></span>
+          <span className="site-title">Scenario Stress-Tester<span className="brand-subtitle">Adversarial scenario search</span></span>
         </Link>
         <nav className="site-nav" aria-label="Main">
           <NavLink to="/" end>

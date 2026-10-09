@@ -9,6 +9,17 @@ import { describeOutcome, ROBUSTLY_SAFE } from '../domain/outcomes';
  * summed, divided or charted: the counts come from different columns (see
  * src/api/routes.py's stats handler) and do not partition the corpus, so a total, a
  * percentage or a pie would assert a relationship the data does not have.
+ *
+ * The header copy, and what backs it:
+ *   "The scored sample, the stored search results, the latest attempts, and the service's health."
+ *       the four panels below: CorpusPanel (scenario_scores rows), StoredResultsPanel (stress_tested_at and
+ *       stress_outcome), LatestAttemptsPanel (last_attempt_outcome), and the health panel (GET /health)
+ *   "Counts are shown exactly as the API reports them."
+ *       count() below only adds thousands separators to the number the API sent, and no value on the page is
+ *       summed, divided or differenced; the fragility figures are not counts and are rounded to three decimals
+ *   "They represent different fields and are not assumed to partition the corpus."
+ *       src/api/routes.py stats() computes each count with its own count(*) FILTER (WHERE ...) over different
+ *       columns (stress_tested_at, stress_outcome, last_attempt_outcome), and with_geometry from scenario_agents
  */
 
 function count(n: number): string {
@@ -145,7 +156,13 @@ export function StatsPage() {
         <div><p className="eyebrow">DATASET OVERVIEW</p><h1>Corpus</h1></div>
         <span className="dataset-label">Waymo Open Dataset</span>
       </div>
-      <p className="caption">Counts as the API reports them. Nothing on this page is summed or charted.</p>
+      <p className="page-intro">
+        The scored sample, the stored search results, the latest attempts, and the service&apos;s health.
+      </p>
+      <p className="caption">
+        Counts are shown exactly as the API reports them. They represent different fields and are not assumed to
+        partition the corpus.
+      </p>
 
       <div className="stats-grid">
         {stats.isPending ? (

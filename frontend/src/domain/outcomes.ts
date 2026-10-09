@@ -58,7 +58,11 @@ export function describeOutcome(outcome: Outcome): OutcomeDescription {
       return {
         label: 'collision found',
         tone: 'danger',
-        meaning: 'A perturbation was found that causes a collision, verified by exact geometry.',
+        // "oriented-box intersection": src/danger/collision_detector.py get_corners / check_collision_trajectory.
+        // "stored coordinate precision": the corners are float64 (COLLISION_GEOMETRY_VERSION
+        // 'oriented-box-float64-v1') and the exported path is written with repr(float(...)), which round-trips
+        // binary64 exactly (src/scoring/export_geometry.py), so the check runs on what is stored.
+        meaning: 'A perturbation produced an oriented-box intersection at the stored coordinate precision.',
       };
     case 'no_collision_found':
       return {
