@@ -2,6 +2,7 @@ import { screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { makeDetail, makePerturbed, makeTrack, makeTrajectories, range } from '../test/fixtures';
 import { stubFetch, type RecordedRequest, type Reply } from '../test/fetchStub';
+import { cssRules } from '../test/cssRules';
 import { readFrontendFile } from '../test/readFrontendFile';
 import { renderApp } from '../test/renderApp';
 
@@ -202,15 +203,6 @@ describe('the header', () => {
  * simulated comparison, so it must be visible at every width. jsdom does not apply the stylesheet, so the CSS half of
  * this is a check on styles.css as text: no rule, in any media block, may hide a label that is in the detail header.
  */
-interface CssRule { selector: string; declarations: string }
-function cssRules(text: string): CssRule[] {
-  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, '');
-  // A rule is `selector { declarations }` with no braces inside, so a rule inside @media matches on its own.
-  return [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
-    selector: m[1]!.trim().replace(/\s+/g, ' '),
-    declarations: m[2]!.replace(/\s+/g, ''),
-  }));
-}
 const HIDES = /(?:^|;)(?:display:none|visibility:hidden|opacity:0|font-size:0)(?:!important)?(?:;|$)/;
 /** Selectors that can reach the header label: anything under .detail-heading, or the bare .dataset-label. */
 const reachesHeaderLabel = (selector: string) =>

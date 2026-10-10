@@ -1,0 +1,169 @@
+import { describe, expect, it } from 'vitest';
+import { cssRules } from './test/cssRules';
+import { readFrontendFile } from './test/readFrontendFile';
+
+/*
+ * The stylesheet's palette and the text sizes it must not shrink below, checked as text (jsdom does not apply it).
+ *
+ *   light only         the palette is one light scheme: color-scheme is `light` and there is no prefers-color-scheme
+ *                      block, so the browser's own controls and the page agree
+ *   theme-color        the browser chrome colour in index.html is the page background, --bg
+ *   defined tokens     every var(--x) in the stylesheet has a definition in :root
+ *   scene tokens       the role and agent-kind colours are the ones the dark scene frame was designed for
+ *   11 px floor        text that carries a caveat, a denial or the Waymo licence attribution is never set below 11 px;
+ *                      the hero note, when it arrives, never below 12 px
+ */
+
+const css = readFrontendFile('src/styles.css');
+const html = readFrontendFile('index.html');
+const rules = cssRules(css);
+const root = rules.find((r) => r.selector === ':root')!;
+const token = (name: string) => new RegExp(`${name}:([^;]+);`).exec(root.declarations)?.[1];
+
+describe('the palette is light only', () => {
+  it('declares color-scheme: light, and no dark', () => {
+    expect(root.declarations).toContain('color-scheme:light;');
+    expect(css).not.toMatch(/color-scheme:\s*[^;]*dark/);
+  });
+
+  it('has no prefers-color-scheme block', () => {
+    expect(css).not.toMatch(/prefers-color-scheme/);
+  });
+});
+
+describe('theme-color', () => {
+  it('is the page background, --bg', () => {
+    const themeColor = /<meta\s+name="theme-color"\s+content="([^"]+)"\s*\/?>/.exec(html)?.[1];
+    expect(token('--bg')).toBe('#f2f3ee');
+    expect(themeColor).toBe(token('--bg'));
+  });
+
+  it('is declared exactly once', () => {
+    expect(html.match(/name="theme-color"/g)).toHaveLength(1);
+  });
+});
+
+describe('the tokens', () => {
+  it('every var(--x) used in the stylesheet is defined in :root', () => {
+    const used = new Set([...css.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]!));
+    const defined = new Set([...root.declarations.matchAll(/(--[\w-]+):/g)].map((m) => m[1]!));
+    expect(used.size).toBeGreaterThan(10);
+    expect([...used].filter((name) => !defined.has(name))).toEqual([]);
+  });
+
+  it('keeps the scene colours the dark scene frame was designed for', () => {
+    expect(token('--role-sdc')).toBe('#3f83ff');
+    expect(token('--role-challenger')).toBe('#e2ad44');
+    expect(token('--role-perturbed')).toBe('#ff5c68');
+    expect(token('--kind-vehicle')).toBe('#86928c');
+    expect(token('--kind-pedestrian')).toBe('#4ecb9f');
+    expect(token('--kind-cyclist')).toBe('#b78df0');
+    expect(token('--kind-unknown')).toBe('#89928d');
+    const frame = rules.find((r) => r.selector === '.scene-frame')!;
+    expect(frame.declarations).toContain('background-color:#0b100e');
+  });
+});
+
+/**
+ * Text that carries a caveat, a denial or the Waymo licence attribution, by the class that styles it. The list is an
+ * audit of the copy in the .tsx files (their backing comments), not a pattern: a class is here because a sentence on
+ * a page is set in it. Each must exist in styles.css, and none may set a size below the floor.
+ */
+const CAVEAT_CLASSES: Record<string, string> = {
+  'site-footer': 'the Waymo licence attribution (components/Footer.tsx)',
+  caption: 'the list caption (ties, "not a proven minimum"); the Corpus captions and the non-partition caveat',
+  'metric-guide': 'the list metric guide ("not a collision probability", "not a proven global minimum")',
+  note: 'the detail scene notes (box sizes, positions at frame); the Corpus "not guaranteed to add up" note',
+  'replay-note': 'the detail baseline-offset note',
+  'stat-def': 'the Corpus definitions, including "not a safety certificate"',
+  'limits-panel': 'the Method page LIMITS',
+  'method-lede': 'the Method page "not a collision-probability model"',
+  status: 'the detail "No geometry to draw…" sentence; loading and error messages',
+  'status-error': 'inline error text',
+  'keyboard-hint': 'the instruction sentence under the replay',
+  'system-status': 'the list hero "offline search · stored results"',
+};
+/** Classes that do not exist yet; when they arrive they are held to the floor, and the hero note to 12 px. */
+const COMING_CAVEAT_CLASSES = ['hero-note'];
+const FLOOR = 11;
+const FLOOR_BY_CLASS: Record<string, number> = { 'hero-note': 12 };
+
+/**
+ * The only selectors allowed below the floor: short labels, eyebrows and numbers, not sentences. A new selector below
+ * the floor that is not named here fails, so a new class is classified on purpose instead of by a pattern.
+ */
+const SHORT_LABELS = new Set([
+  '.brand-subtitle', '.eyebrow', '.facts dd.mono', '.hero-system li > span', '.legend', '.panel-kicker', '.pipeline-meta',
+  '.pipeline-number', '.proof-strip article > span', '.rate select', '.readout', '.result-overview > div > span',
+  '.scene-panel-heading > span', '.tag',
+]);
+
+/** The font size, in px, a rule sets by `font-size` or the `font` shorthand; null if it sets none. */
+const px = (text: string): number | null => {
+  const size = /(?:^|;)\s*font-size:\s*(\d+(?:\.\d+)?)px/.exec(text) ?? /(?:^|;)\s*font:[^;]*?(\d+(?:\.\d+)?)px/.exec(text);
+  return size ? Number(size[1]) : null;
+};
+const parts = (selector: string) => selector.split(',').map((part) => part.trim()).filter((part) => !part.includes(':not('));
+/** True when the selector names the class (also in a compound such as `dd.replay-note`), not a longer class such as `.footnote`. */
+const hasClass = (part: string, name: string) => new RegExp(`\\.${name}(?![\\w-])`).test(part);
+
+function sizeViolations(all: ReturnType<typeof cssRules>): string[] {
+  const out: string[] = [];
+  for (const r of all) {
+    const size = px(r.text);
+    if (size === null) continue;
+    for (const part of parts(r.selector)) {
+      for (const name of [...Object.keys(CAVEAT_CLASSES), ...COMING_CAVEAT_CLASSES]) {
+        const floor = FLOOR_BY_CLASS[name] ?? FLOOR;
+        if (hasClass(part, name) && size < floor) out.push(`${part} { ${size}px } carries ${name} text (floor ${floor}px)`);
+      }
+      if (size < FLOOR && !SHORT_LABELS.has(part)) out.push(`${part} { ${size}px } is under ${FLOOR}px and is not a listed short label`);
+    }
+  }
+  return [...new Set(out)];
+}
+
+describe('the text-size floor', () => {
+  it('every class that styles a caveat, denial or licence sentence is in the stylesheet, by its real name', () => {
+    for (const name of Object.keys(CAVEAT_CLASSES)) {
+      expect(rules.some((r) => parts(r.selector).some((part) => hasClass(part, name))), `.${name} has no rule`).toBe(true);
+    }
+  });
+
+  it('no caveat, denial or licence text is set below 11 px (hero note: 12 px), in any media block', () => {
+    expect(rules.filter((r) => px(r.text) !== null).length).toBeGreaterThan(40); // the checker reads real rules
+    expect(sizeViolations(rules)).toEqual([]);
+  });
+
+  it('nothing else is under 11 px unless it is a listed short label: no unclassified small text', () => {
+    const small = rules.flatMap((r) => (px(r.text) !== null && px(r.text)! < FLOOR ? parts(r.selector) : []));
+    expect(small.length).toBeGreaterThan(5);
+    expect(small.filter((part) => !SHORT_LABELS.has(part))).toEqual([]);
+  });
+
+  it('font sizes are in px, so the floor means what it says', () => {
+    expect(css).not.toMatch(/font-size:\s*[\d.]+(?:r?em|%)/);
+    expect(css).not.toMatch(/(?:^|[;{\s])font:[^;}]*\b[\d.]+(?:r?em|%)\//);
+  });
+
+  it('the footer, which carries the Waymo licence attribution, is not smaller than it was (12 px)', () => {
+    const sizes = rules.filter((r) => parts(r.selector).some((part) => hasClass(part, 'site-footer')) && px(r.text) !== null);
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const r of sizes) expect(px(r.text)!, r.selector).toBeGreaterThanOrEqual(12);
+  });
+
+  it('the checker itself: finds a class by its real name, an unlisted small class, and spares short labels', () => {
+    const sample = cssRules(
+      '.limits-panel ul { font-size:10px; } .scene-note { font-size:9px; } .keyboard-hint { font-size:10px; } .hero-note { font-size:11px; } ' +
+        '.eyebrow { font:720 10px/1.5 mono; } .legend { font-size:10px; } .stat[data-stat="x"] > dd:not(.stat-def) { font-size:9px; } .footnote { font-size:12px; }',
+    );
+    expect(sizeViolations(sample)).toEqual([
+      '.limits-panel ul { 10px } carries limits-panel text (floor 11px)',
+      '.limits-panel ul { 10px } is under 11px and is not a listed short label',
+      '.scene-note { 9px } is under 11px and is not a listed short label',
+      '.keyboard-hint { 10px } carries keyboard-hint text (floor 11px)',
+      '.keyboard-hint { 10px } is under 11px and is not a listed short label',
+      '.hero-note { 11px } carries hero-note text (floor 12px)',
+    ]);
+  });
+});
