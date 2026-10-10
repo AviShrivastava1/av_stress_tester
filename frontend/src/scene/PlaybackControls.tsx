@@ -12,6 +12,24 @@ export interface PlaybackControlsProps {
   collisionFrame: number | null;
 }
 
+type TransportKind = 'back' | 'play' | 'pause' | 'forward';
+
+/*
+ * The transport symbols are drawn here rather than typed as Unicode glyphs ("|◀︎", "▶︎", "❚❚", "▶︎|"), which look
+ * different on every platform. The shapes are the same four symbols; the buttons' accessible names are their own
+ * aria-labels below, so the drawing is aria-hidden. Filled shapes carry `transport-fill`, bars carry none.
+ */
+function TransportIcon({ kind }: { kind: TransportKind }) {
+  return (
+    <svg className="transport-icon" data-icon={kind} viewBox="0 0 20 20" aria-hidden="true">
+      {kind === 'back' && <><path d="M5 4v12" /><path className="transport-fill" d="m15 5-8 5 8 5Z" /></>}
+      {kind === 'play' && <path className="transport-fill" d="m7 4 9 6-9 6Z" />}
+      {kind === 'pause' && <><path d="M7 5v10" /><path d="M13 5v10" /></>}
+      {kind === 'forward' && <><path d="M15 4v12" /><path className="transport-fill" d="m5 5 8 5-8 5Z" /></>}
+    </svg>
+  );
+}
+
 export function PlaybackControls({ range, playback, observed, total, collisionFrame }: PlaybackControlsProps) {
   const ticksId = useId();
   const frozen = isStatic(range);
@@ -28,7 +46,7 @@ export function PlaybackControls({ range, playback, observed, total, collisionFr
           disabled={frozen || frame <= range.first}
           onClick={() => playback.step(-1)}
         >
-          |◀︎
+          <TransportIcon kind="back" />
         </button>
         <button
           type="button"
@@ -37,7 +55,7 @@ export function PlaybackControls({ range, playback, observed, total, collisionFr
           disabled={frozen}
           onClick={playback.toggle}
         >
-          {playback.playing ? '❚❚' : '▶︎'}
+          <TransportIcon kind={playback.playing ? 'pause' : 'play'} />
         </button>
         <button
           type="button"
@@ -45,7 +63,7 @@ export function PlaybackControls({ range, playback, observed, total, collisionFr
           disabled={frozen || frame >= range.last}
           onClick={() => playback.step(1)}
         >
-          ▶︎|
+          <TransportIcon kind="forward" />
         </button>
         <input
           type="range"

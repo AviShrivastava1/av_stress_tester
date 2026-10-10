@@ -146,6 +146,8 @@ button:disabled { cursor:default; opacity:.5; }
 .playback-row .play { background:var(--accent-soft); color:var(--accent); border-color:transparent; }
 .scrubber { flex:1; min-width:110px; accent-color:var(--accent); height:25px; }
 .readout { font-size:10px; color:var(--text-muted); font-variant-numeric:tabular-nums; margin-right:auto; }
+.transport-icon { display:block; width:17px; height:17px; margin:auto; overflow:visible; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.transport-icon .transport-fill { fill:currentColor; stroke:none; }
 .link-button { border:0; background:none; color:var(--accent); padding:0; font-size:11px; }
 .rate select { font-size:10px; padding:5px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text); }
 .keyboard-hint { font-size:10px; color:var(--text-muted); margin:12px 0 0; }

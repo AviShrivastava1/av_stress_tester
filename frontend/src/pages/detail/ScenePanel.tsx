@@ -104,6 +104,9 @@ export interface ScenePanelProps {
  * 10 Hz, the same `DT = 0.1` the backend's replay models and PET use (src/physics/bicycle_model.py,
  * src/danger/pet_engine.py). It is the data's spacing, not a playback rate: playback rates are
  * offered in frames per second (scene/playback.ts) and are not real time.
+ *
+ * The panel header prints this interval and the rate it implies, `1 / FRAME_INTERVAL_S` Hz, from this one constant,
+ * so "10 Hz · 0.1 s / frame" cannot disagree with itself.
  */
 const FRAME_INTERVAL_S = 0.1;
 
@@ -117,7 +120,7 @@ export function ScenePanel(props: ScenePanelProps) {
           <p className="panel-kicker">{comparing ? 'RECORDED VS PERTURBED, FRAME BY FRAME' : 'RECORDED SCENE'}</p>
           <h2>Replay</h2>
         </div>
-        <span>{FRAME_INTERVAL_S} s / frame</span>
+        <span>{`${Math.round(1 / FRAME_INTERVAL_S)} Hz · ${FRAME_INTERVAL_S} s / frame`}</span>
       </div>
       <SceneBody {...props} />
     </section>
