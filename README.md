@@ -194,7 +194,7 @@ Frontend:
 cd frontend
 npm ci
 npm run typecheck
-npx vitest run          # 473 tests in 35 files on the author's machine
+npm test                # full frontend suite (vitest run)
 VITE_API_BASE_URL=https://api.example.invalid npm run build
 ```
 

@@ -14,6 +14,16 @@ describe('OutcomeBadge', () => {
     render(<OutcomeBadge outcome="partial_collision" />);
     expect(screen.getByText('unrecognized: partial_collision')).toBeInTheDocument();
   });
+
+  it('says in its title that the API sent an outcome this interface does not recognize', () => {
+    render(<OutcomeBadge outcome="partial_collision" />);
+    const badge = screen.getByText('unrecognized: partial_collision');
+    expect(badge).toHaveAttribute(
+      'title',
+      'The API returned an outcome this interface does not recognize. Shown verbatim rather than guessed.',
+    );
+    expect(badge.getAttribute('title')).not.toMatch(/dashboard/i);
+  });
 });
 
 describe('OutcomeCell', () => {

@@ -103,6 +103,10 @@ const HERO_CARDS = [
  *       a tie is equal fragility_score, so the scenario_id order carries no information about fragility
  *   "Min perturbation is the smallest found by a finite search, not a proven minimum"
  *       the Differential Evolution budget in search_provenance (scipy_optimizer.optimize_scenario)
+ *   the table's screen-reader caption "Scenarios ordered by fragility score, highest first"
+ *       the same ordering as the visible caption's first sentence above (GET /scenarios, list_scenarios, fragility_score
+ *       descending). It is `sr-only`, so it names the table for assistive technology and takes no space; the visible
+ *       caption above the table carries the tie caveat and the "not a proven minimum" sentence
  *   header "Timing" and its title "Minimum TTC and PET over pairs involving the SDC"
  *       min_ttc and min_pet are the values danger_score.score_scenario stores from compute_min_ttc_sdc
  *       (src/danger/ttc_engine.py) and compute_min_pet_sdc (src/danger/pet_engine.py), which restrict to pairs
@@ -255,6 +259,7 @@ export function ScenarioListPage() {
         <>
           <div className="table-scroll" role="region" aria-label="Scenario results" tabIndex={0}>
             <table className="scenario-table">
+              <caption className="sr-only">Scenarios ordered by fragility score, highest first</caption>
               <thead>
                 <tr>
                   <th scope="col" className="num">#</th>

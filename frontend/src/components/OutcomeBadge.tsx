@@ -8,6 +8,12 @@ function Badge({ tone, label, title }: { tone: Tone; label: string; title: strin
   );
 }
 
+/*
+ * The title on an unrecognized outcome: "The API returned an outcome this interface does not recognize. Shown verbatim
+ * rather than guessed." What backs it: `parseOutcome` (domain/outcomes.ts) returns null for any string outside OUTCOMES,
+ * the six values of `stress_outcome` / `last_attempt_outcome` in src/api/models.py; the label below prints the string
+ * as received ("unrecognized: <outcome>") and nothing maps it to a known one.
+ */
 /** One outcome string from the API. Anything outside the known six is shown raw. */
 export function OutcomeBadge({ outcome }: { outcome: string }) {
   const known = parseOutcome(outcome);
@@ -16,7 +22,7 @@ export function OutcomeBadge({ outcome }: { outcome: string }) {
       <Badge
         tone="warning"
         label={`unrecognized: ${outcome}`}
-        title="The API returned an outcome this dashboard does not know. Shown verbatim rather than guessed."
+        title="The API returned an outcome this interface does not recognize. Shown verbatim rather than guessed."
       />
     );
   }

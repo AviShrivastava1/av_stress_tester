@@ -49,6 +49,23 @@ function bodyRow(table: HTMLElement, index: number) {
 }
 const cell = (row: HTMLElement, col: number) => within(row).getAllByRole('cell')[col]!;
 
+describe('the table\'s accessible name', () => {
+  it('is its screen-reader caption: the order, highest fragility first', async () => {
+    const table = await openList();
+    expect(table).toHaveAccessibleName('Scenarios ordered by fragility score, highest first');
+    const caption = table.querySelector('caption');
+    expect(caption).not.toBeNull();
+    expect(table.firstElementChild).toBe(caption);
+    expect(caption).toHaveClass('sr-only');
+  });
+
+  it('is not shown as a second caption: the visible caption is the one above the table', async () => {
+    await openList();
+    expect(document.querySelectorAll('caption:not(.sr-only)')).toHaveLength(0);
+    expect(screen.getByText(CAPTION)).toBeVisible();
+  });
+});
+
 describe('the caption', () => {
   it('says how the order is made, and what a tie does and does not mean', async () => {
     await openList();

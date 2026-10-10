@@ -2,6 +2,7 @@ import { screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { makeDetail, makePerturbed, makeTrack, makeTrajectories, range } from '../test/fixtures';
 import { stubFetch, type RecordedRequest, type Reply } from '../test/fetchStub';
+import { readFrontendFile } from '../test/readFrontendFile';
 import { renderApp } from '../test/renderApp';
 
 /*
@@ -215,13 +216,7 @@ const HIDES = /(?:^|;)(?:display:none|visibility:hidden|opacity:0|font-size:0)(?
 const reachesHeaderLabel = (selector: string) =>
   selector.split(',').some((part) => /\.detail-heading|\.detail-outcome/.test(part) || part.trim() === '.dataset-label');
 
-// The stylesheet's text, read from disk: vitest hands a `?raw` import of a .css file an empty string, and the project
-// has no @types/node, so Node's fs and cwd come from the process global (Node 22, as package.json "engines" requires).
-// vitest's root, and so its cwd, is frontend/.
-const nodeProcess = (globalThis as unknown as {
-  process: { cwd(): string; getBuiltinModule(id: 'node:fs'): { readFileSync(path: string, encoding: 'utf8'): string } };
-}).process;
-const css = nodeProcess.getBuiltinModule('node:fs').readFileSync(`${nodeProcess.cwd()}/src/styles.css`, 'utf8');
+const css = readFrontendFile('src/styles.css');
 
 describe('the comparison label stays visible', () => {
   it('sits in the header row with the outcome, above the replay', async () => {

@@ -3,6 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The description, and what backs each phrase:
+        "Replay recorded driving scenes"   the scenes are Waymo Open Motion Dataset scenarios
+                                           (src/data/parser.py ScenarioParser), replayed in the browser from stored rows
+                                           (scene/SceneView.tsx, scene/PlaybackControls.tsx)
+        "the smallest model-constrained change ... found"
+                                           scenario_scores.min_perturbation: the smallest perturbation
+                                           src/optimization/scipy_optimizer.py optimize_scenario found inside the bicycle
+                                           and linear replay models (src/optimization/perturbation_space.py)
+        "a finite search"                  the Differential Evolution budget recorded in search_provenance; the minimum is
+                                           the best found, not a proven minimum
+        "that produced contact"            src/danger/collision_detector.py check_collision_trajectory reported a collision
+    -->
+    <meta
+      name="description"
+      content="Replay recorded driving scenes and inspect the smallest model-constrained change a finite search found that produced contact."
+    />
     <title>AV Scenario Stress-Tester</title>
   </head>
   <body>
