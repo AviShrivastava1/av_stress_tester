@@ -20,14 +20,15 @@ a:hover { text-decoration-thickness:2px; }
 main:focus { outline:none; }
 .page { width:100%; max-width:1536px; min-height:100vh; margin:0 auto; padding:0 48px; display:flex; flex-direction:column; }
 main { flex:1; min-width:0; }
-.site-header { display:flex; align-items:center; justify-content:space-between; gap:24px; min-height:92px; border-bottom:1px solid var(--border); }
-.brand { display:inline-flex; align-items:center; gap:12px; color:var(--text); text-decoration:none; }
-.brand-mark { display:grid; place-items:center; width:40px; height:40px; border-radius:12px; background:#204fa8; color:#fff; font-size:15px; font-weight:750; letter-spacing:-1px; box-shadow:0 3px 8px #204fa822; }
-.site-title { font-size:15px; font-weight:700; letter-spacing:-.25px; }
-.brand-subtitle { display:block; font-size:11px; font-weight:400; color:var(--text-muted); letter-spacing:.2px; margin-top:1px; }
-.site-nav { display:flex; gap:6px; padding:4px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
-.site-nav a { text-decoration:none; color:var(--text-muted); padding:7px 17px; border-radius:8px; font-size:13px; }
-.site-nav a.active { color:var(--accent); background:var(--accent-soft); font-weight:650; }
+.site-header { position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between; gap:24px; min-height:78px; border-bottom:1px solid var(--border); background:var(--bg); background:color-mix(in srgb,var(--bg) 90%,transparent); backdrop-filter:blur(18px); }
+.brand { display:inline-flex; align-items:center; gap:9px; color:var(--text); text-decoration:none; }
+.brand-mark { color:var(--accent); font:750 13px/1 'SFMono-Regular',Consolas,'Liberation Mono',monospace; letter-spacing:-.04em; }
+.site-title { font-size:13px; font-weight:720; letter-spacing:-.02em; }
+.site-nav { display:flex; align-items:center; gap:27px; }
+.site-nav a { position:relative; padding:28px 0 25px; color:var(--text-muted); font-size:12px; font-weight:580; text-decoration:none; }
+.site-nav a::after { content:''; position:absolute; right:0; bottom:-1px; left:0; height:2px; background:transparent; }
+.site-nav a:hover,.site-nav a.active { color:var(--text); }
+.site-nav a.active::after { background:var(--text); }
 .skip-link { position:fixed; top:-100px; left:20px; z-index:50; padding:10px 18px; color:var(--text); background:var(--surface-strong); border:1px solid var(--border); }
 .skip-link:focus { top:12px; }
 .sr-only { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
@@ -170,8 +171,8 @@ kbd { font:inherit; border:1px solid var(--border); border-radius:3px; padding:1
 @media(max-width:1000px) { .panel { padding:18px; } }
 @media(max-width:820px) { .detail-heading { flex-direction:column; align-items:flex-start; gap:14px; } .detail-heading-meta { flex-direction:row; flex-wrap:wrap; align-items:center; gap:10px 14px; } .detail-side { grid-template-columns:minmax(0,1fr); } .detail-side > .panel,.detail-side > .panel + .panel { padding:28px 0; border-left:0; border-bottom:1px solid var(--border); } .stats-grid { gap:16px; } }
 @media(max-width:560px) {
-  .page { padding:0 18px; } .site-header { gap:16px; flex-wrap:wrap; padding:18px 0; min-height:auto; }
-  .brand-subtitle { font-size:10px; } .site-nav { width:100%; } .site-nav a { flex:1; text-align:center; }
+  .page { padding:0 18px; } .site-header { min-height:68px; } .site-title { display:none; }
+  .site-nav { gap:17px; } .site-nav a { padding:24px 0 21px; font-size:11px; }
   .list-header { margin-top:28px; } .list-header .dataset-label { display:none; } .page-intro { font-size:13px; }
   .list-tools { flex-direction:column; align-items:flex-start; } .scenario-lookup { max-width:none; }
   .table-scroll { border-radius:9px; } .scenario-table th,.scenario-table td { padding:12px; }

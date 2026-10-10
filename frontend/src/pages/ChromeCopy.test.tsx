@@ -7,7 +7,7 @@ import { stubFetch, type RecordedRequest, type Reply } from '../test/fetchStub';
 import { renderApp } from '../test/renderApp';
 
 /*
- * The words around every page (the brand subtitle and the footer) and at the top of the Corpus page.
+ * The words around every page (the wordmark and the footer) and at the top of the Corpus page.
  * Their wording is pinned here; the words the site may not say are pinned in copyLint.test.tsx.
  */
 
@@ -30,19 +30,36 @@ async function openCorpus() {
   return screen.findByRole('heading', { name: 'Corpus', level: 1 });
 }
 
-describe('the brand subtitle', () => {
-  it.each(['/', '/method'])('says "Adversarial scenario search" on %s', async (path) => {
+describe('the wordmark', () => {
+  function expectWordmark() {
+    expect(document.querySelector('.brand-mark')).toHaveTextContent(/^AV\/$/);
+    expect(document.querySelector('.brand-mark')).toHaveAttribute('aria-hidden', 'true');
+    expect(document.querySelector('.site-title')).toHaveTextContent(/^Scenario Stress-Tester$/);
+    expect(document.querySelector('.brand-subtitle')).not.toBeInTheDocument();
+    // the title is hidden on narrow screens, so the home link carries the whole name
+    expect(screen.getByRole('link', { name: 'AV Scenario Stress-Tester home' })).toHaveAttribute('href', '/');
+  }
+
+  it.each(['/', '/method'])('is "AV/" and "Scenario Stress-Tester", with no subtitle, on %s', async (path) => {
     stubFetch(() => ok(makePage([], null)));
     renderApp(path);
     await screen.findByRole('navigation', { name: 'Main' });
-    const subtitle = document.querySelector('.brand-subtitle')!;
-    expect(subtitle).toHaveTextContent(/^Adversarial scenario search$/);
-    expect(document.body).not.toHaveTextContent('Autonomous driving · scenario analysis');
+    expectWordmark();
   });
 
-  it('is on the Corpus page too', async () => {
+  it('is the same on the Corpus page', async () => {
     await openCorpus();
-    expect(document.querySelector('.brand-subtitle')).toHaveTextContent(/^Adversarial scenario search$/);
+    expectWordmark();
+  });
+
+  it('carries no tagline: neither the old one, nor the one that said "Adversarial scenario search"', async () => {
+    stubFetch(() => ok(makePage([], null)));
+    renderApp('/');
+    await screen.findByRole('navigation', { name: 'Main' });
+    const header = document.querySelector('header.site-header')!;
+    expect(header).not.toHaveTextContent('Autonomous driving · scenario analysis');
+    expect(header).not.toHaveTextContent(/adversarial/i);
+    expect(document.body).not.toHaveTextContent(/adversarial/i);
   });
 });
 

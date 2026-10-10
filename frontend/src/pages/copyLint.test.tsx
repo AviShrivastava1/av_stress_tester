@@ -14,8 +14,9 @@ import { renderApp } from '../test/renderApp';
  *   live        nothing on this site is computed live: the search runs offline and the API reads stored rows
  *   safety      the project is not a safety certificate
  *   end-to-end  the offline stages are run by hand in Colab; the site does not automate them
- *   adversarial only the brand subtitle "Adversarial scenario search" may say it (ALLOWED_SUBTITLES): the search is a
- *               search for a perturbation that produces contact, see App.tsx
+ *   adversarial nowhere: the search is an optimiser for a perturbation that produces contact, not an opposing agent
+ *               (src/optimization/scipy_optimizer.py optimize_scenario). The brand subtitle that once said it is gone,
+ *               so nothing is exempt
  *
  * "safe" is forbidden on the list, the Method page and the detail page, but NOT on /stats: the Corpus
  * page lists the server's `robustly_safe` count under the label ROBUSTLY_SAFE.label ("robustly safe",
@@ -33,9 +34,6 @@ afterEach(() => {
 });
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
-
-/** The one phrase that may say "adversarial": the brand subtitle in the header of every page. */
-const ALLOWED_SUBTITLES: string[] = ['Adversarial scenario search'];
 
 /**
  * Phrases that contain a banned word only to DENY the claim. There is exactly one, on `main` since before
@@ -55,7 +53,7 @@ const SAFE = /\bsafe\b/i;
 
 function violations(text: string, { allowSafe = false } = {}): string[] {
   let scrubbed = text;
-  for (const phrase of [...ALLOWED_SUBTITLES, ...ALLOWED_DENIALS]) scrubbed = scrubbed.split(phrase).join(' ');
+  for (const phrase of ALLOWED_DENIALS) scrubbed = scrubbed.split(phrase).join(' ');
   const hits = BANNED.filter(([, re]) => re.test(scrubbed)).map(([word]) => word);
   if (!allowSafe && SAFE.test(scrubbed)) hits.push('safe');
   return hits;
@@ -87,7 +85,7 @@ describe('the matcher itself', () => {
     ['safety and safe', ['safety', 'safe']],
     ['This is a statement about the search, not a safety certificate.', []],
     ['a safety certificate', ['safety']],
-    ['Adversarial scenario search', []],
+    ['Adversarial scenario search', ['adversarial']],
     ['An adversarial pipeline', ['adversarial']],
     ['Recorded scene · adversarial challenger', ['adversarial']],
     ['Adversarial scenario search, and an adversarial reading of it', ['adversarial']],
@@ -101,6 +99,13 @@ describe('the matcher itself', () => {
     expect(document.body.textContent).not.toMatch(/\bend-to-end\b/i); // the blind spot
     expect(violations(visibleText(document.body))).toEqual(['end-to-end', 'adversarial', 'safe']);
     document.body.innerHTML = '';
+  });
+
+  it('exempts no phrase for "adversarial": the only exempt phrase is the denial of a safety certificate', () => {
+    expect(violations('Adversarial scenario search')).toEqual(['adversarial']);
+    expect(violations('adversarial')).toEqual(['adversarial']);
+    expect(violations('This is a statement about the search, not a safety certificate.')).toEqual([]);
+    expect(ALLOWED_DENIALS).toEqual(['not a safety certificate']);
   });
 
   it('allows "safe" only when told to', () => {

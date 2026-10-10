@@ -93,7 +93,7 @@ const FLOOR_BY_CLASS: Record<string, number> = { 'hero-note': 12 };
  * the floor that is not named here fails, so a new class is classified on purpose instead of by a pattern.
  */
 const SHORT_LABELS = new Set([
-  '.brand-subtitle', '.eyebrow', '.facts dd.mono', '.hero-system li > span', '.legend', '.panel-kicker', '.pipeline-meta',
+  '.eyebrow', '.facts dd.mono', '.hero-system li > span', '.legend', '.panel-kicker', '.pipeline-meta',
   '.pipeline-number', '.proof-strip article > span', '.rate select', '.readout', '.result-overview > div > span',
   '.scene-panel-heading > span', '.tag',
 ]);
@@ -165,5 +165,83 @@ describe('the text-size floor', () => {
       '.keyboard-hint { 10px } is under 11px and is not a listed short label',
       '.hero-note { 11px } carries hero-note text (floor 12px)',
     ]);
+  });
+});
+
+/*
+ * The header: pinned to the top while the page scrolls, with the current page underlined, and the title hidden only where
+ * the header has no room for it (below 560 px; the home link's aria-label carries the name then, see App.tsx).
+ */
+function headerProblems(sheet: string): string[] {
+  const all = cssRules(sheet);
+  const problems: string[] = [];
+
+  // the title: hidden only inside the max-width:560px block, and hidden there
+  const titleRules = all.filter((r) => parts(r.selector).some((part) => hasClass(part, 'site-title')));
+  const titleHidden = titleRules.filter((r) => /(?:^|;)display:none(?:!important)?(?:;|$)/.test(r.declarations));
+  if (titleHidden.length === 0) problems.push('.site-title is never hidden: the narrow header has no room for it');
+  for (const r of titleHidden) {
+    if (r.media !== '(max-width:560px)') problems.push(`.site-title is hidden outside the 560px block: ${r.selector} in ${r.media ?? 'no media block'}`);
+  }
+
+  // the header stays at the top while the page scrolls: sticky at the top level, and no rule in any block says otherwise
+  const headerRules = all.filter((r) => parts(r.selector).some((part) => /^(?:header)?\.site-header$/.test(part)));
+  if (!headerRules.some((r) => r.media === null && /(?:^|;)position:sticky(?:!important)?(?:;|$)/.test(r.declarations))) {
+    problems.push('.site-header is not position:sticky');
+  }
+  for (const r of headerRules) {
+    const position = /(?:^|;)position:([^;!]+)/.exec(r.declarations)?.[1];
+    if (position !== undefined && position !== 'sticky') problems.push(`.site-header sets position:${position} in ${r.media ?? 'no media block'}`);
+  }
+
+  // the current page is underlined: the ::after of the active link has a visible background, and it is the last word
+  const active = all.filter((r) => r.selector === '.site-nav a.active::after');
+  const background = /(?:^|;)background(?:-color)?:([^;]+)/.exec(active.at(-1)?.declarations ?? '')?.[1];
+  if (background === undefined || /^(?:transparent|none|initial|inherit|unset)$/.test(background)) {
+    problems.push('.site-nav a.active::after has no visible background: the current page is not underlined');
+  }
+  return problems;
+}
+
+describe('the header', () => {
+  it('is sticky, underlines the current page, and hides its title only below 560 px', () => {
+    expect(rules.some((r) => r.media === '(max-width:560px)')).toBe(true); // the parser sees media blocks
+    expect(headerProblems(css)).toEqual([]);
+  });
+
+  it('the checker finds the title hidden outside the 560px block, in a copy of the stylesheet', () => {
+    const broken = css.replace('.site-title { font-size:13px;', '.site-title { display:none; }\n.site-title { font-size:13px;');
+    expect(broken).not.toBe(css);
+    expect(headerProblems(broken)).toEqual(['.site-title is hidden outside the 560px block: .site-title in no media block']);
+  });
+
+  it('the checker finds the title hidden with !important outside the 560px block, in a copy of the stylesheet', () => {
+    const broken = css.replace('.site-title { font-size:13px;', '.site-title { display:none !important; }\n.site-title { font-size:13px;');
+    expect(broken).not.toBe(css);
+    expect(headerProblems(broken)).toEqual(['.site-title is hidden outside the 560px block: .site-title in no media block']);
+  });
+
+  it('accepts !important on the rule that hides the title inside the 560px block', () => {
+    const important = css.replace('.site-title { display:none; }', '.site-title { display:none !important; }');
+    expect(important).not.toBe(css);
+    expect(headerProblems(important)).toEqual([]);
+  });
+
+  it('the checker finds the header made non-sticky inside the 560px block, in a copy of the stylesheet', () => {
+    const broken = css.replace('.site-header { min-height:68px; }', '.site-header { min-height:68px; } .site-header { position:static; }');
+    expect(broken).not.toBe(css);
+    expect(headerProblems(broken)).toEqual(['.site-header sets position:static in (max-width:560px)']);
+  });
+
+  it('the checker finds the header no longer sticky, in a copy of the stylesheet', () => {
+    const broken = css.replace('.site-header { position:sticky; top:0;', '.site-header { top:0;');
+    expect(broken).not.toBe(css);
+    expect(headerProblems(broken)).toEqual(['.site-header is not position:sticky']);
+  });
+
+  it('the checker finds the current page no longer underlined, in a copy of the stylesheet', () => {
+    const broken = css.replace('.site-nav a.active::after { background:var(--text); }', '.site-nav a.active::after { background:transparent; }');
+    expect(broken).not.toBe(css);
+    expect(headerProblems(broken)).toEqual(['.site-nav a.active::after has no visible background: the current page is not underlined']);
   });
 });

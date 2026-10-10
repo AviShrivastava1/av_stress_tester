@@ -7,12 +7,13 @@ import { ScenarioListPage } from './pages/ScenarioListPage';
 import { StatsPage } from './pages/StatsPage';
 
 /*
- * Brand subtitle "Adversarial scenario search"
- *     the project searches for a perturbation that produces contact: src/optimization/scipy_optimizer.py
- *     optimize_scenario minimises the size of a bounded change to one agent's motion subject to
- *     src/danger/collision_detector.py check_collision_trajectory reporting a collision. The word names that
- *     search for inputs that cause failure; it is an optimiser, not an opposing agent. copyLint.test.tsx allows
- *     this exact phrase and no other use of "adversarial".
+ * The wordmark, and what backs each part:
+ *   "AV/"                      the project's initials (the brand mark), set in mono
+ *   "Scenario Stress-Tester"   the project's name as in PROJECT_NAME (components/Footer.tsx) and the <title> in index.html;
+ *                              it is hidden below 560 px, so the home link's aria-label carries the whole name:
+ *                              "AV Scenario Stress-Tester home"
+ * There is no tagline. The one that said "Adversarial scenario search" is gone, and copyLint.test.tsx now bans
+ * "adversarial" on every page, with no exemption.
  */
 function Layout({ children }: { children?: ReactNode }) {
   return (
@@ -20,8 +21,8 @@ function Layout({ children }: { children?: ReactNode }) {
       <a className="skip-link" href="#main-content">Skip to content</a>
       <header className="site-header">
         <Link to="/" className="brand" aria-label="AV Scenario Stress-Tester home">
-          <span className="brand-mark" aria-hidden="true">AV</span>
-          <span className="site-title">Scenario Stress-Tester<span className="brand-subtitle">Adversarial scenario search</span></span>
+          <span className="brand-mark" aria-hidden="true">AV/</span>
+          <span className="site-title">Scenario Stress-Tester</span>
         </Link>
         <nav className="site-nav" aria-label="Main">
           <NavLink to="/" end>
