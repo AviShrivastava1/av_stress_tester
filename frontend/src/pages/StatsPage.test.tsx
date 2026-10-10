@@ -209,7 +209,7 @@ describe('navigation', () => {
 
     await userEvent.click(within(nav).getByRole('link', { name: 'Scenarios' }));
     expect(
-      await screen.findByRole('heading', { name: 'How small a change turns a recorded driving scene into a collision?', level: 1 }),
+      await screen.findByRole('heading', { name: 'Find the smallest change that breaks the scene.', level: 1 }),
     ).toBeInTheDocument();
   });
 });

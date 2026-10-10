@@ -81,11 +81,13 @@ const CAVEAT_CLASSES: Record<string, string> = {
   status: 'the detail "No geometry to draw…" sentence; loading and error messages',
   'status-error': 'inline error text',
   'keyboard-hint': 'the instruction sentence under the replay',
-  'system-status': 'the list hero "offline search · stored results"',
+  'hero-note': 'the list hero note: "not proven", searches ran offline, what a tie means',
+  'trace-label': 'the list hero "ILLUSTRATION · not measured data"',
 };
-/** Classes that do not exist yet; when they arrive they are held to the floor, and the hero note to 12 px. */
-const COMING_CAVEAT_CLASSES = ['hero-note'];
+/** Classes that do not exist yet; when they arrive they are held to the floor. */
+const COMING_CAVEAT_CLASSES: string[] = [];
 const FLOOR = 11;
+/** The hero note, the first thing under the hero claim, is held to 12 px. */
 const FLOOR_BY_CLASS: Record<string, number> = { 'hero-note': 12 };
 
 /**
@@ -93,8 +95,8 @@ const FLOOR_BY_CLASS: Record<string, number> = { 'hero-note': 12 };
  * the floor that is not named here fails, so a new class is classified on purpose instead of by a pattern.
  */
 const SHORT_LABELS = new Set([
-  '.eyebrow', '.facts dd.mono', '.hero-system li > span', '.legend', '.panel-kicker', '.pipeline-meta',
-  '.pipeline-number', '.proof-strip article > span', '.rate select', '.readout', '.result-overview > div > span',
+  '.eyebrow', '.facts dd.mono', '.hero-replay > span:first-child', '.legend', '.panel-kicker', '.pipeline-meta',
+  '.pipeline-number', '.rate select', '.system-signature dt', '.readout', '.result-overview > div > span',
   '.scene-panel-heading > span', '.tag',
 ]);
 
@@ -243,5 +245,69 @@ describe('the header', () => {
     const broken = css.replace('.site-nav a.active::after { background:var(--text); }', '.site-nav a.active::after { background:transparent; }');
     expect(broken).not.toBe(css);
     expect(headerProblems(broken)).toEqual(['.site-nav a.active::after has no visible background: the current page is not underlined']);
+  });
+});
+
+describe('the hero note', () => {
+  it('has a rule, and it sets at least 12 px', () => {
+    const sizes = rules.filter((r) => parts(r.selector).some((part) => hasClass(part, 'hero-note')) && px(r.text) !== null);
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const r of sizes) expect(px(r.text)!, r.selector).toBeGreaterThanOrEqual(12);
+  });
+});
+
+/*
+ * The hero's words are never hidden at any width: the eyebrow and the lede say "counterfactual", the note says "not
+ * proven" and that the search ran offline, and the illustration label says the drawing is not data. A stylesheet that
+ * hid one of them on a phone would take the words away where most people read them.
+ */
+const HERO_WORDS = ['hero-eyebrow', 'hero-lede', 'hero-note', 'hero-actions', 'trace-label'];
+const hidesHeroWords = (all: ReturnType<typeof cssRules>) =>
+  all
+    .filter((r) => parts(r.selector).some((part) => HERO_WORDS.some((name) => hasClass(part, name)) || /^\.hero-copy(?: [>+~] |\s)*$/.test(part)))
+    .filter((r) => /(?:^|;)(?:display:none|visibility:hidden|opacity:0|font-size:0)(?:!important)?(?:;|$)/.test(r.declarations))
+    .map((r) => `${r.selector} in ${r.media ?? 'no media block'}`);
+
+describe('the hero words stay visible', () => {
+  it('no rule, in any media block, hides the hero eyebrow, lede, note, actions or illustration label', () => {
+    expect(rules.some((r) => parts(r.selector).some((part) => hasClass(part, 'hero-note')))).toBe(true); // the rules exist
+    expect(hidesHeroWords(rules)).toEqual([]);
+  });
+
+  it('the checker finds a rule that hides the lede on a phone', () => {
+    const broken = css + '\n@media(max-width:560px) { .hero-lede { display:none; } }';
+    expect(hidesHeroWords(cssRules(broken))).toEqual(['.hero-lede in (max-width:560px)']);
+  });
+});
+
+describe('generated content', () => {
+  it('puts no text in front of or behind a link or a button: generated text is read as part of the name', () => {
+    const generated = rules.filter(
+      (r) =>
+        parts(r.selector).some((part) => /(?:\ba|\bbutton|\.button-\w+|\.text-link)(?:\.[\w-]+)*(?:\[[^\]]*\])*::?(?:before|after)$/.test(part)) &&
+        /(?:^|;)content:(?!(?:''|"")(?:;|$))/.test(r.declarations),
+    );
+    expect(rules.some((r) => /::(?:before|after)/.test(r.selector))).toBe(true); // there are pseudo-elements to look at
+    expect(generated.map((r) => r.selector)).toEqual([]);
+  });
+});
+
+describe('the illustration under reduced motion', () => {
+  const reduced = rules.filter((r) => r.media === '(prefers-reduced-motion:reduce)');
+
+  it('stops every animation, and the scroll animation', () => {
+    expect(reduced.some((r) => r.selector.startsWith('*') && /animation:none!important/.test(r.declarations))).toBe(true);
+    expect(reduced.some((r) => r.selector === 'html' && /scroll-behavior:auto/.test(r.declarations))).toBe(true);
+  });
+
+  it('keeps the contact ring: nothing in the reduced-motion block hides it, so CONTACT still points at a mark', () => {
+    expect(reduced.filter((r) => /trace-contact/.test(r.selector) && /display:none|visibility:hidden|opacity:0/.test(r.declarations))).toEqual([]);
+    expect(rules.some((r) => hasClass(r.selector, 'trace-contact-pulse'))).toBe(true);
+  });
+
+  it('draws the paths in full when the animation is off: the draw-on starts from the finished state', () => {
+    // with `animation:none` the paths fall back to their own stroke-dashoffset, which must not be a hidden state
+    const paths = rules.filter((r) => /\.trace-path/.test(r.selector) && /stroke-dashoffset/.test(r.declarations));
+    expect(paths.map((r) => r.selector)).toEqual([]);
   });
 });
