@@ -16,9 +16,9 @@ function Dash() {
 }
 
 /**
- * What the stored search found, above the replay it describes: the outcome, the smallest
- * perturbation, the collision frame and how many challengers were searched. The scenario's own
- * numbers (fragility, TTC, PET, replay offset) stay in the Run details panel.
+ * What the stored search found, under the replay it describes: the smallest perturbation, the
+ * collision frame and how many challengers were searched. The outcome itself is in the page header,
+ * and the scenario's own numbers (fragility, TTC, PET, replay offset) stay in the Run details panel.
  */
 function ResultOverview({ detail }: { detail: ScenarioDetail }) {
   const searched =
@@ -27,10 +27,6 @@ function ResultOverview({ detail }: { detail: ScenarioDetail }) {
       : null;
   return (
     <section className="result-overview" aria-label="Search result">
-      <div className="result-primary">
-        <span>Search outcome</span>
-        <OutcomeCell row={detail} />
-      </div>
       <div>
         <span>Min perturbation</span>
         <strong>
@@ -63,6 +59,21 @@ function backTarget(state: unknown): string {
   return '/';
 }
 
+/*
+ * The words in the detail header. What backs each one:
+ *
+ *   "logged / counterfactual"
+ *       shown only when perturbedTrackDrawn (scene/sceneModel.ts) is true: the logged track (the recorded Waymo
+ *       motion, GET /scenarios/{id}/trajectories) is drawn beside the track simulated from the stored perturbation
+ *       (perturbed_paths, GET /scenarios/{id}/perturbed; the replay is src/physics/simulator.py ForwardSimulator).
+ *       "counterfactual" names that simulated run; it is not a prediction
+ *   "logged scene"
+ *       no perturbed track is drawn, so only the recording is
+ *   the outcome group under it (label "Search outcome", which the result overview used for the same cell)
+ *       OutcomeCell (components/OutcomeBadge.tsx): the stored stress_outcome and the last attempt, both from
+ *       scenario_scores via GET /scenarios/{id}. It sits in the header so that a refusal or a missing result is on
+ *       the first screen, above the replay it qualifies
+ */
 export function ScenarioDetailPage() {
   const { scenarioId = '' } = useParams();
   const location = useLocation();
@@ -94,39 +105,37 @@ export function ScenarioDetailPage() {
   const comparing = perturbedTrackDrawn(trajectories.data?.agents, perturbed.data);
 
   return (
-    <section>
+    <section className="detail-page">
       {back}
       <div className="detail-heading">
-        <div>
+        <div className="detail-heading-id">
           <p className="eyebrow">SCENARIO REPLAY</p>
           <h1 className="detail-title mono">{scenarioId}</h1>
-          {comparing && (
-            <p className="detail-intro">
-              Compare the recorded motion with the smallest collision-producing replay found by the search.
-            </p>
+        </div>
+        <div className="detail-heading-meta">
+          <span className="dataset-label">{comparing ? 'logged / counterfactual' : 'logged scene'}</span>
+          {detail.data && (
+            <div className="detail-outcome" role="group" aria-label="Search outcome">
+              <OutcomeCell row={detail.data} />
+            </div>
           )}
         </div>
-        <span className="dataset-label">
-          {comparing ? 'Recorded scene · simulated challenger' : 'Recorded scene'}
-        </span>
       </div>
+      <ScenePanel key={scenarioId} trajectories={trajectories} perturbed={perturbed} detail={detail.data} />
       {detail.data && <ResultOverview detail={detail.data} />}
-      <div className="detail-grid">
-        <div className="detail-side">
-          {detail.isPending ? (
-            <section className="panel">
-              <p className="status" role="status">Loading scenario…</p>
-            </section>
-          ) : detail.isError ? (
-            <section className="panel">
-              <RequestError error={detail.error} retry={() => detail.refetch()} retrying={detail.isFetching} />
-            </section>
-          ) : (
-            <SummaryPanel detail={detail.data} targetIdx={perturbed.data?.target_idx ?? null} />
-          )}
-          <PerturbationPanel perturbed={perturbed} />
-        </div>
-        <ScenePanel key={scenarioId} trajectories={trajectories} perturbed={perturbed} detail={detail.data} />
+      <div className="detail-side">
+        {detail.isPending ? (
+          <section className="panel">
+            <p className="status" role="status">Loading scenario…</p>
+          </section>
+        ) : detail.isError ? (
+          <section className="panel">
+            <RequestError error={detail.error} retry={() => detail.refetch()} retrying={detail.isFetching} />
+          </section>
+        ) : (
+          <SummaryPanel detail={detail.data} targetIdx={perturbed.data?.target_idx ?? null} />
+        )}
+        <PerturbationPanel perturbed={perturbed} />
       </div>
     </section>
   );
