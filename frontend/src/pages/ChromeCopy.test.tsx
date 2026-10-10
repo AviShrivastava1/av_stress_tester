@@ -96,27 +96,23 @@ describe('the footer', () => {
 });
 
 describe('the Corpus page header', () => {
-  it('keeps "DATASET OVERVIEW" and the h1 "Corpus"', async () => {
+  it('has the eyebrow "CORPUS / STATE" and the h1 "Corpus"', async () => {
     const h1 = await openCorpus();
     expect(h1).toHaveTextContent(/^Corpus$/);
-    expect(screen.getByText('DATASET OVERVIEW')).toBeVisible();
+    expect(screen.getByText('CORPUS / STATE')).toBeVisible();
+    expect(screen.queryByText('DATASET OVERVIEW')).not.toBeInTheDocument();
     expect(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('link', { name: 'Corpus' })).toHaveClass('active');
   });
 
-  it('says which four things the page shows', async () => {
+  it('says the page is the stored run state, as the API reports it', async () => {
     await openCorpus();
-    expect(
-      screen.getByText("The scored sample, the stored search results, the latest attempts, and the service's health."),
-    ).toBeVisible();
+    expect(screen.getByText('Stored run state, exactly as reported by the API.')).toBeVisible();
+    expect(screen.queryByText(/The scored sample, the stored search results/)).not.toBeInTheDocument();
   });
 
-  it('says the counts are the API\'s own and may not partition the corpus', async () => {
+  it('says the fields overlap and the counts are not a partition', async () => {
     await openCorpus();
-    expect(
-      screen.getByText(
-        'Counts are shown exactly as the API reports them. They represent different fields and are not assumed to partition the corpus.',
-      ),
-    ).toBeVisible();
+    expect(screen.getByText('Fields overlap; these counts are not a partition.')).toBeVisible();
   });
 
   it('no longer says "Nothing on this page is summed or charted"', async () => {

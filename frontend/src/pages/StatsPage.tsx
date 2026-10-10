@@ -10,16 +10,36 @@ import { describeOutcome, ROBUSTLY_SAFE } from '../domain/outcomes';
  * src/api/routes.py's stats handler) and do not partition the corpus, so a total, a
  * percentage or a pie would assert a relationship the data does not have.
  *
- * The header copy, and what backs it:
- *   "The scored sample, the stored search results, the latest attempts, and the service's health."
- *       the four panels below: CorpusPanel (scenario_scores rows), StoredResultsPanel (stress_tested_at and
- *       stress_outcome), LatestAttemptsPanel (last_attempt_outcome), and the health panel (GET /health)
- *   "Counts are shown exactly as the API reports them."
- *       count() below only adds thousands separators to the number the API sent, and no value on the page is
- *       summed, divided or differenced; the fragility figures are not counts and are rounded to three decimals
- *   "They represent different fields and are not assumed to partition the corpus."
- *       src/api/routes.py stats() computes each count with its own count(*) FILTER (WHERE ...) over different
- *       columns (stress_tested_at, stress_outcome, last_attempt_outcome), and with_geometry from scenario_agents
+ * The words on this page, and what backs each one:
+ *   eyebrow "CORPUS / STATE"
+ *       the page is the state of the scored corpus: what GET /stats and GET /health returned (api/corpus.ts useStats, useHealth)
+ *   "Stored run state, exactly as reported by the API."
+ *       the four panels below: CorpusPanel (scenario_scores rows), StoredResultsPanel (stress_tested_at and stress_outcome),
+ *       LatestAttemptsPanel (last_attempt_outcome), and the health panel (GET /health). "Exactly as reported": count()
+ *       below only adds thousands separators to the number the API sent, and no value on the page is summed, divided or
+ *       differenced; the fragility figures are not counts and are rounded to three decimals
+ *   "Fields overlap; these counts are not a partition."
+ *       src/api/routes.py stats() computes each count with its own count(*) FILTER (WHERE ...) over different columns
+ *       (stress_tested_at, stress_outcome, last_attempt_outcome), and with_geometry from scenario_agents, so one scenario
+ *       can be in several counts (it can be stress-tested and also have a latest attempt) and the counts do not add up
+ *   label "Waymo Open Dataset"
+ *       the scenes are Waymo Open Motion Dataset scenarios, which is part of the Waymo Open Dataset (src/data/parser.py
+ *       ScenarioParser reads them); the same label as the list page, and the name the licence attribution uses
+ *       (components/Footer.tsx WAYMO_ATTRIBUTION)
+ *   "Scored scenes."  (total_scenarios)
+ *       stats() counts every row of scenario_scores: count(*) over the table
+ *   "Scenarios with a stored result."  (stress_tested)
+ *       stats() counts the rows where stress_tested_at IS NOT NULL
+ *   "Scenarios with agent geometry exported. This includes geometry the scene view may decline to draw because it no
+ *    longer matches the stored score."  (with_geometry)
+ *       stats() counts DISTINCT scenario_id in scenario_agents. The scene view (routes.get_trajectories) serves a scenario's
+ *       agents only where scenario_agents.scene_fingerprint matches the scored row's, and the SDC must match too (the
+ *       "THE SDC MUST MATCH TOO" guard), so an exported scene can still be refused; the count includes it
+ *   caption "From each scenario's stored stress-test result."  (Stored results)
+ *       StoredResultsPanel's counts are over scenario_scores.stress_tested_at, min_perturbation and stress_outcome
+ *   caption "The most recent stress-test pass for each scenario."  (Latest attempts)
+ *       LatestAttemptsPanel's counts are over scenario_scores.last_attempt_outcome, the latest pass, not the stored result
+ *   There are no hard-coded counts in the copy: every digit on the page is a value the API sent (a test checks).
  */
 
 function count(n: number): string {
@@ -46,7 +66,7 @@ function CorpusPanel({ stats }: { stats: StatsResponse }) {
       <h2>Corpus</h2>
       <dl className="stat-list">
         <Stat id="total_scenarios" label="Scenarios" value={count(stats.total_scenarios)}>
-          Every scored scenario.
+          Scored scenes.
         </Stat>
         <Stat id="with_geometry" label="With exported geometry" value={count(stats.with_geometry)}>
           Scenarios with agent geometry exported. This includes geometry the scene view may decline to
@@ -68,7 +88,7 @@ function StoredResultsPanel({ stats }: { stats: StatsResponse }) {
       <p className="caption">From each scenario&apos;s stored stress-test result.</p>
       <dl className="stat-list">
         <Stat id="stress_tested" label="Stress-tested" value={count(stats.stress_tested)}>
-          Scenarios holding a stored stress-test result.
+          Scenarios with a stored result.
         </Stat>
         <Stat
           id="collisions_found"
@@ -151,18 +171,13 @@ export function StatsPage() {
   const health = useHealth();
 
   return (
-    <section>
+    <section className="corpus-page">
       <div className="list-header">
-        <div><p className="eyebrow">DATASET OVERVIEW</p><h1>Corpus</h1></div>
+        <div><p className="eyebrow">CORPUS / STATE</p><h1>Corpus</h1></div>
         <span className="dataset-label">Waymo Open Dataset</span>
       </div>
-      <p className="page-intro">
-        The scored sample, the stored search results, the latest attempts, and the service&apos;s health.
-      </p>
-      <p className="caption">
-        Counts are shown exactly as the API reports them. They represent different fields and are not assumed to
-        partition the corpus.
-      </p>
+      <p className="page-intro">Stored run state, exactly as reported by the API.</p>
+      <p className="caption">Fields overlap; these counts are not a partition.</p>
 
       <div className="stats-grid">
         {stats.isPending ? (

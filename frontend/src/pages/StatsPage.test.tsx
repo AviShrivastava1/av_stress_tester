@@ -5,6 +5,8 @@ import type { HealthResponse, StatsResponse } from '../api/client';
 import { describeOutcome, ROBUSTLY_SAFE } from '../domain/outcomes';
 import { stubFetch, type RecordedRequest, type Reply } from '../test/fetchStub';
 import { makePage } from '../test/fixtures';
+import { cssRules } from '../test/cssRules';
+import { readFrontendFile } from '../test/readFrontendFile';
 import { renderApp } from '../test/renderApp';
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
@@ -192,6 +194,110 @@ describe('StatsPage — service health', () => {
     expect(within(panel('Service health')).getByRole('alert')).toBe(alert);
     expect(alert).toHaveTextContent(/The API is busy/);
     expect(stat('stress_tested').value).toBe('40');
+  });
+});
+
+const GEOMETRY_DEFINITION =
+  'Scenarios with agent geometry exported. This includes geometry the scene view may decline to draw because it ' +
+  'no longer matches the stored score.';
+const CAVEAT = 'Fields overlap; these counts are not a partition.';
+const INTRO = 'Stored run state, exactly as reported by the API.';
+
+async function openCorpusLoaded() {
+  stubFetch(server({}));
+  renderApp('/stats');
+  await screen.findByRole('heading', { name: 'Stored results' });
+  await screen.findByText('API status');
+}
+const corpusMain = () => document.querySelector('main') as HTMLElement;
+
+describe('StatsPage — the words', () => {
+  it('has the eyebrow "CORPUS / STATE", the h1 "Corpus", the intro, and the dataset label "Waymo Open Dataset"', async () => {
+    await openCorpusLoaded();
+    expect(screen.getByText('CORPUS / STATE')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Corpus', level: 1 })).toBeVisible();
+    expect(screen.getByText(INTRO)).toBeVisible();
+    expect(corpusMain().querySelector('.dataset-label')).toHaveTextContent(/^Waymo Open Dataset$/);
+    expect(screen.queryByText('DATASET OVERVIEW')).not.toBeInTheDocument();
+  });
+
+  it('says in a visible caption that the fields overlap and the counts are not a partition', async () => {
+    await openCorpusLoaded();
+    const caveat = screen.getByText(CAVEAT);
+    expect(caveat).toBeVisible();
+    expect(caveat).toHaveClass('caption');
+    expect(caveat.closest('details')).toBeNull(); // no click needed
+    expect(screen.queryByText(/They represent different fields and are not assumed to partition the corpus/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the geometry definition in full, including that the scene view may decline to draw some of it', async () => {
+    await openCorpusLoaded();
+    const def = within(stat('with_geometry').el).getByText(GEOMETRY_DEFINITION);
+    expect(def).toBeVisible();
+    expect(def).toHaveClass('stat-def');
+    expect(screen.queryByText('Agent geometry available for replay.')).not.toBeInTheDocument();
+  });
+
+  it('words the two short definitions as decided, and the old ones are gone', async () => {
+    await openCorpusLoaded();
+    expect(within(stat('total_scenarios').el).getByText('Scored scenes.')).toBeVisible();
+    expect(within(stat('stress_tested').el).getByText('Scenarios with a stored result.')).toBeVisible();
+    expect(screen.queryByText('Every scored scenario.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Scenarios holding a stored stress-test result.')).not.toBeInTheDocument();
+  });
+
+  it('keeps both panel captions: where "Stored results" and "Latest attempts" come from', async () => {
+    await openCorpusLoaded();
+    expect(within(panel('Stored results')).getByText("From each scenario's stored stress-test result.")).toBeVisible();
+    expect(within(panel('Latest attempts')).getByText('The most recent stress-test pass for each scenario.')).toBeVisible();
+  });
+
+  it('keeps the two notes under the panels: the counts are the API\'s own, and a later pass may differ', async () => {
+    await openCorpusLoaded();
+    expect(within(panel('Stored results')).getByText(/They are not guaranteed to add up to the stress-tested total/)).toBeVisible();
+    expect(within(panel('Latest attempts')).getByText(/can also hold a stored result from an earlier pass/)).toBeVisible();
+  });
+
+  it('carries no hard-coded counts: no digit in the copy once the numbers the API sent are taken out', async () => {
+    await openCorpusLoaded();
+    const main = corpusMain().cloneNode(true) as HTMLElement;
+    main.querySelectorAll('.stat > dd:not(.stat-def)').forEach((el) => el.remove()); // the API's counts, fragility and versions
+    expect(main.textContent!.length).toBeGreaterThan(1200); // there is a page here to look at
+    expect(main.textContent).not.toMatch(/\d/);
+  });
+
+  it('hides no text under main: not in a <details>, not [hidden], not aria-hidden', async () => {
+    await openCorpusLoaded();
+    const walker = document.createTreeWalker(corpusMain(), NodeFilter.SHOW_TEXT);
+    const hidden: string[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent!.trim() !== '' && node.parentElement!.closest('details, [hidden], [aria-hidden="true"]')) hidden.push(node.textContent!.trim().slice(0, 50));
+    }
+    expect(hidden).toEqual([]);
+  });
+
+  it('says "safe" only in the server\'s own label "Robustly safe", and nowhere else on the page', async () => {
+    await openCorpusLoaded();
+    expect(within(stat('robustly_safe').el).getByText(ROBUSTLY_SAFE.label)).toBeVisible();
+    const main = corpusMain().cloneNode(true) as HTMLElement;
+    main.querySelector('[data-stat="robustly_safe"] dt')!.remove();
+    expect(main.textContent).not.toMatch(/\bsafe\b/i);
+  });
+
+  it('carries the class its styles are scoped to, and the stylesheet has rules for it', async () => {
+    await openCorpusLoaded();
+    const root = corpusMain().firstElementChild as HTMLElement;
+    expect(root).toHaveClass('corpus-page');
+    const scoped = cssRules(readFrontendFile('src/styles.css')).filter((r) => /\.corpus-page(?![\w-])/.test(r.selector));
+    expect(scoped.length).toBeGreaterThanOrEqual(3);
+    expect(scoped.some((r) => /\.list-header h1/.test(r.selector))).toBe(true);
+  });
+
+  it('links back to the list from the header, and the list link is not the current page', async () => {
+    await openCorpusLoaded();
+    const nav = screen.getByRole('navigation', { name: 'Main' });
+    expect(within(nav).getByRole('link', { name: 'Scenarios' })).toHaveAttribute('href', '/');
+    expect(within(nav).getByRole('link', { name: 'Corpus' })).toHaveClass('active');
   });
 });
 

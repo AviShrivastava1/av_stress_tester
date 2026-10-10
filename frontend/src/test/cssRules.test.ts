@@ -91,7 +91,7 @@ describe('cssRules on the real stylesheet', () => {
     const inMedia = cssRules(css).filter((r) => r.media !== null);
     expect(inMedia.length).toBeGreaterThan(40);
     expect(new Set(inMedia.map((r) => r.media))).toEqual(
-      new Set(['(max-width:1100px)', '(max-width:1000px)', '(max-width:820px)', '(max-width:560px)', '(prefers-reduced-motion:reduce)']),
+      new Set(['(max-width:1100px)', '(max-width:820px)', '(max-width:560px)', '(prefers-reduced-motion:reduce)']),
     );
   });
 });

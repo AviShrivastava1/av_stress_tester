@@ -335,3 +335,29 @@ describe('the limits stay visible', () => {
     expect(hidesLimits(cssRules(css + '\n.limits-panel h2 { height:0; }'))).toEqual(['.limits-panel h2 in no media block']);
   });
 });
+
+/*
+ * No text that carries a caveat, a denial or the licence attribution is hidden at any width, in any rule: the Corpus
+ * page's "these counts are not a partition" (.caption), its definitions (.stat-def) and notes (.note), the footer, the
+ * Method limits, the list's note. The one exception is the keyboard hint, which is an instruction for people with a
+ * keyboard and is dropped on a phone.
+ */
+const MAY_BE_HIDDEN = ['keyboard-hint'];
+const hidesCaveats = (all: ReturnType<typeof cssRules>) =>
+  all
+    .filter((r) =>
+      parts(r.selector).some((part) => Object.keys(CAVEAT_CLASSES).some((name) => !MAY_BE_HIDDEN.includes(name) && hasClass(part, name))),
+    )
+    .filter((r) => /(?:^|;)(?:display:none|visibility:hidden|opacity:0|font-size:0|height:0|max-height:0|clip-path:inset\(50%\))(?:!important)?(?:;|$)/.test(r.declarations))
+    .map((r) => `${r.selector} in ${r.media ?? 'no media block'}`);
+
+describe('caveat text is never hidden', () => {
+  it('no rule, in any media block, hides a caveat class, bar the keyboard hint', () => {
+    expect(hidesCaveats(rules)).toEqual([]);
+  });
+
+  it('the checker finds a rule that hides the Corpus caption on a phone, and ignores the keyboard hint', () => {
+    expect(hidesCaveats(cssRules(css + '\n@media(max-width:560px) { .caption { display:none; } }'))).toEqual(['.caption in (max-width:560px)']);
+    expect(hidesCaveats(cssRules('.keyboard-hint { display:none; } .stat .stat-def { display:none; }'))).toEqual(['.stat .stat-def in no media block']);
+  });
+});
