@@ -7,7 +7,8 @@ import { renderApp } from '../test/renderApp';
 
 /*
  * The Method page: how a recorded scene becomes a stored, replayable result, and what the output
- * does not mean. It is static: it must not call the API.
+ * does not mean. It is static: it must not call the API. Nothing on it is collapsed or hidden, at any width, and it
+ * carries no data numbers (counts go stale; the only digits are the step numbers and the names float64 and sha256).
  */
 
 afterEach(() => {
@@ -50,26 +51,20 @@ const STEPS = [
   },
 ] as const;
 
-const PRINCIPLES = [
-  {
-    title: 'Failure is a first-class result',
-    body:
-      'Replay drift, speed discontinuities, heading singularities, stale exports, and ordinary search ' +
-      'misses stay distinct from one another.',
-  },
-  {
-    title: 'The online path stays lightweight',
-    body:
-      'Waymo parsing and optimization run offline. The deployed API reads Postgres/PostGIS and never needs ' +
-      'a shard or TensorFlow at request time.',
-  },
-  {
-    title: 'Claims carry their provenance',
-    body:
-      'Scene fingerprints, SDC identity, replay settings, search budgets, and run IDs travel with stored ' +
-      'results and exported geometry.',
-  },
+const H1 = 'A stored replay is shown only with the run it came from.';
+const EYEBROW = 'SYSTEM / PROVENANCE';
+const DENIAL = 'This is not a collision-probability model.';
+
+const SIGNATURE = [
+  ['Optimizer', 'SciPy Differential Evolution'],
+  ['Models', 'bicycle / linear'],
+  ['Geometry', 'float64 oriented boxes'],
+  ['Identity', 'truncated sha256 digests'],
+  ['Serving', 'PostGIS → FastAPI → React'],
 ] as const;
+
+/** Old copy that must not come back. */
+const GONE = ['ENGINEERING PRINCIPLES', 'Built to expose assumptions, not hide them.', 'Failure is a first-class result', 'The online path stays lightweight', 'Claims carry their provenance'];
 
 const LIMITS = [
   'The minimum perturbation is the best result found within a finite search budget, not a proven global minimum.',
@@ -89,23 +84,35 @@ async function openMethod() {
   const requests = stubFetch(() => ok(makePage([], null)));
   renderApp('/method');
   // The page itself must be there, so the "nothing is hidden / no request / no banned word" checks are not vacuous.
-  const h1 = await screen.findByRole('heading', { level: 1, name: /stored, replayable result/ });
+  const h1 = await screen.findByRole('heading', { level: 1, name: H1 });
   return { requests, h1 };
 }
 
 describe('the Method page', () => {
-  it('is a page of its own, with one h1, an eyebrow and a lede', async () => {
+  it('is a page of its own, with one h1, an eyebrow and the denial line, all visible', async () => {
     const { h1 } = await openMethod();
-    expect(h1).toHaveTextContent('From a recorded scene to a stored, replayable result.');
+    expect(h1).toHaveTextContent(H1);
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-    expect(screen.getByText('SYSTEM DESIGN')).toBeVisible();
-    expect(
-      screen.getByText(
-        'This is not a collision-probability model. It asks a narrower question: under a bounded kinematic ' +
-          "replay, how small a change to one agent's motion produces geometric contact?",
-      ),
-    ).toBeVisible();
+    expect(screen.getByText(EYEBROW)).toBeVisible();
+    const denial = screen.getByText(DENIAL);
+    expect(denial).toBeVisible();
+    expect(denial).toHaveClass('method-lede');
+    expect(denial.closest('header')).not.toBeNull(); // under the hero, with the h1
     expect(screen.queryByText('Page not found')).not.toBeInTheDocument();
+  });
+
+  it('does not say "paper trail" anywhere', async () => {
+    await openMethod();
+    expect(document.body.textContent).not.toMatch(/paper trail/i);
+  });
+
+  it('shows the five components of the system, in a list that is named', async () => {
+    await openMethod();
+    const signature = screen.getByLabelText('System components');
+    const items = [...signature.querySelectorAll(':scope > div')];
+    expect(items.map((item) => [item.querySelector('dt')!.textContent, item.querySelector('dd')!.textContent])).toEqual(
+      SIGNATURE.map((item) => [...item]),
+    );
   });
 
   it('makes no API request', async () => {
@@ -136,14 +143,10 @@ describe('the Method page', () => {
     expect(screen.queryByText(/transparent/i)).not.toBeInTheDocument();
   });
 
-  it('gives the three engineering principles', async () => {
+  it('does not bring back the engineering principles', async () => {
     await openMethod();
-    expect(screen.getByText('ENGINEERING PRINCIPLES')).toBeVisible();
-    expect(screen.getByRole('heading', { name: 'Built to expose assumptions, not hide them.', level: 2 })).toBeVisible();
-    for (const p of PRINCIPLES) {
-      expect(screen.getByRole('heading', { name: p.title, level: 3 })).toBeVisible();
-      expect(screen.getByText(p.body)).toBeVisible();
-    }
+    for (const text of GONE) expect(screen.queryByText(text)).not.toBeInTheDocument();
+    expect(document.querySelector('.principle-grid, .method-section')).toBeNull();
   });
 
   it('states what the output does not mean, in five visible bullets, the fourth describing what the browser does now', async () => {
@@ -175,6 +178,30 @@ describe('the Method page', () => {
     expect(document.querySelectorAll('main details')).toHaveLength(0);
   });
 
+  it('hides no text anywhere under main: not in a <details>, not [hidden], not aria-hidden (bar the step numbers)', async () => {
+    await openMethod();
+    const main = document.querySelector('main')!;
+    const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+    const hidden: string[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent!.trim();
+      const el = node.parentElement!;
+      if (text === '' || el.closest('.pipeline-number')) continue; // decorative numerals; the list's order says the same
+      if (el.closest('details, [hidden], [aria-hidden="true"]')) hidden.push(text.slice(0, 50));
+    }
+    expect(hidden).toEqual([]);
+    expect(main.textContent!.length).toBeGreaterThan(1500); // there is a page here to look at
+  });
+
+  it('carries no data numbers: no digit in the copy, bar the step numbers and the names float64 and sha256', async () => {
+    await openMethod();
+    const main = document.querySelector('main')!.cloneNode(true) as HTMLElement;
+    main.querySelectorAll('.pipeline-number').forEach((el) => el.remove());
+    const copy = main.textContent!.replace(/float64|sha256/g, '');
+    expect(copy.length).toBeGreaterThan(1500);
+    expect(copy).not.toMatch(/\d/);
+  });
+
   it('uses none of the words the project cannot back: live, safe, safety, end-to-end, adversarial', async () => {
     await openMethod();
     const text = document.querySelector('main')!.textContent!;
@@ -199,7 +226,7 @@ describe('the navigation to it', () => {
     renderApp('/');
     const nav = await screen.findByRole('navigation', { name: 'Main' });
     await userEvent.click(within(nav).getByRole('link', { name: 'Method' }));
-    expect(await screen.findByRole('heading', { level: 1, name: /stored, replayable result/ })).toBeVisible();
+    expect(await screen.findByRole('heading', { level: 1, name: H1 })).toBeVisible();
     expect(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('link', { name: 'Method' })).toHaveClass('active');
   });
 });

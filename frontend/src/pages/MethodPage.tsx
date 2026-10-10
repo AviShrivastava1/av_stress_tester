@@ -10,8 +10,32 @@
  *   04  perturbation_space.ReplayFidelityError, src/danger/collision_detector.py (float64 corners),
  *       src/scoring/db.py (compute_scene_fingerprint, compute_stress_run_id)
  *   05  src/scoring/export_geometry.py, src/api/ (no write route), scene/geometry.ts (observationAt)
- * Principles: outcomes.ts and batch_scorer (distinct failure statuses), requirements-api.txt
- * (no TensorFlow or shard at request time), the scene_fingerprint / search_provenance columns.
+ *
+ * The words at the top. What backs each one:
+ *   eyebrow "SYSTEM / PROVENANCE"
+ *       the h1's subject: the run and scene a stored replay is tied to (scenario_scores.stress_run_id, scene_fingerprint,
+ *       search_provenance; src/scoring/db.py)
+ *   h1 "A stored replay is shown only with the run it came from."
+ *       src/api/routes.py get_perturbed reads the stored perturbed path only where perturbed_paths.stress_run_id and
+ *       perturbed_paths.scene_fingerprint match the scenario_scores row's (`IS NOT DISTINCT FROM`), and reads the logged
+ *       track only where scenario_agents.scene_fingerprint matches; a path from another run or scene is not served
+ *       (tests test_a_mismatched_run_id_hides_the_perturbed_path and the scene-fingerprint audit A02 tests). The ids are
+ *       src/scoring/db.py compute_stress_run_id (a truncated sha256 over the scenario, challenger, delta, method and
+ *       settings) and compute_scene_fingerprint (a truncated sha256 over states, validity and types). A legacy row whose id
+ *       is NULL matches only a path whose id is NULL, so the claim is about stored replays, not every scored scenario:
+ *       a scenario nobody searched, or whose attempt was refused, has no stored replay, and the page says nothing about it
+ *   line "This is not a collision-probability model."
+ *       README.md ("not a collision probability"); the list's metric definitions say the same of fragility, which ranks
+ *       recorded scenes (src/danger/danger_score.py), while min_perturbation is the result of a bounded search
+ *       (src/optimization/scipy_optimizer.py optimize_scenario) for geometric contact
+ *   METHOD_SIGNATURE
+ *       Optimizer "SciPy Differential Evolution"  scipy_optimizer.py, `differential_evolution` in optimize_scenario
+ *       Models "bicycle / linear"                 src/physics/bicycle_model.py, linear_model.py, chosen by simulator.py
+ *       Geometry "float64 oriented boxes"         collision_detector.get_corners (np.float64), COLLISION_GEOMETRY_VERSION
+ *       Identity "truncated sha256 digests"       db.compute_scene_fingerprint and db.compute_stress_run_id keep the first 16 hex
+ *                                                 characters (64 bits) of a sha256, as their docstrings say
+ *       Serving "PostGIS → FastAPI → React"       src/scoring/export_geometry.py, src/api/routes.py, frontend/
+ * The limits and the pipeline steps are as before. The page carries no data numbers (a test checks), because counts go stale.
  *
  * The fifth limit, on pedestrian and cyclist replay, sentence by sentence:
  *   "less well measured than vehicle replay"
@@ -69,25 +93,12 @@ const PIPELINE = [
   },
 ] as const;
 
-const PRINCIPLES = [
-  {
-    title: 'Failure is a first-class result',
-    body:
-      'Replay drift, speed discontinuities, heading singularities, stale exports, and ordinary search ' +
-      'misses stay distinct from one another.',
-  },
-  {
-    title: 'The online path stays lightweight',
-    body:
-      'Waymo parsing and optimization run offline. The deployed API reads Postgres/PostGIS and never needs ' +
-      'a shard or TensorFlow at request time.',
-  },
-  {
-    title: 'Claims carry their provenance',
-    body:
-      'Scene fingerprints, SDC identity, replay settings, search budgets, and run IDs travel with stored ' +
-      'results and exported geometry.',
-  },
+const METHOD_SIGNATURE = [
+  ['Optimizer', 'SciPy Differential Evolution'],
+  ['Models', 'bicycle / linear'],
+  ['Geometry', 'float64 oriented boxes'],
+  ['Identity', 'truncated sha256 digests'],
+  ['Serving', 'PostGIS → FastAPI → React'],
 ] as const;
 
 const LIMITS = [
@@ -109,13 +120,15 @@ export function MethodPage() {
     <section className="method-page">
       <header className="method-hero">
         <div>
-          <p className="eyebrow">SYSTEM DESIGN</p>
-          <h1>From a recorded scene to a stored, replayable result.</h1>
+          <p className="eyebrow">SYSTEM / PROVENANCE</p>
+          <h1>A stored replay is shown only with the run it came from.</h1>
+          <p className="method-lede">This is not a collision-probability model.</p>
         </div>
-        <p className="method-lede">
-          This is not a collision-probability model. It asks a narrower question: under a bounded kinematic
-          replay, how small a change to one agent's motion produces geometric contact?
-        </p>
+        <dl className="method-signature" aria-label="System components">
+          {METHOD_SIGNATURE.map(([term, value]) => (
+            <div key={term}><dt>{term}</dt><dd>{value}</dd></div>
+          ))}
+        </dl>
       </header>
 
       <div className="pipeline-list" aria-label="System pipeline">
@@ -130,19 +143,6 @@ export function MethodPage() {
           </article>
         ))}
       </div>
-
-      <section className="method-section">
-        <p className="eyebrow">ENGINEERING PRINCIPLES</p>
-        <h2>Built to expose assumptions, not hide them.</h2>
-        <div className="principle-grid">
-          {PRINCIPLES.map((principle) => (
-            <article key={principle.title}>
-              <h3>{principle.title}</h3>
-              <p>{principle.body}</p>
-            </article>
-          ))}
-        </div>
-      </section>
 
       <section className="limits-panel">
         <div>

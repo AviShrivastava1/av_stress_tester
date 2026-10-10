@@ -96,7 +96,7 @@ const FLOOR_BY_CLASS: Record<string, number> = { 'hero-note': 12 };
  */
 const SHORT_LABELS = new Set([
   '.eyebrow', '.facts dd.mono', '.hero-replay > span:first-child', '.legend', '.panel-kicker', '.pipeline-meta',
-  '.pipeline-number', '.rate select', '.system-signature dt', '.readout', '.result-overview > div > span',
+  '.method-signature dt', '.pipeline-number', '.rate select', '.system-signature dt', '.readout', '.result-overview > div > span',
   '.scene-panel-heading > span', '.tag',
 ]);
 
@@ -309,5 +309,29 @@ describe('the illustration under reduced motion', () => {
     // with `animation:none` the paths fall back to their own stroke-dashoffset, which must not be a hidden state
     const paths = rules.filter((r) => /\.trace-path/.test(r.selector) && /stroke-dashoffset/.test(r.declarations));
     expect(paths.map((r) => r.selector)).toEqual([]);
+  });
+});
+
+/*
+ * The Method page's limits and its denial are never hidden at any width: the five limits are the page's statement of
+ * what the output does not mean, and the line under the heading says it is not a collision-probability model. A
+ * stylesheet that collapsed or hid them on a phone would turn the page back into the claim without its limits.
+ */
+const LIMIT_CLASSES = ['limits-panel', 'method-lede'];
+const hidesLimits = (all: ReturnType<typeof cssRules>) =>
+  all
+    .filter((r) => parts(r.selector).some((part) => LIMIT_CLASSES.some((name) => hasClass(part, name))))
+    .filter((r) => /(?:^|;)(?:display:none|visibility:hidden|opacity:0|font-size:0|height:0|max-height:0|clip-path:inset\(50%\))(?:!important)?(?:;|$)/.test(r.declarations))
+    .map((r) => `${r.selector} in ${r.media ?? 'no media block'}`);
+
+describe('the limits stay visible', () => {
+  it('no rule, in any media block, hides the limits panel, its heading or its list, or the denial line', () => {
+    expect(rules.some((r) => parts(r.selector).some((part) => hasClass(part, 'limits-panel')))).toBe(true); // the rules exist
+    expect(hidesLimits(rules)).toEqual([]);
+  });
+
+  it('the checker finds a rule that hides the limits list on a phone, and one that clips the heading', () => {
+    expect(hidesLimits(cssRules(css + '\n@media(max-width:560px) { .limits-panel ul { display:none; } }'))).toEqual(['.limits-panel ul in (max-width:560px)']);
+    expect(hidesLimits(cssRules(css + '\n.limits-panel h2 { height:0; }'))).toEqual(['.limits-panel h2 in no media block']);
   });
 });

@@ -151,7 +151,8 @@ describe('the words the project cannot back do not appear', () => {
   it('on the Method page', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/method');
-    await screen.findByRole('heading', { level: 1, name: /stored, replayable result/ });
+    await screen.findByRole('heading', { level: 1, name: 'A stored replay is shown only with the run it came from.' });
+    expect(pageText().length).toBeGreaterThan(500); // the whole page is there: the hero, the steps and the limits
     expect(violations(pageText())).toEqual([]);
   });
 
