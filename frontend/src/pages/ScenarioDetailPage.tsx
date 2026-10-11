@@ -105,7 +105,7 @@ export function ScenarioDetailPage() {
   const comparing = perturbedTrackDrawn(trajectories.data?.agents, perturbed.data);
 
   return (
-    <section className="detail-page">
+    <section>
       {back}
       <div className="detail-heading">
         <div className="detail-heading-id">
@@ -115,7 +115,7 @@ export function ScenarioDetailPage() {
         <div className="detail-heading-meta">
           <span className="dataset-label">{comparing ? 'logged / counterfactual' : 'logged scene'}</span>
           {detail.data && (
-            <div className="detail-outcome" role="group" aria-label="Search outcome">
+            <div role="group" aria-label="Search outcome">
               <OutcomeCell row={detail.data} />
             </div>
           )}

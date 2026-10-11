@@ -206,7 +206,7 @@ describe('the header', () => {
 const HIDES = /(?:^|;)(?:display:none|visibility:hidden|opacity:0|font-size:0)(?:!important)?(?:;|$)/;
 /** Selectors that can reach the header label: anything under .detail-heading, or the bare .dataset-label. */
 const reachesHeaderLabel = (selector: string) =>
-  selector.split(',').some((part) => /\.detail-heading|\.detail-outcome/.test(part) || part.trim() === '.dataset-label');
+  selector.split(',').some((part) => /\.detail-heading/.test(part) || part.trim() === '.dataset-label');
 
 const css = readFrontendFile('src/styles.css');
 

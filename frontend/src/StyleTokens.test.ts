@@ -361,3 +361,40 @@ describe('caveat text is never hidden', () => {
     expect(hidesCaveats(cssRules('.keyboard-hint { display:none; } .stat .stat-def { display:none; }'))).toEqual(['.stat .stat-def in no media block']);
   });
 });
+
+/*
+ * Links that look like buttons are square, like the buttons: one rule gives both the same border, radius, colours and
+ * padding, and nothing rounds a .button-link. (The only ones are the "Back to scenarios" links on the pages for an
+ * unknown address and for an error.)
+ */
+describe('button links match the buttons', () => {
+  it('one rule styles button and .button-link together, with a square corner', () => {
+    const shared = rules.find((r) => !r.media && parts(r.selector).includes('button') && parts(r.selector).includes('.button-link') && /border-radius:0/.test(r.declarations));
+    expect(shared, 'a rule for `button,.button-link` with border-radius:0').toBeDefined();
+    expect(shared!.declarations).toMatch(/border:1pxsolidvar\(--border-strong\)/);
+    expect(shared!.declarations).toMatch(/background:transparent/);
+  });
+
+  it('no rule gives a .button-link, or a button, a rounded corner', () => {
+    const rounded = rules
+      .filter((r) => parts(r.selector).some((part) => /(^|[\s,])(?:button|\.button-link)(?![\w-])/.test(part) && !/\.(?:segmented|scenario-lookup|playback-row|link-button)/.test(part)))
+      .filter((r) => /border-radius:(?!0(?:;|px;))/.test(r.declarations))
+      .map((r) => r.selector);
+    expect(rounded).toEqual([]);
+  });
+
+  it('hovering a .button-link does what hovering a button does', () => {
+    const hover = rules.find((r) => parts(r.selector).includes('.button-link:hover'));
+    expect(hover, 'a hover rule for .button-link').toBeDefined();
+    expect(hover!.declarations).toMatch(/border-color:var\(--accent\)/);
+    expect(hover!.declarations).toMatch(/(?:^|;)color:var\(--accent\)/);
+  });
+});
+
+describe('the PostGIS value on the Corpus page', () => {
+  it('is right-aligned, like the other values', () => {
+    const rule = rules.find((r) => r.selector === ".stat[data-stat='postgis'] > dd:not(.stat-def)");
+    expect(rule).toBeDefined();
+    expect(rule!.declarations).toMatch(/text-align:right/);
+  });
+});
