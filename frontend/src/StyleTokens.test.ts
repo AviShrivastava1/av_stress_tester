@@ -84,8 +84,6 @@ const CAVEAT_CLASSES: Record<string, string> = {
   'hero-note': 'the list hero note: "not proven", searches ran offline, what a tie means',
   'trace-label': 'the list hero "ILLUSTRATION · not measured data"',
 };
-/** Classes that do not exist yet; when they arrive they are held to the floor. */
-const COMING_CAVEAT_CLASSES: string[] = [];
 const FLOOR = 11;
 /** The hero note, the first thing under the hero claim, is held to 12 px. */
 const FLOOR_BY_CLASS: Record<string, number> = { 'hero-note': 12 };
@@ -115,7 +113,7 @@ function sizeViolations(all: ReturnType<typeof cssRules>): string[] {
     const size = px(r.text);
     if (size === null) continue;
     for (const part of parts(r.selector)) {
-      for (const name of [...Object.keys(CAVEAT_CLASSES), ...COMING_CAVEAT_CLASSES]) {
+      for (const name of Object.keys(CAVEAT_CLASSES)) {
         const floor = FLOOR_BY_CLASS[name] ?? FLOOR;
         if (hasClass(part, name) && size < floor) out.push(`${part} { ${size}px } carries ${name} text (floor ${floor}px)`);
       }
