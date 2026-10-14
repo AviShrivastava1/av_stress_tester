@@ -5,7 +5,9 @@ import {
   canFocusInteraction,
   focusTracks,
   perturbedPathNote,
+  recordingLastFrame,
   referenceFrameNote,
+  searchWindowNote,
 } from './sceneModel';
 
 const sdc = makeTrack({ agent_idx: 0, is_sdc: true });
@@ -93,5 +95,44 @@ describe('referenceFrameNote', () => {
     const note = referenceFrameNote({ kind: 'earliest_observed', frame: 5 }, 2);
     expect(note).toMatch(/No frame has all 2 focused tracks observed together/);
     expect(note).not.toMatch(/the earliest frame where all/);
+  });
+});
+
+describe('recordingLastFrame', () => {
+  it('is the largest timestep over every track, not the first or the focused ones', () => {
+    const short = makeTrack({ agent_idx: 0, is_sdc: true, frames: [0, 1, 2, 3] });
+    const long = makeTrack({ agent_idx: 2, frames: [0, 1, 2, 3, 4, 5, 6] });
+    expect(recordingLastFrame([short, long])).toBe(6);
+    expect(recordingLastFrame([long, short])).toBe(6);
+  });
+
+  it('skips a track with no vertices, and is null when there is nothing to read', () => {
+    const empty = makeTrack({ agent_idx: 3, frames: [] });
+    const one = makeTrack({ agent_idx: 4, frames: [0, 1, 2] });
+    expect(recordingLastFrame([empty, one])).toBe(2);
+    expect(recordingLastFrame([empty])).toBeNull();
+    expect(recordingLastFrame([])).toBeNull();
+  });
+});
+
+describe('searchWindowNote', () => {
+  const NOTE = 'This is the last recorded frame; the search does not look past it.';
+
+  it('is the note exactly when the collision frame is the recording\'s last frame', () => {
+    expect(searchWindowNote({ kind: 'collision', frame: 90 }, 90)).toBe(NOTE);
+    expect(searchWindowNote({ kind: 'collision', frame: 89 }, 90)).toBeNull();
+    expect(searchWindowNote({ kind: 'collision', frame: 91 }, 90)).toBeNull();
+    expect(searchWindowNote({ kind: 'collision', frame: 15 }, 90)).toBeNull();
+  });
+
+  it('is nothing for any other reference frame, and nothing when the last frame is not known', () => {
+    expect(searchWindowNote({ kind: 'all_observed', frame: 90 }, 90)).toBeNull();
+    expect(searchWindowNote({ kind: 'earliest_observed', frame: 90 }, 90)).toBeNull();
+    expect(searchWindowNote({ kind: 'none' }, 90)).toBeNull();
+    expect(searchWindowNote({ kind: 'collision', frame: 90 }, null)).toBeNull();
+  });
+
+  it('has no digit in it', () => {
+    expect(searchWindowNote({ kind: 'collision', frame: 90 }, 90)).not.toMatch(/\d/);
   });
 });

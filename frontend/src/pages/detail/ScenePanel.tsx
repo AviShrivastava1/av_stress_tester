@@ -12,7 +12,9 @@ import {
   focusTracks,
   perturbedPathNote,
   perturbedTrackDrawn,
+  recordingLastFrame,
   referenceFrameNote,
+  searchWindowNote,
   type DrawnTrack,
   type Focus,
   type Role,
@@ -169,7 +171,14 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
 
   // The reference note explains the frame the view OPENED on; once the viewer has
   // moved the playhead it no longer describes what is on screen.
-  const notes: string[] = playback.touched ? [] : [referenceFrameNote(reference, focused.length)];
+  // The search-window line goes with it: it says of THAT frame that the recording ends there, so it is not shown once
+  // the playhead has moved. The last frame is read from every track /trajectories returned (recordingLastFrame).
+  const notes: string[] = [];
+  if (!playback.touched) {
+    notes.push(referenceFrameNote(reference, focused.length));
+    const windowNote = searchWindowNote(reference, agents ? recordingLastFrame(agents) : null);
+    if (windowNote !== null) notes.push(windowNote);
+  }
   if (trajectories.data.agents.length === 0) {
     notes.push(`Only the challenger is drawn: no other agent geometry. ${GEOMETRY_ABSENT_REASON}`);
   }

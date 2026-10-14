@@ -78,6 +78,7 @@ const LIMITS = [
     'between them over a narrow speed band; near that band a very small change can turn a box a long way while ' +
     'its centre barely moves. Vehicles use the bicycle model, which carries heading as part of its state, and are ' +
     'not affected by this.',
+  'The search covers only the recorded frames. A collision that would happen after the last recorded frame is not looked for.',
 ] as const;
 
 async function openMethod() {
@@ -149,7 +150,7 @@ describe('the Method page', () => {
     expect(document.querySelector('.principle-grid, .method-section')).toBeNull();
   });
 
-  it('states what the output does not mean, in five visible bullets, the fourth describing what the browser does now', async () => {
+  it('states what the output does not mean, in six visible bullets, the fourth describing what the browser does now', async () => {
     await openMethod();
     expect(screen.getByText('INTERPRETATION')).toBeVisible();
     const section = screen.getByRole('heading', { name: 'What the output does—and does not—mean', level: 2 }).closest('section')!;
@@ -159,6 +160,19 @@ describe('the Method page', () => {
     const fourth = bullets[3]!.textContent!;
     expect(fourth).not.toMatch(/first-observed|first observed/);
     expect(fourth).not.toMatch(/currently draws/);
+  });
+
+  it('ends with the search window: only the recorded frames are searched, in a visible bullet, with no number', async () => {
+    await openMethod();
+    const section = screen.getByRole('heading', { name: 'What the output does—and does not—mean', level: 2 }).closest('section')!;
+    const bullets = within(section).getAllByRole('listitem');
+    const last = bullets[bullets.length - 1]!;
+    expect(last.textContent).toBe(
+      'The search covers only the recorded frames. A collision that would happen after the last recorded frame is not looked for.',
+    );
+    expect(last).toBeVisible();
+    expect(last.closest('details')).toBeNull();
+    expect(last.textContent).not.toMatch(/\d/);
   });
 
   it('says that pedestrian and cyclist replay is less well measured, and why, in a bullet that is visible', async () => {

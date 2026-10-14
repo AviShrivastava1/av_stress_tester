@@ -52,6 +52,22 @@
  *   "Vehicles use the bicycle model, which carries heading as part of its state, and are not affected by this"
  *       src/physics/simulator.py ForwardSimulator.step (TYPE_VEHICLE -> bicycle_step); _linear_heading's
  *       docstring ("Vehicles never reach this function")
+ *
+ * The sixth limit, on the search window, sentence by sentence:
+ *   "The search covers only the recorded frames."
+ *       the challenger is re-simulated from its first observed frame to the end of the recording, and nothing past that
+ *       is simulated: perturbation_space.py PerturbationSpace.apply, `controls = self.base_controls[self.t0:].copy()`
+ *       (line 649) and `traj = self.simulator.simulate(init, controls, self.dt)  # (T-t0, state_dim)` (line 675), where
+ *       simulator.py `T = len(controls) + 1` (line 86) makes the rollout end at the last frame, and _write_back's
+ *       `n = min(self.T - t0, traj.shape[0])` (line 774) writes frames up to T - 1. The recording is T frames
+ *       (src/data/parser.py, `T = 91` at line 32). The contact check reads the same frames only:
+ *       collision_detector.py check_collision_trajectory, `for t in range(T):` (line 115), and the search's own margin,
+ *       scipy_optimizer.py `for t in range(T):` (line 105), both skipping frames where either agent was not observed
+ *       (collision_detector.py lines 117-118, scipy_optimizer.py line 106)
+ *   "A collision that would happen after the last recorded frame is not looked for."
+ *       there is no frame after the last one in those arrays, and no special case for the last frame, so a stored
+ *       collision at the last frame is a contact found there and says nothing about later frames (the detail page says
+ *       so under the note for the collision frame, scene/sceneModel.ts searchWindowNote)
  * Nothing here is a count: the page carries no data numbers, which go stale.
  */
 const PIPELINE = [
@@ -113,6 +129,7 @@ const LIMITS = [
     'between them over a narrow speed band; near that band a very small change can turn a box a long way while ' +
     'its centre barely moves. Vehicles use the bicycle model, which carries heading as part of its state, and are ' +
     'not affected by this.',
+  'The search covers only the recorded frames. A collision that would happen after the last recorded frame is not looked for.',
 ] as const;
 
 export function MethodPage() {

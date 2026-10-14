@@ -97,6 +97,38 @@ export function perturbedPathNote(
   return 'Not stress-tested yet, so there is no perturbed path.';
 }
 
+/**
+ * The last frame of the recording: the largest timestep over EVERY track /trajectories returned. Not the focused tracks,
+ * which can end earlier, and not the challenger's own last observed frame, which can end earlier still: the question is
+ * where the recording ends, and the search looks at no frame past it. Null when no track has a vertex.
+ *
+ * Why the search window is the recording: the challenger is re-simulated from its first observed frame to the end of the
+ * recording (perturbation_space.py PerturbationSpace.apply, `controls = self.base_controls[self.t0:].copy()` at line 649
+ * and `traj = self.simulator.simulate(init, controls, self.dt)` at line 675; simulator.py `T = len(controls) + 1` at
+ * line 86; _write_back's `n = min(self.T - t0, traj.shape[0])` at line 774), and the contact check loops over the
+ * recording's frames only (collision_detector.py check_collision_trajectory, `for t in range(T):` at line 115;
+ * scipy_optimizer.py `for t in range(T):` at line 105). Neither has a special case for the last frame.
+ */
+export function recordingLastFrame(agents: AgentTrack[]): number | null {
+  let last = -Infinity;
+  for (const a of agents) {
+    if (a.timesteps.length > 0) last = Math.max(last, ...a.timesteps);
+  }
+  return Number.isFinite(last) ? last : null;
+}
+
+export const LAST_FRAME_NOTE = 'This is the last recorded frame; the search does not look past it.';
+
+/**
+ * The line under "Positions at frame N, the first colliding frame." when that frame is the recording's last one: the
+ * contact was found there, and the search does not look at anything later (see recordingLastFrame for the code). It is
+ * shown only for the collision reference, only when its frame equals the recording's last frame, and only when that
+ * frame is known.
+ */
+export function searchWindowNote(ref: ReferenceFrame, lastFrame: number | null): string | null {
+  return ref.kind === 'collision' && lastFrame !== null && ref.frame === lastFrame ? LAST_FRAME_NOTE : null;
+}
+
 /** States which rule picked the frame. The fallback is never presented as the rule. */
 export function referenceFrameNote(ref: ReferenceFrame, focusCount: number): string {
   switch (ref.kind) {

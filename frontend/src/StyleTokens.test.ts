@@ -311,7 +311,7 @@ describe('the illustration under reduced motion', () => {
 });
 
 /*
- * The Method page's limits and its denial are never hidden at any width: the five limits are the page's statement of
+ * The Method page's limits and its denial are never hidden at any width: the limits are the page's statement of
  * what the output does not mean, and the line under the heading says it is not a collision-probability model. A
  * stylesheet that collapsed or hid them on a phone would turn the page back into the claim without its limits.
  */
