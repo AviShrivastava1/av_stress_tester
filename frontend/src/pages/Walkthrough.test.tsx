@@ -150,8 +150,8 @@ function renderWalk() {
 const probed = (server: { trajectoryIds(): string[] }) => server.trajectoryIds().filter((id) => id !== 'we-huge-edge');
 
 const section = (name: string) => screen.getByRole('region', { name });
-const SMALLEST = 'Smallest change, before the recording ends';
-const LARGEST = 'Largest change that still collides';
+const SMALLEST = 'Smallest perturbation found';
+const LARGEST = 'Largest perturbation found';
 const REFUSED = 'A refused replay';
 
 describe('the three scenes are chosen by rule from the API', () => {
@@ -333,14 +333,36 @@ describe('the page in the site', () => {
     expect(document.title).toBe('Walkthrough · AV Scenario Stress-Tester');
   });
 
-  it('says every figure is the smallest found by a finite search, not a proven minimum', async () => {
+  it('says every figure is the smallest found by a finite search, not a proven minimum, and why figures from different models do not compare', async () => {
     install();
     renderWalk();
     await screen.findByRole('heading', { level: 1, name: 'Three stored results' });
     expect(document.body).toHaveTextContent(
       'These three scenarios are chosen by rule from the stored results each time the page loads, not by hand. ' +
-        'Every perturbation is the smallest found by a finite search, not a proven minimum.',
+        'Every perturbation is the smallest found by a finite search, not a proven minimum. ' +
+        'A perturbation is a weighted norm over components of mixed units, so figures from scenes searched with different motion models are not directly comparable.',
     );
+  });
+
+  it('puts that caption under the title and above the cards, and nowhere else on the page', async () => {
+    install();
+    renderWalk();
+    await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
+    const caption = document.querySelector('p.caption')!;
+    expect(caption).toHaveTextContent('weighted norm over components of mixed units');
+    expect(document.querySelectorAll('.walk-card')).toHaveLength(3);
+    expect(document.querySelector('.walk-card')!.textContent).not.toContain('weighted norm');
+    expect(
+      caption.compareDocumentPosition(document.querySelector('.walk-card')!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('titles the cards by what the figure is: each scenario’s own smallest perturbation found, and says nothing of "change"', async () => {
+    install();
+    renderWalk();
+    await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
+    const titles = [...document.querySelectorAll('.walk-card h2')].map((h) => h.textContent);
+    expect(titles).toEqual(['Smallest perturbation found', 'Largest perturbation found', 'A refused replay']);
   });
 });
 

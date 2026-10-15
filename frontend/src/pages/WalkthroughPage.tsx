@@ -21,13 +21,24 @@ import { scenarioPath } from './ScenarioListPage';
  * code below; none is written here. The scenes are chosen by rule (domain/walkthrough.ts).
  *
  *   h1 "Three stored results"
- *       the three sections below: the smallest change before the recording ends, the largest, and a refused replay
+ *       the three sections below: the smallest stored perturbation among the collisions before the recording ends, the largest
+ *       stored perturbation among all the collisions, and a refused replay
  *   "These three scenarios are chosen by rule from the stored results each time the page loads, not by hand."
  *       smallestFirst, largestCollision and firstRefused run on the rows GET /scenarios returned when the page opened
  *   "Every perturbation is the smallest found by a finite search, not a proven minimum."
  *       the same caveat as the list's caption and the Method page's first limits: min_perturbation is the best result of a
  *       Differential Evolution run with a recorded budget (src/optimization/scipy_optimizer.py optimize_scenario)
- *   "Smallest change, before the recording ends" and the sentence under it
+ *   "A perturbation is a weighted norm over components of mixed units, so figures from scenes searched with different motion
+ *    models are not directly comparable."
+ *       the statement the Run details panel's replay-offset note makes (pages/detail/ReplayOffsetBlock.tsx: "Min perturbation is
+ *       a weighted norm over components of mixed units") and the comparison page repeats (pages/ComparePage.tsx); the API's own
+ *       descriptions of the two replay-drift fields call min_perturbation "a weighted norm" (src/api/models.py, "Not comparable
+ *       with min_perturbation, a weighted norm ..."). The components differ
+ *       by model: a bicycle vector has initial speed, initial heading, acceleration bias and steering bias, a linear vector has
+ *       vx, vy and two accelerations (src/api/models.py DELTA_LABELS and LINEAR_DELTA_LABELS), so two scenes searched with
+ *       different models have norms over different components. The figures on the cards are each scenario's own
+ *       min_perturbation, one per scenario, and the three cards are not ranked against one another by anything on this page
+ *   "Smallest perturbation found" and the sentence under it
  *       the collisions in order of min_perturbation; the first whose collision_timestep is before recordingLastFrame
  *       (scene/sceneModel.ts) of its /trajectories response. That is the frame past which the search does not look, so a
  *       collision on it is left out here: the detail page's line "This is the last recorded frame" would say so. "The
@@ -39,7 +50,7 @@ import { scenarioPath } from './ScenarioListPage';
  *   "Every stored collision is on the last recorded frame, or has no geometry to check that against, so no scene is shown here."
  *       every candidate was read and none qualified: each collision frame equals the last frame, or the response had no
  *       track (a scenario whose geometry was not exported has no last frame to compare with)
- *   "Largest change that still collides" and the sentence under it
+ *   "Largest perturbation found" and the sentence under it
  *       largestCollision: the largest stored min_perturbation among the collisions, with no condition on the frame.
  *       "This is the scenario above." when it is the scene chosen for the smallest
  *   "A refused replay" and the sentence under it
@@ -143,7 +154,8 @@ export function WalkthroughPage() {
       <h1>Three stored results</h1>
       <p className="caption">
         These three scenarios are chosen by rule from the stored results each time the page loads, not by hand. Every
-        perturbation is the smallest found by a finite search, not a proven minimum.
+        perturbation is the smallest found by a finite search, not a proven minimum. A perturbation is a weighted norm over
+        components of mixed units, so figures from scenes searched with different motion models are not directly comparable.
       </p>
 
       {all.error !== null ? (
@@ -152,7 +164,7 @@ export function WalkthroughPage() {
         <p className="status" role="status">Loading every scenario to choose from…</p>
       ) : (
         <>
-          <Card title="Smallest change, before the recording ends" id="smallest">
+          <Card title="Smallest perturbation found" id="smallest">
             {smallest.status === 'probing' && (
               <p className="status" role="status">Checking where each recording ends…</p>
             )}
@@ -184,7 +196,7 @@ export function WalkthroughPage() {
             )}
           </Card>
 
-          <Card title="Largest change that still collides" id="largest">
+          <Card title="Largest perturbation found" id="largest">
             {largest === null ? (
               <p>{NO_COLLISION}</p>
             ) : (
