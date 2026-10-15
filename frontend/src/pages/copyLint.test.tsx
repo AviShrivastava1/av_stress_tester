@@ -165,6 +165,7 @@ describe('the words the project cannot back do not appear', () => {
   it.each([
     ['two scenarios of the same model', ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)']],
     ['two scenarios of different models', ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], ['initial vx (m/s)', 'initial vy (m/s)', 'x-acceleration bias (m/s^2)', 'y-acceleration bias (m/s^2)']],
+    ['two scenarios with the same names in a different order', ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], ['steering bias (rad)', 'acceleration bias (m/s^2)', 'initial heading (rad)', 'initial speed (m/s)']],
   ])('on the comparison page for %s', async (_name, first, second) => {
     stubFetch((req: RecordedRequest): Reply => {
       const id = decodeURIComponent(req.path.split('/')[2] ?? '');

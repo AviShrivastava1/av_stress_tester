@@ -76,6 +76,8 @@ const cells = (label: string) => within(row(label)).getAllByRole('cell').map((c)
 const REFUSED_DIFFERENT_MODELS =
   'These two were searched with different kinematic models, so the components of their perturbation vectors differ in meaning and ' +
   'units. They are not lined up here; each is shown on its own.';
+const REFUSED_REORDERED =
+  'These two list the same component names in a different order, so they are not lined up here; each is shown on its own.';
 const REFUSED_UNNAMED = 'At least one of these has no parameterization stored, so its components cannot be named or given units. None are lined up here.';
 
 describe('two scenarios of the same model', () => {
@@ -149,17 +151,65 @@ describe('where it refuses to line the components up', () => {
     expect(cells('Fragility')).toEqual(['2.500', '0.900']);
   });
 
-  it('refuses the same four names in a different order: lined up only when the lists are identical', async () => {
+  it('refuses the same four names in a different order: lined up only when the lists are identical, and says that is why', async () => {
     serve();
     renderAt('/compare?a=sa&b=sp');
-    await screen.findByText(REFUSED_DIFFERENT_MODELS);
+    await screen.findByText(REFUSED_REORDERED);
+    expect(screen.queryByText(REFUSED_DIFFERENT_MODELS)).not.toBeInTheDocument();
+    expect(screen.queryByText(REFUSED_UNNAMED)).not.toBeInTheDocument();
     expect(screen.queryByRole('table', { name: 'Perturbation components, side by side' })).not.toBeInTheDocument();
+    // Each is still shown on its own, in the order it was stored in.
+    for (const [id, labels] of [['sa', BICYCLE], ['sp', [...BICYCLE].reverse()]] as const) {
+      const own = within(column(id)).getByRole('table', { name: `Perturbation components of ${id}` });
+      expect(within(own).getAllByRole('rowheader').map((h) => h.textContent)).toEqual(labels);
+    }
+  });
+
+  it('gives the reordered sentence for any order of the same names, not only the reverse', async () => {
+    const [n0, n1, n2, n3] = BICYCLE;
+    serve({ sr: { detail: DATA.sa!.detail!, delta: [1, 2, 3, 4], labels: [n1!, n0!, n2!, n3!] } });
+    renderAt('/compare?a=sa&b=sr');
+    await screen.findByText(REFUSED_REORDERED);
+    expect(screen.queryByText(REFUSED_DIFFERENT_MODELS)).not.toBeInTheDocument();
+  });
+
+  it('uses the different-models sentence when the sets of names differ, even if most names are shared', async () => {
+    const [n0, n1, n2] = BICYCLE;
+    serve({ sq: { detail: DATA.sa!.detail!, delta: [1, 2, 3, 4], labels: [n0!, n1!, n2!, 'steering bias (m)'] } });
+    renderAt('/compare?a=sa&b=sq');
+    await screen.findByText(REFUSED_DIFFERENT_MODELS);
+    expect(screen.queryByText(REFUSED_REORDERED)).not.toBeInTheDocument();
+  });
+
+  it('counts repeats: the same length with one name twice in one list and once in the other is a different set', async () => {
+    serve({
+      sd: { detail: DATA.sa!.detail!, delta: [1, 2, 3, 4], labels: ['p', 'p', 'q', 'r'] },
+      se2: { detail: DATA.sa!.detail!, delta: [1, 2, 3, 4], labels: ['p', 'q', 'q', 'r'] },
+    });
+    renderAt('/compare?a=sd&b=se2');
+    await screen.findByText(REFUSED_DIFFERENT_MODELS);
+    expect(screen.queryByText(REFUSED_REORDERED)).not.toBeInTheDocument();
+  });
+
+  it('does not use the reordered sentence for a bicycle against a linear vector, or for a vector with no names', async () => {
+    serve();
+    renderAt('/compare?a=sa&b=sl');
+    await screen.findByText(REFUSED_DIFFERENT_MODELS);
+    expect(screen.queryByText(REFUSED_REORDERED)).not.toBeInTheDocument();
+  });
+
+  it('lines identical lists up and shows no refusal at all', async () => {
+    serve();
+    renderAt('/compare?a=sa&b=sb');
+    await screen.findByRole('table', { name: 'Perturbation components, side by side' });
+    for (const text of [REFUSED_REORDERED, REFUSED_DIFFERENT_MODELS, REFUSED_UNNAMED]) expect(screen.queryByText(text)).not.toBeInTheDocument();
   });
 
   it('refuses when a vector has no parameterization, and does not name or give units to its components', async () => {
     serve();
     renderAt('/compare?a=sa&b=su');
     await screen.findByText(REFUSED_UNNAMED);
+    expect(screen.queryByText(REFUSED_REORDERED)).not.toBeInTheDocument();
     expect(screen.queryByRole('table', { name: 'Perturbation components, side by side' })).not.toBeInTheDocument();
     const own = within(column('su')).getByRole('table', { name: 'Perturbation components of su' });
     expect(within(own).getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['component 1', 'component 2', 'component 3', 'component 4']);

@@ -44,7 +44,12 @@ import { scenarioPath } from './ScenarioListPage';
  *       as "component 1", "component 2" without units, and says the parameterization is unknown)
  *   "These two were searched with different kinematic models, so the components of their perturbation vectors differ in meaning
  *   and units. They are not lined up here; each is shown on its own."
- *       both are named, and the two lists differ
+ *       both are named, and the two SETS of names differ (as lists with repeats counted): different components, so different
+ *       meaning and units (src/api/models.py DELTA_LABELS and LINEAR_DELTA_LABELS)
+ *   "These two list the same component names in a different order, so they are not lined up here; each is shown on its own."
+ *       both are named, the two lists hold exactly the same names (the same names the same number of times) and are not in the
+ *       same order. The meaning and units are the same, so the "different models" sentence would be false for them; they are
+ *       still not lined up, because a row would pair a component of one with a differently placed component of the other
  *   "No scenario with ID {id} exists."
  *       the API's 404 for that id (as the scenario page words it)
  */
@@ -52,6 +57,8 @@ import { scenarioPath } from './ScenarioListPage';
 const REFUSED_DIFFERENT_MODELS =
   'These two were searched with different kinematic models, so the components of their perturbation vectors differ in meaning and ' +
   'units. They are not lined up here; each is shown on its own.';
+const REFUSED_REORDERED =
+  'These two list the same component names in a different order, so they are not lined up here; each is shown on its own.';
 const REFUSED_UNNAMED =
   'At least one of these has no parameterization stored, so its components cannot be named or given units. None are lined up here.';
 
@@ -69,6 +76,8 @@ function namesOf(p: PerturbedResponse | undefined): string[] | null {
 }
 
 const same = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((name, i) => name === y[i]);
+/** The same names the same number of times, whatever the order. */
+const sameSet = (x: readonly string[], y: readonly string[]) => same([...x].sort(), [...y].sort());
 
 const dash = <span className="muted">—</span>;
 
@@ -169,7 +178,13 @@ export function ComparePage() {
   const missing = perturbedReady ? [a, b].filter((_id, i) => (i === 0 ? pdA : pdB)!.delta == null) : [];
   const lined = perturbedReady && namesA !== null && namesB !== null && same(namesA, namesB); // a missing delta has no names, so it is never lined up
   const refusal =
-    perturbedReady && missing.length === 0 && !lined ? (namesA === null || namesB === null ? REFUSED_UNNAMED : REFUSED_DIFFERENT_MODELS) : null;
+    perturbedReady && missing.length === 0 && !lined
+      ? namesA === null || namesB === null
+        ? REFUSED_UNNAMED
+        : sameSet(namesA, namesB)
+          ? REFUSED_REORDERED
+          : REFUSED_DIFFERENT_MODELS
+      : null;
   // Each shows its own components unless they are lined up in one table below.
   const showOwn = !lined;
 
