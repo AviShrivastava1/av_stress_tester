@@ -332,8 +332,10 @@ class HealthResponse(BaseModel):
     """
     Liveness plus a real database round-trip.
 
-    `postgis` is None when the extension is absent — that is degraded, not dead:
-    the scores endpoints work fine without it, only geometry is unavailable.
+    `status` is "ok" when the database and PostGIS both answered, and "degraded" when the
+    database answered but PostGIS did not: `postgis` is then None (the extension is
+    missing, or the version call raised). That is degraded, not dead: the scores
+    endpoints work fine without it, only geometry is unavailable. Both are HTTP 200.
     """
 
     status: str

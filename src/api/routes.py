@@ -527,9 +527,15 @@ def health(conn=Depends(get_db)):
     healthy while the database is unreachable — which is the exact failure it
     exists to catch. So this executes a real round-trip.
 
-    PostGIS being absent is reported as null rather than raised: the scores
-    endpoints work fine without it and only geometry is unavailable. That is
-    degraded, not dead, and a health check should be able to say the difference.
+    The status says what the round-trips found. "ok": the database answered and so
+    did PostGIS (its version is in `postgis`). "degraded": the database answered but
+    PostGIS did not, because the extension is missing or the call raised; `postgis`
+    is then null. The scores endpoints do not use PostGIS and keep working; the
+    geometry endpoints do use it. A degraded answer is still HTTP 200, on purpose:
+    the hosting platform's health check reads this route and takes an instance out
+    of rotation on any 4xx or 5xx, which would also take down the endpoints that
+    still work. A database that cannot be reached is a failure of the connection
+    dependency, not a status here: a 503 with Retry-After when the pool is exhausted.
     """
     with dict_cursor(conn) as cur:
         cur.execute('SELECT 1 AS ok')
@@ -546,7 +552,8 @@ def health(conn=Depends(get_db)):
             # "current transaction is aborted".
             conn.rollback()
 
-    return HealthResponse(status='ok', database='connected', postgis=postgis)
+    return HealthResponse(status='ok' if postgis is not None else 'degraded',
+                          database='connected', postgis=postgis)
 
 
 @router.get('/stats', response_model=StatsResponse)

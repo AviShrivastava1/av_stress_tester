@@ -9,7 +9,7 @@
     "/health": {
       "get": {
         "summary": "Health",
-        "description": "Liveness check that actually touches the database.\n\nA health check that only returns {\"status\": \"ok\"} without querying will report\nhealthy while the database is unreachable — which is the exact failure it\nexists to catch. So this executes a real round-trip.\n\nPostGIS being absent is reported as null rather than raised: the scores\nendpoints work fine without it and only geometry is unavailable. That is\ndegraded, not dead, and a health check should be able to say the difference.",
+        "description": "Liveness check that actually touches the database.\n\nA health check that only returns {\"status\": \"ok\"} without querying will report\nhealthy while the database is unreachable — which is the exact failure it\nexists to catch. So this executes a real round-trip.\n\nThe status says what the round-trips found. \"ok\": the database answered and so\ndid PostGIS (its version is in `postgis`). \"degraded\": the database answered but\nPostGIS did not, because the extension is missing or the call raised; `postgis`\nis then null. The scores endpoints do not use PostGIS and keep working; the\ngeometry endpoints do use it. A degraded answer is still HTTP 200, on purpose:\nthe hosting platform's health check reads this route and takes an instance out\nof rotation on any 4xx or 5xx, which would also take down the endpoints that\nstill work. A database that cannot be reached is a failure of the connection\ndependency, not a status here: a 503 with Retry-After when the pool is exhausted.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -398,7 +398,7 @@
           "database"
         ],
         "title": "HealthResponse",
-        "description": "Liveness plus a real database round-trip.\n\n`postgis` is None when the extension is absent — that is degraded, not dead:\nthe scores endpoints work fine without it, only geometry is unavailable."
+        "description": "Liveness plus a real database round-trip.\n\n`status` is \"ok\" when the database and PostGIS both answered, and \"degraded\" when the\ndatabase answered but PostGIS did not: `postgis` is then None (the extension is\nmissing, or the version call raised). That is degraded, not dead: the scores\nendpoints work fine without it, only geometry is unavailable. Both are HTTP 200."
       },
       "PerturbedResponse": {
         "properties": {

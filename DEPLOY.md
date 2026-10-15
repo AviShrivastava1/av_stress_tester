@@ -146,8 +146,11 @@ Render redeploys on every push to `main`. A build filter limited to `src/api/**`
 `requirements-api.txt` is optional.
 
 Check: `https://<the service>.onrender.com/health` returns
-`{"status":"ok","database":"connected","postgis":"3.6 …"}`. If `/health` fails, Render
-keeps routing to the previous version and cancels the deploy after 15 minutes.
+`{"status":"ok","database":"connected","postgis":"3.6 …"}`. `"status":"degraded"` with
+`"postgis":null` means the database answered but PostGIS did not: the scores endpoints
+work and the geometry endpoints do not. It is still HTTP 200, so Render does not take the
+instance out of rotation. If `/health` fails (any 4xx or 5xx), Render keeps routing to the
+previous version and cancels the deploy after 15 minutes.
 
 ### 4. The frontend: a Vercel project
 
@@ -183,7 +186,7 @@ every push is a production deploy anyway. If a preview is ever wanted, its branc
 
 ## Checks, in order
 
-1. `GET /health`: `status: ok`, `database: connected`, `postgis` set.
+1. `GET /health`: `status: ok`, `database: connected`, `postgis` set (`degraded` with `postgis` null is a PostGIS problem).
 2. `GET /stats`: `total_scenarios: 100`, `stress_tested: 18`, `collisions_found: 18`,
    `replay_infeasible: 2`, `no_collision_found: 0`, `with_geometry: 20`.
    (`stress_tested` counts stored search results; the 2 drift refusals are
