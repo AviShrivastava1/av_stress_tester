@@ -175,6 +175,19 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it('on a scenario page in the whole-scene framing, with the caption about the other agents', async () => {
+    const parked = makeTrack({ agent_idx: 2, frames: range(0, 91), origin: [10, 10] });
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged, parked]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged, perturbed: makeTrack({ agent_idx: 1, frames: range(0, 91), origin: [1, -28], heading: Math.PI / 2 }) }));
+      return ok(makeDetail({ stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.1, collision_timestep: 25 }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByRole('button', { name: 'Whole scene' }));
+    await screen.findByText(/drawn as logged/);
+    expect(violations(pageText())).toEqual([]);
+  });
+
   it('on the walkthrough, with all three scenes shown', async () => {
     stubFetch((req: RecordedRequest): Reply => {
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));

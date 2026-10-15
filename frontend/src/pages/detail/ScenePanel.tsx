@@ -14,6 +14,7 @@ import {
   perturbedTrackDrawn,
   recordingLastFrame,
   referenceFrameNote,
+  othersAsLoggedNote,
   searchWindowNote,
   type DrawnTrack,
   type Focus,
@@ -205,6 +206,9 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
   }
   // Not tied to the playhead: unlike the reference-frame note above, it describes how every frame is drawn.
   if (collisionFrame !== null) notes.push(boxSizeNote(drawn));
+  // Also not tied to the playhead: it says how the other tracks on screen were got, in whichever frame.
+  const othersNote = othersAsLoggedNote(focused);
+  if (othersNote !== null) notes.push(othersNote);
 
   // The frame C goes to; null when the scene has no collision frame in range, and then no key, hint or label offers it.
   const collisionKeyFrame = collisionTarget(collisionFrame, range);

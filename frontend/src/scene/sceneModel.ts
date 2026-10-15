@@ -77,6 +77,29 @@ export function focusTracks(drawn: DrawnTrack[], focus: Focus): DrawnTrack[] {
 }
 
 /**
+ * The caption under the whole-scene replay. What backs it: PerturbationSpace.apply (src/optimization/perturbation_space.py)
+ * returns a copy of the scene's states "in which the challenger's trajectory has been replaced by the re-simulated, perturbed
+ * one. The SDC and all other agents are untouched": the search rewrites one track, and nothing it does is fed back into any
+ * other agent's track. So the SDC and every other agent drawn here are the recorded tracks, and none of them reacts to the
+ * perturbed challenger; a reader of a crowded scene could otherwise take a nearby car that "does nothing" for one that was
+ * simulated and chose to. The sentence says only what apply() says.
+ */
+export const OTHERS_AS_LOGGED_NOTE =
+  "The SDC and every other agent are drawn as logged. The search changes the challenger's track only, so none of them " +
+  'reacts to the perturbed challenger.';
+
+/**
+ * The caption above, or null. It is shown where it is needed: when the perturbed challenger is drawn beside tracks that are not
+ * the challenger's, which is the whole-scene framing with at least one other agent drawn. With no perturbed track there is
+ * nothing counterfactual to qualify, and in the challenger-and-SDC framing no other agent is drawn.
+ */
+export function othersAsLoggedNote(shown: DrawnTrack[]): string | null {
+  const perturbedDrawn = shown.some((d) => d.role === 'challenger_perturbed');
+  const othersDrawn = shown.some((d) => d.role === 'other');
+  return perturbedDrawn && othersDrawn ? OTHERS_AS_LOGGED_NOTE : null;
+}
+
+/**
  * Why there is no perturbed path, in the terms the score row supports. Null when a
  * perturbed path is drawn, or when the score row has not loaded (no guessing).
  */
