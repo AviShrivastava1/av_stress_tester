@@ -1,4 +1,4 @@
-import { readTimeMetric } from '../domain/metrics';
+import { PET_OVERLAP_TITLE, isPetOverlap, readTimeMetric } from '../domain/metrics';
 
 const NO_INTERACTION_MEANING = {
   ttc: 'No finite collision time predicted for an SDC pair by the constant-velocity model. A closing pair can still miss.',
@@ -20,12 +20,9 @@ export function TimeMetricCell({ value, metric }: { value: number | null; metric
       return (
         <span>
           {reading.seconds.toFixed(2)} s
-          {/* Negative PET is real: both agents occupied the conflict zone at once. */}
-          {metric === 'pet' && reading.seconds < 0 && (
-            <span
-              className="tag"
-              title="Negative PET: the SDC and another agent occupied a conflict zone at the same time."
-            >
+          {/* Zero or negative PET is real: both agents were in the conflict zone on a common frame (see PET_OVERLAP_TITLE). */}
+          {metric === 'pet' && isPetOverlap(reading.seconds) && (
+            <span className="tag" title={PET_OVERLAP_TITLE}>
               overlap
             </span>
           )}

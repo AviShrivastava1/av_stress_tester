@@ -2,6 +2,7 @@ import { screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { describeOutcome } from '../domain/outcomes';
 import { formatMagnitude } from '../domain/format';
+import { PET_OVERLAP_TITLE } from '../domain/metrics';
 import { makePage, makeRow } from '../test/fixtures';
 import { stubFetch, type Reply } from '../test/fetchStub';
 import { renderApp } from '../test/renderApp';
@@ -140,7 +141,7 @@ describe('the Timing cell', () => {
     const table = await openList();
     const timing = cell(bodyRow(table, 1), COL.timing);
     expect(timing).toHaveTextContent('PET -0.40 s');
-    expect(within(timing).getByText('overlap')).toHaveAttribute('title', expect.stringContaining('Negative PET'));
+    expect(within(timing).getByText('overlap')).toHaveAttribute('title', PET_OVERLAP_TITLE);
     // no tag on the positive PET of the first row
     expect(within(cell(bodyRow(table, 0), COL.timing)).queryByText('overlap')).not.toBeInTheDocument();
   });

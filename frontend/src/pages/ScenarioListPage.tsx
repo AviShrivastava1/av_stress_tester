@@ -84,8 +84,10 @@ export interface ListReturnState {
  *       optimize_scenario (and the note in pages/detail/ReplayOffsetBlock.tsx); "within a finite search budget": the
  *       Differential Evolution budget recorded in search_provenance (de_popsize, de_maxiter), so "not a proven global
  *       minimum"; TTC and PET: src/danger/ttc_engine.py, src/danger/pet_engine.py; "None": no finite value
- *       (components/TimeMetricCell.tsx); "Negative PET marks overlapping occupancy of one connected conflict zone":
- *       pet_engine._conflict_components (two agents inside the same connected conflict zone at overlapping times)
+ *       (components/TimeMetricCell.tsx); "A PET of zero or less marks overlapping occupancy of one connected conflict zone":
+ *       pet_engine.py: per visit pair `max(enter_b - exit_a, enter_a - exit_b) <= 0` iff the two closed runs of sampled
+ *       frames overlap (lines 181-184), so zero, like a negative value, means both agents were inside the same connected
+ *       conflict zone (_conflict_components) on a common frame; domain/metrics.ts isPetOverlap and PET_OVERLAP_TITLE
  */
 const SYSTEM_SIGNATURE = [
   ['Search', 'Differential Evolution'],
@@ -288,7 +290,7 @@ export function ScenarioListPage() {
         finite search, not a proven minimum.
       </p>
       <details className="metric-guide"><summary>Metric definitions</summary>
-        <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted perturbation found within a finite search budget, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. Negative PET marks overlapping occupancy of one connected conflict zone.</p>
+        <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted perturbation found within a finite search budget, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A PET of zero or less marks overlapping occupancy of one connected conflict zone.</p>
       </details>
 
       {query.isPending ? (

@@ -151,6 +151,15 @@ describe('ScenarioListPage — values', () => {
     expect(screen.getByText('overlap')).toBeInTheDocument();
   });
 
+  it('shows a PET of exactly zero as a real value, marked as overlap like a negative one', async () => {
+    stubFetch(() => ({ status: 200, body: makePage([makeRow({ min_pet: 0 })], null) }));
+    renderListPage();
+
+    await screen.findByText('synthetic-0001');
+    expect(screen.getByText(/0\.00 s/)).toBeInTheDocument();
+    expect(screen.getByText('overlap')).toBeInTheDocument();
+  });
+
   it('never presents a null min_perturbation as safe', async () => {
     stubFetch(() => ({
       status: 200,

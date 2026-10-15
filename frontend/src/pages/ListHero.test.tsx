@@ -36,8 +36,8 @@ const SIGNATURE = [
 const GUIDE =
   'Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest ' +
   'weighted perturbation found within a finite search budget, not a proven global minimum. TTC is ' +
-  'time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. Negative PET ' +
-  'marks overlapping occupancy of one connected conflict zone.';
+  'time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A PET of zero or ' +
+  'less marks overlapping occupancy of one connected conflict zone.';
 
 const withResult = (id: string, min: number) =>
   makeRow({ scenario_id: id, stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: min });
