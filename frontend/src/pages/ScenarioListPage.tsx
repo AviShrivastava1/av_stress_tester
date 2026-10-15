@@ -1,12 +1,23 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import type { ScenarioSummary } from '../api/client';
 import { describeError } from '../api/errors';
+import { useStats } from '../api/corpus';
 import { useScenarioPages } from '../api/scenarios';
 import { OutcomeCell } from '../components/OutcomeBadge';
 import { TimeMetricCell } from '../components/TimeMetricCell';
 import { RequestError } from '../components/RequestError';
 import { formatMagnitude } from '../domain/format';
+import {
+  applyView,
+  DEFAULT_SORT,
+  isViewActive,
+  OUTCOME_FILTERS,
+  parseOutcomeFilter,
+  parseSort,
+  SORTS,
+  type ListView,
+} from '../domain/listView';
 
 // Mirrors the server's bounds on `limit` (Query(ge=1, le=max_page_size)).
 const MIN_LIMIT = 1;
@@ -126,6 +137,31 @@ const DATASET_LABEL = 'Waymo Open Dataset';
  *   headers "Min perturbation", "Agents"
  *       scenario_scores.min_perturbation and scenario_scores.n_agents (the latter was already so labelled)
  */
+/*
+ * The words around the outcome filter and the sort (domain/listView.ts has the rules; what backs each sentence):
+ *
+ *   labels "Outcome" and "Sort", and the option labels
+ *       the filter keys are the Search result column's own badges (components/OutcomeBadge.tsx, domain/outcomes.ts), and
+ *       the sorts are the table's columns: fragility (the API's order), Min perturbation, Scenario ID
+ *   "Loading every row so the {filter|sort|filter and sort} covers all of them: {n} of {total} loaded."
+ *       GET /scenarios returns one page and a cursor (src/api/routes.py list_scenarios) and filters on stress_tested_only
+ *       alone, so a filter or a sort over the rows is applied here, to rows that are all loaded. Until the last page has
+ *       arrived (hasNextPage) the page follows the cursor and shows this line in place of the table. {n} is the number of
+ *       rows loaded; {total} is GET /stats: total_scenarios, or stress_tested when "Stress-tested only" is on (that filter
+ *       is the API's, and its list is exactly the rows with a stored result). Without a total, "{n} rows loaded so far"
+ *   "Not every row could be loaded: this view covers only {n} of {total} rows."
+ *       a page request failed (isFetchNextPageError), so the rows shown are the matches among the {n} loaded; the line says
+ *       so, the error is described under it, and "Load more" asks for the failed page again
+ *   "Showing {n} of {all} rows with the outcome “X”, sorted by Y." / "All {all} rows, sorted by Y."
+ *       {all} is the number of rows loaded, which at this point is every row the API returns for the current
+ *       "Stress-tested only" setting; {n} is how many match the outcome; X and Y are the option labels
+ *   "Filtering and sorting happen in this browser, after every row has been loaded."
+ *       applyView (domain/listView.ts) runs on the loaded rows; no request carries the outcome or the sort
+ *   "The # column is each row's place in the fragility ranking."
+ *       the # cell is RankedRow.rank: the row's position in the order the API returned, which is fragility_score descending
+ *   "None of the {all} rows has the outcome “X”."
+ *       the filter matched no loaded row, all of which are loaded
+ */
 const TTC_TITLE = 'Minimum time-to-collision over pairs involving the SDC';
 const PET_TITLE = 'Minimum post-encroachment time over pairs involving the SDC';
 
@@ -186,23 +222,47 @@ export function ScenarioListPage() {
   const [scenarioId, setScenarioId] = useState('');
   const stressTestedOnly = searchParams.get('tested') === '1';
   const limit = parseLimit(searchParams.get('limit'));
+  // A value the page does not know is ignored, as an invalid limit is.
+  const view: ListView = { outcome: parseOutcomeFilter(searchParams.get('outcome')), sort: parseSort(searchParams.get('sort')) };
+  const viewActive = isViewActive(view);
 
   const query = useScenarioPages({ stressTestedOnly, limit });
+  // The total the "loaded of" line needs; only asked for when a view is applied.
+  const stats = useStats({ enabled: viewActive });
 
-  function setStressTestedOnly(next: boolean) {
-    setSearchParams(
-      (prev) => {
-        const params = new URLSearchParams(prev);
-        if (next) params.set('tested', '1');
-        else params.delete('tested');
-        return params;
-      },
-      { replace: true },
-    );
+  // One history entry per change, so Back undoes it; a value that is the default is left out of the address.
+  function setQuery(name: string, value: string | null) {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (value === null) params.delete(name);
+      else params.set(name, value);
+      return params;
+    });
   }
 
-  // Concatenated in the order the pages arrived. No sort, no dedupe, no filter.
+  // A filter or a sort has to see every row, and the API filters on stress_tested_only alone: follow the cursor to the end.
+  // Not after a failed page (isFetchNextPageError), or a failing page would be asked for again without end; "Load more" retries.
+  // The page count is a dependency so that a page arriving runs this again: the flags alone can read the same before and
+  // after a page when the request settles between two renders.
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = query;
+  const pageCount = query.data?.pages.length ?? 0;
+  useEffect(() => {
+    if (viewActive && hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage();
+  }, [viewActive, hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage, pageCount]);
+
+  // Concatenated in the order the pages arrived. The view below filters and sorts a copy; this list is not reordered.
   const rows = query.data?.pages.flatMap((page) => page.items) ?? [];
+  const shown = applyView(rows, view);
+  const partial = viewActive && hasNextPage === true;
+  const autoLoading = partial && !isFetchNextPageError;
+  const total =
+    stats.data !== undefined && typeof stats.data.total_scenarios === 'number'
+      ? stressTestedOnly ? stats.data.stress_tested : stats.data.total_scenarios
+      : null;
+  const outcomeLabel = OUTCOME_FILTERS.find((f) => f.value === view.outcome)?.label ?? '';
+  const sortShort = SORTS.find((s) => s.value === view.sort)!.short;
+  const applying = view.outcome !== null && view.sort !== DEFAULT_SORT ? 'filter and sort' : view.outcome !== null ? 'filter' : 'sort';
+  const loadedOf = total !== null ? `${rows.length} of ${total} loaded` : `${rows.length} ${rows.length === 1 ? 'row' : 'rows'} loaded so far`;
   // The stored replay link: the first loaded row with a stored perturbation. In the hosted data every such row also has a
   // stored perturbed path (GET /scenarios/{id}/perturbed returned both tracks for all 18 on 2026-10-10), but nothing
   // enforces that. perturbed_paths is written by a separate export step (src/scoring/export_geometry.py
@@ -275,14 +335,41 @@ export function ScenarioListPage() {
             value={scenarioId} onChange={(e) => setScenarioId(e.target.value)} />
           <button type="submit" disabled={!scenarioId.trim()}>Open <span aria-hidden="true">↗</span></button>
         </form>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={stressTestedOnly}
-            onChange={(e) => setStressTestedOnly(e.target.checked)}
-          />
-          Stress-tested only
-        </label>
+        <div className="view-controls">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={stressTestedOnly}
+              onChange={(e) => setQuery('tested', e.target.checked ? '1' : null)}
+            />
+            Stress-tested only
+          </label>
+          <div className="field">
+            <label htmlFor="view-outcome">Outcome</label>
+            <select
+              id="view-outcome"
+              value={view.outcome ?? ''}
+              onChange={(e) => setQuery('outcome', e.target.value === '' ? null : e.target.value)}
+            >
+              <option value="">All outcomes</option>
+              {OUTCOME_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>{f.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="view-sort">Sort</label>
+            <select
+              id="view-sort"
+              value={view.sort}
+              onChange={(e) => setQuery('sort', e.target.value === DEFAULT_SORT ? null : e.target.value)}
+            >
+              {SORTS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
       <p className="caption">
         Ranked by fragility score, most fragile first. Equal scores are tie-broken by scenario ID; position within
@@ -307,75 +394,104 @@ export function ScenarioListPage() {
         </p>
       ) : (
         <>
-          <div className="table-scroll" role="region" aria-label="Scenario results" tabIndex={0}>
-            <table className="scenario-table">
-              <caption className="sr-only">Scenarios ordered by fragility score, highest first</caption>
-              <thead>
-                <tr>
-                  <th scope="col" className="num">#</th>
-                  <th scope="col">Scenario</th>
-                  <th scope="col" className="num">Fragility</th>
-                  <th scope="col" className="num timing-col" title="Minimum TTC and PET over pairs involving the SDC">Timing</th>
-                  <th scope="col">Search result</th>
-                  <th scope="col" className="num">Min perturbation</th>
-                  <th scope="col" className="num">Agents</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, i) => (
-                  <tr key={row.scenario_id}>
-                    <td className="num muted">{i + 1}</td>
-                    <td className="mono">
-                      <Link
-                        to={scenarioPath(row.scenario_id)}
-                        state={{ listSearch: location.search } satisfies ListReturnState}
-                      >
-                        {row.scenario_id}
-                      </Link>
-                    </td>
-                    <td className="num">{row.fragility_score.toFixed(3)}</td>
-                    <td className="num timing-col">
-                      <div className="timing-line">
-                        <span className="timing-label" title={TTC_TITLE}>TTC</span>{' '}
-                        <TimeMetricCell value={row.min_ttc ?? null} metric="ttc" />
-                      </div>
-                      <div className="timing-line">
-                        <span className="timing-label" title={PET_TITLE}>PET</span>{' '}
-                        <TimeMetricCell value={row.min_pet ?? null} metric="pet" />
-                      </div>
-                    </td>
-                    <td>
-                      <OutcomeCell row={row} />
-                    </td>
-                    <td className="num">
-                      <PerturbationCell row={row} />
-                    </td>
-                    <td className="num">{row.n_agents ?? <span className="muted">—</span>}</td>
+          {viewActive && !autoLoading && !isFetchNextPageError && (
+            <p className="view-note">
+              {view.outcome !== null
+                ? `Showing ${shown.length} of ${rows.length} rows with the outcome “${outcomeLabel}”${view.sort !== DEFAULT_SORT ? `, sorted by ${sortShort}` : ''}.`
+                : `All ${rows.length} rows, sorted by ${sortShort}.`}{' '}
+              Filtering and sorting happen in this browser, after every row has been loaded. The # column is each row’s place
+              in the fragility ranking.
+            </p>
+          )}
+          {viewActive && isFetchNextPageError && (
+            <p className="status-error" role="alert">
+              Not every row could be loaded: this view covers only {total !== null ? `${rows.length} of ${total}` : `the ${rows.length} loaded`}{' '}
+              rows. {describeError(query.error)}
+            </p>
+          )}
+          {autoLoading ? (
+            <p className="status" role="status">
+              Loading every row so the {applying} covers all of them: {loadedOf}.
+            </p>
+          ) : shown.length === 0 ? (
+            <p className="status">None of the {rows.length} rows has the outcome “{outcomeLabel}”.</p>
+          ) : (
+            <div className="table-scroll" role="region" aria-label="Scenario results" tabIndex={0}>
+              <table className="scenario-table">
+                <caption className="sr-only">
+                  {view.sort === DEFAULT_SORT
+                    ? 'Scenarios ordered by fragility score, highest first'
+                    : `Scenarios ordered by ${sortShort}`}
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col" className="num">#</th>
+                    <th scope="col">Scenario</th>
+                    <th scope="col" className="num">Fragility</th>
+                    <th scope="col" className="num timing-col" title="Minimum TTC and PET over pairs involving the SDC">Timing</th>
+                    <th scope="col">Search result</th>
+                    <th scope="col" className="num">Min perturbation</th>
+                    <th scope="col" className="num">Agents</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {shown.map(({ row, rank }) => (
+                    <tr key={row.scenario_id}>
+                      <td className="num muted">{rank}</td>
+                      <td className="mono">
+                        <Link
+                          to={scenarioPath(row.scenario_id)}
+                          state={{ listSearch: location.search } satisfies ListReturnState}
+                        >
+                          {row.scenario_id}
+                        </Link>
+                      </td>
+                      <td className="num">{row.fragility_score.toFixed(3)}</td>
+                      <td className="num timing-col">
+                        <div className="timing-line">
+                          <span className="timing-label" title={TTC_TITLE}>TTC</span>{' '}
+                          <TimeMetricCell value={row.min_ttc ?? null} metric="ttc" />
+                        </div>
+                        <div className="timing-line">
+                          <span className="timing-label" title={PET_TITLE}>PET</span>{' '}
+                          <TimeMetricCell value={row.min_pet ?? null} metric="pet" />
+                        </div>
+                      </td>
+                      <td>
+                        <OutcomeCell row={row} />
+                      </td>
+                      <td className="num">
+                        <PerturbationCell row={row} />
+                      </td>
+                      <td className="num">{row.n_agents ?? <span className="muted">—</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-          <div className="list-footer">
-            <span className="muted">
-              {rows.length} shown{query.hasNextPage ? '' : ' · end of list'}
-            </span>
-            {query.isFetchNextPageError && (
-              <span className="status-error" role="alert">
-                {describeError(query.error)}
+          {!autoLoading && (
+            <div className="list-footer">
+              <span className="muted">
+                {viewActive && !partial ? `${shown.length} of ${rows.length}` : rows.length} shown{query.hasNextPage ? '' : ' · end of list'}
               </span>
-            )}
-            {query.hasNextPage && (
-              <button
-                type="button"
-                onClick={() => void query.fetchNextPage()}
-                disabled={query.isFetchingNextPage}
-              >
-                {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
-              </button>
-            )}
-          </div>
+              {query.isFetchNextPageError && !viewActive && (
+                <span className="status-error" role="alert">
+                  {describeError(query.error)}
+                </span>
+              )}
+              {query.hasNextPage && (
+                <button
+                  type="button"
+                  onClick={() => void query.fetchNextPage()}
+                  disabled={query.isFetchingNextPage}
+                >
+                  {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
+                </button>
+              )}
+            </div>
+          )}
         </>
       )}
       </section>

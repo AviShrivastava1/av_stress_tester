@@ -181,8 +181,9 @@ describe('ScenarioListPage — values', () => {
     renderListPage();
 
     await screen.findByText('synthetic-untested');
-    expect(screen.getAllByText('not tested')).toHaveLength(2); // perturbation cell + outcome cell
-    expect(screen.getByText('no collision found')).toBeInTheDocument();
+    const table = within(screen.getByRole('table')); // the Outcome filter's options use the same words
+    expect(table.getAllByText('not tested')).toHaveLength(2); // perturbation cell + outcome cell
+    expect(table.getByText('no collision found')).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\bsafe\b/i);
   });
 });

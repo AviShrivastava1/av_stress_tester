@@ -81,6 +81,7 @@ const CAVEAT_CLASSES: Record<string, string> = {
   status: 'the detail "No geometry to draw…" sentence; loading and error messages',
   'status-error': 'inline error text',
   'keyboard-hint': 'the instruction sentence under the replay',
+  'view-note': 'the list note saying what a filter or sort covers and where its numbers come from',
   'hero-note': 'the list hero note: "not proven", searches ran offline, what a tie means',
   'trace-label': 'the list hero "ILLUSTRATION · not measured data"',
 };
