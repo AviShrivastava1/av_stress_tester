@@ -235,6 +235,27 @@ past a visitor's limit the answer is 429, past the shared ones 503, both with `R
 request. **With the switch on, "read-only API" (the list's signature) and Method step 05 are no longer strictly true** (the
 API can file a request); neither sentence was changed, so decide their wording before switching it on.
 
+### Before switching the API on
+
+Do these in order. None is done yet, and none is done by merging code.
+
+1. **Fix the two sentences that stop being true.** The list's signature "PostGIS, read-only API" and Method step 05 ("Export
+   geometry once, keep the production API read-only") say the API only reads. With the request route on, it can file a
+   request. Change that wording, and the tests that pin it, in a patch of its own, and deploy it before anything else.
+2. **Measure which `X-Forwarded-For` entry is the visitor, on a throw-away Render service.** Deploy a service that only
+   echoes the request headers it receives. Call it from a machine whose address you know, once as it is and once with
+   a header you invent (`X-Forwarded-For: 6.6.6.6`). Note the position, counted from the right, of your real address, and
+   that the invented entry stays to its left. Only then set `API_REQUEST_PROXY_HOPS` to that count. Until it is measured the
+   value stays 0, which gives every visitor one shared limit.
+3. **Run `deploy/search_requests.sql` on a copy of the database first.** Make a dump (see "Replacing the data in a live
+   database"), restore it into a new throw-away database, and run the script there as the default user. Then check what
+   the role holds: `\dp search_requests` (no row for `av_req_insert` or `av_api_ro`), `\df+ file_search_request` (security
+   definer; `EXECUTE` for `av_req_insert` only), `\du av_req_insert` (login and nothing else), and, connected as
+   `av_req_insert`, that every `SELECT` is refused. Drop the copy. Only then run it on the live database.
+4. **Rotate the request role's password if it was ever pasted anywhere** (a chat, a ticket, a shell history, a log): set
+   a new one at the silent prompt (`\password av_req_insert`) and update `API_REQUEST_PGPASSWORD`. The same for
+   `API_REQUEST_SALT`, knowing that replacing it resets every visitor's limits.
+
 To see what is waiting, as the default user: `psql "$AV_STRESS_DATABASE_URL" -f deploy/pending_search_requests.sql`
 (read-only). Marking a request done is a separate `UPDATE` by hand. Turning it off again: remove `API_SEARCH_REQUESTS`.
 
