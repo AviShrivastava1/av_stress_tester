@@ -42,6 +42,13 @@ export function usePlayback(range: FrameRange | null, defaultFrame: number | nul
     frameRef.current = frame;
   }, [frame]);
 
+  // Nothing to play, so not playing. The loop below already refuses to run without a playable range, but it leaves the
+  // flag as it was, so a replay that was running when a refetch emptied the range (or left a single frame) would start
+  // again on its own when a later response made the range playable. Only a press of Play may set the flag.
+  useEffect(() => {
+    if (playing && isStatic(range)) setPlaying(false); // isStatic is true for a null range
+  }, [playing, range]);
+
   useEffect(() => {
     if (!playing || range === null || isStatic(range)) return;
     let handle = 0;
