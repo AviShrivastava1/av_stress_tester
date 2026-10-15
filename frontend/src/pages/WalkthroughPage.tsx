@@ -13,7 +13,7 @@ import {
   smallestFirst,
   type Collision,
 } from '../domain/walkthrough';
-import { recordingLastFrame } from '../scene/sceneModel';
+import { recordingLastFrame, searchWindowNote } from '../scene/sceneModel';
 import { scenarioPath } from './ScenarioListPage';
 
 /*
@@ -46,6 +46,15 @@ import { scenarioPath } from './ScenarioListPage';
  *       firstRefused: the first by scenario ID whose last attempt was refused (last_attempt_outcome replay_infeasible, the
  *       field GET /stats counts); the meaning is describeOutcome's (domain/outcomes.ts); "The scene has N agents" is
  *       n_agents from the row, when the API gave one
+ *   "This is the last recorded frame; the search does not look past it." under the largest card
+ *       the detail page's own sentence, from the one constant (LAST_FRAME_NOTE in scene/sceneModel.ts) through the one rule
+ *       (searchWindowNote): shown when the collision frame equals recordingLastFrame of that scenario's /trajectories
+ *       response, and not otherwise. The smallest card never needs it (its collision is before the last frame by how it was
+ *       chosen) and the refused card has no collision. The largest scene's recording is read with the same query key the
+ *       detail page uses, so it is one request, and none at all if the smallest rule already read it
+ *   "Whether this is the last recorded frame could not be checked."
+ *       that request failed, so the page does not know; it says so instead of showing nothing that could be read as "no".
+ *       A recording with no track has no last frame, and then nothing is said either way
  *   "It also has a stored result from an earlier pass: {outcome}."
  *       the row's stress_outcome is not null: the result of the run that produced the stored result, which a later refused
  *       attempt does not remove (src/api/models.py, stress_outcome against last_attempt_outcome); {outcome} is its label
@@ -79,6 +88,20 @@ function useSmallestScene(candidates: Collision[] | null): Smallest {
   }
   if (qualifies && lastFrame !== null) return { status: 'found', row: current, lastFrame };
   return { status: 'probing' };
+}
+
+/** The detail page's last-frame sentence for a scene whose collision may be on the recording's last frame. */
+function LastFrameLine({ id, collisionFrame }: { id: string; collisionFrame: number }) {
+  const trajectories = useTrajectories(id);
+  if (trajectories.isError) {
+    return <p className="note">Whether this is the last recorded frame could not be checked.</p>;
+  }
+  if (!trajectories.isSuccess) return null;
+  const note = searchWindowNote(
+    { kind: 'collision', frame: collisionFrame },
+    recordingLastFrame(trajectories.data.agents),
+  );
+  return note === null ? null : <p className="note">{note}</p>;
 }
 
 function OpenLink({ id }: { id: string }) {
@@ -172,6 +195,7 @@ export function WalkthroughPage() {
                   {largest.collision_timestep}.
                   {smallest.status === 'found' && smallest.row.scenario_id === largest.scenario_id && ' This is the scenario above.'}
                 </p>
+                <LastFrameLine id={largest.scenario_id} collisionFrame={largest.collision_timestep} />
                 <OpenLink id={largest.scenario_id} />
               </>
             )}

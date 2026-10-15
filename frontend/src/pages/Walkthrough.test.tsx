@@ -9,6 +9,7 @@ import type { ScenarioSummary } from '../api/client';
 import { formatMagnitude } from '../domain/format';
 import { describeOutcome } from '../domain/outcomes';
 import { makePage, makeRow, makeTrack, makeTrajectories, range } from '../test/fixtures';
+import { LAST_FRAME_NOTE } from '../scene/sceneModel';
 import { readFrontendFile } from '../test/readFrontendFile';
 import { renderApp } from '../test/renderApp';
 import type { RecordedRequest, Reply } from '../test/fetchStub';
@@ -134,6 +135,20 @@ function install({ rows = ROWS, pageSize = 5, held = [], trajectories }: Options
   };
 }
 
+/** The walkthrough in the real route table, with the production query client's stale time: a response the page already has is reused, not asked for again. */
+function renderWalk() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+  const router = createMemoryRouter(routes, { initialEntries: ['/walkthrough'] });
+  return render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+}
+
+/** The recordings read to choose the smallest, in the order asked: every request but the one for the largest scene. */
+const probed = (server: { trajectoryIds(): string[] }) => server.trajectoryIds().filter((id) => id !== 'we-huge-edge');
+
 const section = (name: string) => screen.getByRole('region', { name });
 const SMALLEST = 'Smallest change, before the recording ends';
 const LARGEST = 'Largest change that still collides';
@@ -142,7 +157,7 @@ const REFUSED = 'A refused replay';
 describe('the three scenes are chosen by rule from the API', () => {
   it('picks the smallest perturbation that is not on the last recorded frame, not the first or the smallest of all', async () => {
     const server = install();
-    renderApp('/walkthrough');
+    renderWalk();
     await screen.findByRole('heading', { level: 1, name: 'Three stored results' });
     await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
 
@@ -152,13 +167,16 @@ describe('the three scenes are chosen by rule from the API', () => {
         'The collision is on frame 40; the recording runs to frame 90.',
     );
     expect(card.getByRole('link', { name: 'Open scenario wc-small' })).toHaveAttribute('href', '/scenarios/wc-small');
-    // Cheap: the two smallest were looked at because they come first, and nothing else was.
-    expect(server.trajectoryIds()).toEqual(['wa-edge-1', 'wb-edge-2', 'wc-small']);
+    // Cheap: the two smallest were looked at because they come first, the largest scene's recording once (for its last-frame
+    // sentence), and nothing else.
+    expect(probed(server)).toEqual(['wa-edge-1', 'wb-edge-2', 'wc-small']);
+    expect(server.trajectoryIds().filter((id) => id === 'we-huge-edge')).toHaveLength(1);
+    expect(server.trajectoryIds()).toHaveLength(4);
   });
 
   it('picks the largest perturbation among all collisions, last frame or not', async () => {
     install();
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(LARGEST)).getByText('we-huge-edge')).toBeInTheDocument());
     await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument()); // both cards settled
     expect(section(LARGEST)).toHaveTextContent(
@@ -170,7 +188,7 @@ describe('the three scenes are chosen by rule from the API', () => {
 
   it('picks the first refused scenario by id, not the first in the list', async () => {
     install();
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(REFUSED)).getByText('wb-refused')).toBeInTheDocument());
     const meaning = describeOutcome('replay_infeasible').meaning;
     expect(section(REFUSED)).toHaveTextContent(
@@ -189,7 +207,7 @@ describe('the three scenes are chosen by rule from the API', () => {
         refused('xc-first'),
       ],
     });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(SMALLEST)).getByText('xb')).toBeInTheDocument());
     expect(within(section(LARGEST)).getByText('xc')).toBeInTheDocument();
     expect(within(section(REFUSED)).getByText('xc-first')).toBeInTheDocument();
@@ -206,22 +224,22 @@ describe('the three scenes are chosen by rule from the API', () => {
 describe('where the recording ends is read one candidate at a time, and cheaply', () => {
   it('asks for the next recording only after the one before has answered', async () => {
     const server = install({ held: ['wa-edge-1'] });
-    renderApp('/walkthrough');
+    renderWalk();
     expect(await screen.findByText('Checking where each recording ends…')).toBeInTheDocument();
-    await waitFor(() => expect(server.trajectoryIds()).toEqual(['wa-edge-1']));
+    await waitFor(() => expect(probed(server)).toEqual(['wa-edge-1']));
     await new Promise((r) => setTimeout(r, 50));
-    expect(server.trajectoryIds()).toEqual(['wa-edge-1']); // one at a time
+    expect(probed(server)).toEqual(['wa-edge-1']); // one at a time
 
     await act(async () => server.release('wa-edge-1'));
     await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
-    expect(server.trajectoryIds()).toEqual(['wa-edge-1', 'wb-edge-2', 'wc-small']);
+    expect(probed(server)).toEqual(['wa-edge-1', 'wb-edge-2', 'wc-small']);
   });
 
-  it('asks nothing of the scenes the other two rules pick, or of any that are not collisions', async () => {
+  it('asks only for the recordings it needs: the candidates one at a time, the largest scene once, nothing for the rest', async () => {
     const server = install();
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
-    expect(server.trajectoryIds()).not.toContain('we-huge-edge');
+    expect(server.trajectoryIds().filter((id) => id === 'we-huge-edge')).toHaveLength(1); // for its last-frame sentence
     expect(server.trajectoryIds()).not.toContain('wb-refused');
     expect(server.trajectoryIds()).not.toContain('wf-untested');
     expect(server.trajectoryIds()).not.toContain('wg-nopert'); // no perturbation to rank
@@ -233,19 +251,19 @@ describe('where the recording ends is read one candidate at a time, and cheaply'
     const noGeometry = (id: string): Reply =>
       id === 'wc-small' ? { status: 200, body: makeTrajectories([], id) } : { status: 200, body: tracksFor(id) };
     install({ trajectories: noGeometry });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(SMALLEST)).getByText('wd-mid')).toBeInTheDocument());
   });
 
   it('says so, and chooses nothing, when every collision is on the last recorded frame', async () => {
     const server = install({ rows: [collision('wa', 0.1, 90), collision('wb', 0.2, 90), refused('wr')] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() =>
       expect(section(SMALLEST)).toHaveTextContent(
         'Every stored collision is on the last recorded frame, or has no geometry to check that against, so no scene is shown here.',
       ),
     );
-    expect(server.trajectoryIds()).toEqual(['wa', 'wb']);
+    expect([...server.trajectoryIds()].sort()).toEqual(['wa', 'wb']); // each once: wb is both a candidate and the largest
     // The largest does not depend on the last frame.
     expect(within(section(LARGEST)).getByText('wb')).toBeInTheDocument();
   });
@@ -255,12 +273,12 @@ describe('where the recording ends is read one candidate at a time, and cheaply'
     const server = install({
       trajectories: (id) => (broken && id === 'wa-edge-1' ? { status: 500, body: { detail: 'boom' } } : { status: 200, body: tracksFor(id) }),
     });
-    renderApp('/walkthrough');
+    renderWalk();
     await screen.findByRole('region', { name: SMALLEST });
     const alert = await within(section(SMALLEST)).findByRole('alert');
     expect(alert).toHaveTextContent('500: boom');
     expect(within(section(SMALLEST)).queryByText(/Scenario wc-small/)).not.toBeInTheDocument();
-    expect(server.trajectoryIds()).toEqual(['wa-edge-1']);
+    expect(probed(server)).toEqual(['wa-edge-1']);
 
     broken = false;
     await userEvent.click(within(section(SMALLEST)).getByRole('button', { name: 'Try again' }));
@@ -271,7 +289,7 @@ describe('where the recording ends is read one candidate at a time, and cheaply'
 describe('when there is nothing to show', () => {
   it('says so for a corpus with no collision and no refused scenario', async () => {
     install({ rows: [makeRow({ scenario_id: 'only' })] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() =>
       expect(section(SMALLEST)).toHaveTextContent('No stored result has a collision, so there is no scene to show here.'),
     );
@@ -281,7 +299,7 @@ describe('when there is nothing to show', () => {
 
   it('says the smallest and the largest are one scenario when only one collision qualifies', async () => {
     install({ rows: [collision('solo', 0.25, 12)] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(section(LARGEST)).toHaveTextContent('Scenario solo has the largest'));
     await waitFor(() => expect(section(LARGEST)).toHaveTextContent('This is the scenario above.'));
     expect(within(section(SMALLEST)).getByText('solo')).toBeInTheDocument();
@@ -290,7 +308,7 @@ describe('when there is nothing to show', () => {
 
   it('loads every page of the list before it chooses, and says so while it does', async () => {
     const server = install({ pageSize: 2 });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
     const pages = server.requests.filter((r) => r.path === '/scenarios');
     expect(pages).toHaveLength(Math.ceil(ROWS.length / 2));
@@ -299,7 +317,7 @@ describe('when there is nothing to show', () => {
 
   it('shows the list error with a retry when the list cannot be loaded', async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ detail: 'down' }), { status: 500, headers: { 'Content-Type': 'application/json' } }));
-    renderApp('/walkthrough');
+    renderWalk();
     expect(await screen.findByRole('alert')).toHaveTextContent('500: down');
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
@@ -317,7 +335,7 @@ describe('the page in the site', () => {
 
   it('says every figure is the smallest found by a finite search, not a proven minimum', async () => {
     install();
-    renderApp('/walkthrough');
+    renderWalk();
     await screen.findByRole('heading', { level: 1, name: 'Three stored results' });
     expect(document.body).toHaveTextContent(
       'These three scenarios are chosen by rule from the stored results each time the page loads, not by hand. ' +
@@ -329,14 +347,14 @@ describe('the page in the site', () => {
 describe('ties, missing values, and a list that is still arriving', () => {
   it('breaks a tie in perturbation by scenario ID, for the smallest and for the largest', async () => {
     install({ rows: [collision('tb', 0.1, 10), collision('ta', 0.1, 10)] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(SMALLEST)).getByText('ta')).toBeInTheDocument());
     expect(within(section(LARGEST)).getByText('ta')).toBeInTheDocument();
   });
 
   it('counts a scenario refused on its last attempt even when an earlier result is stored, and says so', async () => {
     install({ rows: [{ ...collision('wk', 0.2, 10), last_attempt_outcome: 'replay_infeasible' }, refused('wz')] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(REFUSED)).getByText('wk')).toBeInTheDocument());
     expect(section(REFUSED)).toHaveTextContent('It also has a stored result from an earlier pass: collision found.');
     // ...and it is still a collision for the other two rules.
@@ -345,13 +363,13 @@ describe('ties, missing values, and a list that is still arriving', () => {
 
   it('does not take the stored outcome for the last attempt', async () => {
     install({ rows: [{ ...refused('wa-stored'), stress_outcome: 'replay_infeasible', last_attempt_outcome: 'no_collision_found' }, refused('wb')] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(REFUSED)).getByText('wb')).toBeInTheDocument());
   });
 
   it('leaves out of the refused card the agent count the API did not give', async () => {
     install({ rows: [{ ...refused('wr'), n_agents: null }] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(REFUSED)).getByText('wr')).toBeInTheDocument());
     expect(section(REFUSED)).not.toHaveTextContent('The scene has');
     expect(section(REFUSED)).not.toHaveTextContent('earlier pass');
@@ -360,7 +378,7 @@ describe('ties, missing values, and a list that is still arriving', () => {
 
   it('asks for no recording when there is no collision to ask about', async () => {
     const server = install({ rows: [makeRow({ scenario_id: 'only' }), refused('wr')] });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(section(SMALLEST)).toHaveTextContent('No stored result has a collision'));
     expect(server.trajectoryIds()).toEqual([]);
   });
@@ -371,9 +389,9 @@ describe('ties, missing values, and a list that is still arriving', () => {
       pageSize: 2,
       rows: [collision('p1', 0.5, 10), collision('p2', 0.1, 10), collision('p3', 0.05, 10), collision('p4', 0.9, 10)],
     });
-    renderApp('/walkthrough');
+    renderWalk();
     await waitFor(() => expect(within(section(SMALLEST)).getByText('p3')).toBeInTheDocument());
-    expect(server.trajectoryIds()).toEqual(['p3']);
+    expect([...server.trajectoryIds()].sort()).toEqual(['p3', 'p4']); // p3 to probe, p4 (the largest) for its last-frame sentence; never p1 or p2
   });
 
   it('does not skip a candidate when React runs the effect twice on a recording it already has', async () => {
@@ -393,6 +411,94 @@ describe('ties, missing values, and a list that is still arriving', () => {
       </StrictMode>,
     );
     await waitFor(() => expect(within(section(SMALLEST)).getByText('s2')).toBeInTheDocument());
-    expect(server.trajectoryIds()).toEqual(['s2']);
+    // s1 was cached and must not be asked for; s2 is the smallest and s3 the largest. (React's development double mount can start
+    // a request twice, so this is the set asked for, not a count.)
+    expect([...new Set(server.trajectoryIds())].sort()).toEqual(['s2', 's3']);
+  });
+});
+
+describe('a card whose collision is on the last recorded frame says so', () => {
+  const note = (card: HTMLElement) => [...card.querySelectorAll('.note')].map((n) => n.textContent);
+
+  it('shows the last-frame sentence on the largest-perturbation card when its collision is on the recording\u2019s last frame', async () => {
+    install();
+    renderWalk();
+    await waitFor(() => expect(within(section(LARGEST)).getByText('we-huge-edge')).toBeInTheDocument());
+    await waitFor(() => expect(note(section(LARGEST))).toEqual([LAST_FRAME_NOTE]));
+    expect(LAST_FRAME_NOTE).toBe('This is the last recorded frame; the search does not look past it.');
+  });
+
+  it('does not show it when the largest-perturbation collision is not on the last recorded frame', async () => {
+    const server = install({ rows: [collision('wa', 0.1, 90), collision('wb-large', 0.8, 30), refused('wr')] });
+    renderWalk();
+    await waitFor(() => expect(within(section(LARGEST)).getByText('wb-large')).toBeInTheDocument());
+    await waitFor(() => expect(server.trajectoryIds()).toContain('wb-large')); // its recording was read ...
+    await new Promise((r) => setTimeout(r, 50));
+    expect(note(section(LARGEST))).toEqual([]); // ... and it ends on frame 90, not 30
+  });
+
+  it('compares with where THIS recording ends, not with a frame number', async () => {
+    const endsAt120 = (id: string): Reply => ({ status: 200, body: makeTrajectories([makeTrack({ agent_idx: 0, frames: range(0, 121) })], id) });
+    install({ rows: [collision('wa', 0.9, 90)], trajectories: endsAt120 });
+    renderWalk();
+    await waitFor(() => expect(within(section(LARGEST)).getByText('wa')).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 80));
+    expect(note(section(LARGEST))).toEqual([]);
+  });
+
+  it('says nothing about the last frame when the recording has no geometry to read it from', async () => {
+    const none = (id: string): Reply => ({ status: 200, body: makeTrajectories([], id) });
+    install({ rows: [collision('wa', 0.9, 90)], trajectories: none });
+    renderWalk();
+    await waitFor(() => expect(within(section(LARGEST)).getByText('wa')).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 80));
+    expect(note(section(LARGEST))).toEqual([]);
+  });
+
+  it('says it could not check, and does not assume, when the recording cannot be read', async () => {
+    install({ rows: [collision('wa', 0.9, 90)], trajectories: () => ({ status: 500, body: { detail: 'boom' } }) });
+    renderWalk();
+    await waitFor(() => expect(within(section(LARGEST)).getByText('wa')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(note(section(LARGEST))).toEqual(['Whether this is the last recorded frame could not be checked.']),
+    );
+    expect(section(LARGEST)).not.toHaveTextContent(LAST_FRAME_NOTE);
+  });
+
+  it('reads where the LARGEST scene\u2019s recording ends, not another scene\u2019s', async () => {
+    // The smallest scene's recording runs on to frame 120; the largest scene's ends on 90, where its collision is.
+    LAST_FRAME['wc-small'] = 120;
+    try {
+      install();
+      renderWalk();
+      await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
+      expect(section(SMALLEST)).toHaveTextContent('the recording runs to frame 120');
+      await waitFor(() => expect(note(section(LARGEST))).toEqual([LAST_FRAME_NOTE]));
+    } finally {
+      delete LAST_FRAME['wc-small'];
+    }
+  });
+
+  it('never puts it on the smallest card or the refused card', async () => {
+    install();
+    renderWalk();
+    await waitFor(() => expect(within(section(SMALLEST)).getByText('wc-small')).toBeInTheDocument());
+    await waitFor(() => expect(note(section(LARGEST))).toEqual([LAST_FRAME_NOTE]));
+    expect(note(section(SMALLEST))).toEqual([]);
+    expect(note(section(REFUSED))).toEqual([]);
+  });
+
+  it('asks for the recording of the largest scene once, even when it is also the scene the smallest rule reads', async () => {
+    const server = install({ rows: [collision('solo', 0.3, 12)] });
+    renderWalk();
+    await waitFor(() => expect(section(LARGEST)).toHaveTextContent('This is the scenario above.'));
+    expect(server.trajectoryIds()).toEqual(['solo']);
+  });
+
+  it('uses the constant the replay uses and has no second copy of the sentence', () => {
+    const source = readFrontendFile('src/pages/WalkthroughPage.tsx') + readFrontendFile('src/domain/walkthrough.ts');
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''); // the backing comments quote the sentence; the code must not
+    expect(code).toMatch(/searchWindowNote/);
+    expect(code).not.toMatch(/last recorded frame; the search does not look past it/);
   });
 });
