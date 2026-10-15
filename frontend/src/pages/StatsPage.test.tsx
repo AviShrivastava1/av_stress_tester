@@ -172,13 +172,65 @@ describe('StatsPage — service health', () => {
   });
 
   it('shows missing PostGIS as degraded, not as an error', async () => {
-    stubFetch(server({ health: ok(makeHealth({ postgis: null })) }));
+    // What the API sends now: the database answered and PostGIS did not.
+    stubFetch(server({ health: ok(makeHealth({ status: 'degraded', postgis: null })) }));
     renderApp('/stats');
     await screen.findByRole('heading', { name: 'Service health' });
     const postgis = await screen.findByText('not available');
     expect(postgis).toHaveClass('badge-warning');
-    expect(stat('postgis').text).toMatch(/geometry endpoints return empty/);
+    expect(stat('postgis').text).toContain(
+      'Degraded: PostGIS did not answer. The scores endpoints do not call it and keep working; the geometry endpoints do call it.',
+    );
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows a "degraded" status as a warning: not as ok, and not as the service being down', async () => {
+    stubFetch(server({ health: ok(makeHealth({ status: 'degraded', postgis: null })) }));
+    renderApp('/stats');
+    await screen.findByRole('heading', { name: 'Service health' });
+    await screen.findByText('connected');
+    expect(stat('status').value).toBe('degraded');
+    expect(within(stat('status').el).getByText('degraded')).toHaveClass('badge', 'badge-warning');
+    expect(stat('database').value).toBe('connected'); // the database answered
+    expect(within(panel('Service health')).queryByText('ok')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument(); // no request error, no retry button
+    expect(within(panel('Service health')).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('shows an "ok" status as plain text, with no badge', async () => {
+    stubFetch(server({}));
+    renderApp('/stats');
+    await screen.findByRole('heading', { name: 'Service health' });
+    await screen.findByText('connected');
+    expect(stat('status').value).toBe('ok');
+    expect(stat('status').el.querySelector('.badge')).toBeNull();
+  });
+
+  it('shows a status it does not know as it was sent, with no badge', async () => {
+    stubFetch(server({ health: ok(makeHealth({ status: 'maintenance' })) }));
+    renderApp('/stats');
+    await screen.findByRole('heading', { name: 'Service health' });
+    await screen.findByText('connected');
+    expect(stat('status').value).toBe('maintenance');
+    expect(stat('status').el.querySelector('.badge')).toBeNull();
+  });
+
+  it('reports an answer that disagrees with itself as sent: "degraded" beside a PostGIS version shows both', async () => {
+    stubFetch(server({ health: ok(makeHealth({ status: 'degraded', postgis: '3.6 USE_GEOS=1' })) }));
+    renderApp('/stats');
+    await screen.findByRole('heading', { name: 'Service health' });
+    await screen.findByText('connected');
+    expect(stat('status').value).toBe('degraded');
+    expect(stat('postgis').value).toBe('3.6 USE_GEOS=1');
+    expect(screen.queryByText('not available')).not.toBeInTheDocument();
+  });
+
+  it('reports an older answer as sent: status ok with PostGIS null stays "ok" beside "not available"', async () => {
+    stubFetch(server({ health: ok(makeHealth({ status: 'ok', postgis: null })) }));
+    renderApp('/stats');
+    await screen.findByRole('heading', { name: 'Service health' });
+    await screen.findByText('not available');
+    expect(stat('status').value).toBe('ok');
   });
 
   it('keeps the health panel when /stats fails, and the counts when /health fails', async () => {

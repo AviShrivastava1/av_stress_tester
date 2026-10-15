@@ -143,10 +143,30 @@ function LatestAttemptsPanel({ stats }: { stats: StatsResponse }) {
   );
 }
 
+/*
+ * The words in the service health panel, and what backs each. The panel prints what GET /health sent, and the status is a
+ * plain string in the contract (frontend/openapi.json HealthResponse: type string), not an enum.
+ *
+ *   status "ok"          printed as it is: the API said the database and PostGIS both answered (src/api/routes.py health)
+ *   status "degraded"    the API's word for "the database answered and PostGIS did not": printed as a warning badge, the
+ *                        tone of the PostGIS row beside it, so it is neither plain "ok" nor shown as the service being
+ *                        down (a down service is the request error with a retry button). The answer is still HTTP 200
+ *   any other status     printed as it was sent, with no badge: a value this page does not know is not given a tone
+ *   PostGIS "not available" and "Degraded: PostGIS did not answer. The scores endpoints do not call it and keep working; the
+ *   geometry endpoints do call it."
+ *                        `postgis` is null when the version call failed (the extension is missing, or the call raised).
+ *                        The scores endpoints (src/api/routes.py list_scenarios, get_scenario, stats) run no PostGIS
+ *                        function; get_trajectories and get_perturbed read paths through ST_AsGeoJSON and ST_DumpPoints
+ */
+const DEGRADED = 'degraded';
+
 function HealthPanelBody({ health }: { health: HealthResponse }) {
   return (
     <dl className="stat-list">
-      <Stat id="status" label="API status" value={health.status} />
+      <div className="stat" data-stat="status">
+        <dt>API status</dt>
+        <dd>{health.status === DEGRADED ? <span className="badge badge-warning">{health.status}</span> : health.status}</dd>
+      </div>
       <Stat id="database" label="Database" value={health.database} />
       {health.postgis !== null && health.postgis !== undefined ? (
         <Stat id="postgis" label="PostGIS" value={health.postgis} />
@@ -157,7 +177,8 @@ function HealthPanelBody({ health }: { health: HealthResponse }) {
             <span className="badge badge-warning">not available</span>
           </dd>
           <dd className="stat-def">
-            Degraded: the scores endpoints work, but the geometry endpoints return empty.
+            Degraded: PostGIS did not answer. The scores endpoints do not call it and keep working; the geometry endpoints
+            do call it.
           </dd>
         </div>
       )}

@@ -185,6 +185,20 @@ describe('the words the project cannot back do not appear', () => {
     expect(pageText()).toMatch(/robustly safe/i);
   });
 
+  it('on the Corpus page when the health answer is "degraded"', async () => {
+    const stats: StatsResponse = {
+      total_scenarios: 100, stress_tested: 18, collisions_found: 18, no_collision_found: 0,
+      replay_infeasible: 2, heading_blend_singularity: 0, no_challenger: 0, stress_errors: 0,
+      robustly_safe: 0, with_geometry: 20, fragility_min: 0.5, fragility_max: 4.5, fragility_mean: 2,
+    };
+    const health: HealthResponse = { status: 'degraded', database: 'connected', postgis: null };
+    stubFetch((req: RecordedRequest) => ok(req.path === '/health' ? health : stats));
+    renderApp('/stats');
+    await screen.findByText('not available');
+    expect(pageText()).toMatch(/degraded/);
+    expect(violations(pageText(), { allowSafe: true })).toEqual([]);
+  });
+
   it.each([
     ['a collision with a perturbed path', () => detailServer({
       detail: collisionDetail, trajectories: makeTrajectories([sdc, logged]), perturbed: collisionPerturbed })],
