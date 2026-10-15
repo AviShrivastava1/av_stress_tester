@@ -22,6 +22,7 @@ import {
 import { SceneView } from '../../scene/SceneView';
 import { usePlayback } from '../../scene/usePlayback';
 import { RequestError } from '../../components/RequestError';
+import { CollisionAnatomy } from './CollisionAnatomy';
 
 /**
  * How the colliding pair's boxes are drawn, in three cases. Shown only where the page marks a
@@ -281,6 +282,7 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
           {n}
         </p>
       ))}
+      {collisionFrame !== null && <CollisionAnatomy drawn={drawn} collisionFrame={collisionFrame} />}
     </>
   );
 }
