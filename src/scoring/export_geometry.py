@@ -216,6 +216,90 @@ def init_geometry_schema(conn):
     conn.commit()
 
 
+# ── what a track must be before it is written ───────────────────────────────────
+
+class GeometryRefusedError(ValueError):
+    """
+    A track's geometry was refused before anything was written for it.
+
+    The message names the scenario, the track, the field and the index, and carries only
+    the one offending value: never the arrays, which can be hundreds of numbers long.
+    """
+
+    def __init__(self, scenario_id, label, field, index, problem):
+        self.scenario_id = scenario_id
+        self.label = label
+        self.field = field
+        self.index = index
+        self.problem = problem
+        where = field if index is None else f'{field}[{index}]'
+        super().__init__(f'geometry refused for {scenario_id} {label}: {where} {problem}')
+
+
+def validate_track_geometry(xs, ys, ms, headings, *, scenario_id, label):
+    """
+    Refuse a track that must not be stored, with an error that says where.
+
+    This runs on the WRITE path only (export_scenario_agents, export_perturbed_path),
+    before the row is built. Nothing on the read side calls it, so a row that is already
+    stored is served exactly as before whatever it holds.
+
+    A track is the vertices of one agent's path: x, y, the M ordinate (the frame index of
+    each vertex) and the heading at each vertex. It is refused when
+      * the four arrays are not the same length;
+      * a coordinate or a heading is not a finite number (PostGIS stores NaN, and the
+        JSON the API serves cannot carry it);
+      * a measure is not a finite whole number, is negative, repeats the one before it,
+        or is smaller than the one before it (a frame index is a whole number from 0, and
+        the vertices are in time order).
+
+    Every ordinary track passes: the exporter builds the measures from the frames where
+    the agent was observed, which are whole, non-negative and strictly increasing.
+    """
+    def refuse(field, index, problem):
+        return GeometryRefusedError(scenario_id, label, field, index, problem)
+
+    arrays = {}
+    for field, values in (('x', xs), ('y', ys), ('measures', ms), ('headings', headings)):
+        try:
+            arrays[field] = np.asarray(values, dtype=np.float64)
+        except (TypeError, ValueError):
+            raise refuse(field, None, 'is not a list of numbers') from None
+        if arrays[field].ndim != 1:
+            raise refuse(field, None, 'is not a flat list of numbers')
+
+    lengths = {field: len(values) for field, values in arrays.items()}
+    if len(set(lengths.values())) != 1:
+        raise refuse('lengths', None, 'differ: ' + ', '.join(f'{f} {n}' for f, n in lengths.items()))
+
+    for field in ('x', 'y', 'headings'):
+        bad = np.flatnonzero(~np.isfinite(arrays[field]))
+        if bad.size:
+            index = int(bad[0])
+            raise refuse(field, index, f'is {float(arrays[field][index])!r}, not a finite number')
+
+    m = arrays['measures']
+    bad = np.flatnonzero(~np.isfinite(m))
+    if bad.size:
+        raise refuse('measures', int(bad[0]), f'is {float(m[bad[0]])!r}, not a finite number')
+    bad = np.flatnonzero(m != np.floor(m))
+    if bad.size:
+        raise refuse('measures', int(bad[0]), f'is {float(m[bad[0]])!r}, not a whole number')
+    bad = np.flatnonzero(m < 0)
+    if bad.size:
+        raise refuse('measures', int(bad[0]), f'is {float(m[bad[0]])!r}, which is negative')
+    steps = np.diff(m)
+    bad = np.flatnonzero(steps == 0)
+    if bad.size:
+        index = int(bad[0]) + 1
+        raise refuse('measures', index, f'is {float(m[index])!r}, the same as measures[{index - 1}]')
+    bad = np.flatnonzero(steps < 0)
+    if bad.size:
+        index = int(bad[0]) + 1
+        raise refuse('measures', index,
+                     f'is {float(m[index])!r}, which is before measures[{index - 1}] ({float(m[index - 1])!r})')
+
+
 # ── WKT construction ────────────────────────────────────────────────────────────
 
 def _linestring_m_wkt(xs, ys, ms) -> str:
@@ -432,10 +516,19 @@ def export_scenario_agents(conn, scenario_id, states, validity, types, sdc_idx):
 
             xs = states[i, ts, 0]
             ys = states[i, ts, 1]
+            headings = [float(h) for h in states[i, ts, 4]]
+            # Refused before anything is built from it. The rollback releases the row
+            # lock taken above and undoes any agent this call has already written, so a
+            # refused scenario leaves nothing behind.
+            try:
+                validate_track_geometry(xs, ys, ts, headings,
+                                        scenario_id=scenario_id, label=f'agent {int(i)}')
+            except GeometryRefusedError:
+                conn.rollback()
+                raise
             # M ordinate = the timestep index itself, so the frontend can map a
             # vertex back to a frame without a second lookup.
             wkt = _linestring_m_wkt(xs, ys, ts.astype(float))
-            headings = [float(h) for h in states[i, ts, 4]]
             # Per-frame sizes, from the same `ts` as the path and headings so element k is
             # vertex k's size. The scalars below are unchanged.
             lengths_m = _per_frame_sizes(states[i, ts, 5])
@@ -727,8 +820,14 @@ def export_perturbed_path(conn, scenario_id, perturbed_states, validity, target_
 
     xs = perturbed_states[target_idx, ts, 0]
     ys = perturbed_states[target_idx, ts, 1]
-    wkt = _linestring_m_wkt(xs, ys, ts.astype(float))
     headings = [float(h) for h in perturbed_states[target_idx, ts, 4]]
+    try:
+        validate_track_geometry(xs, ys, ts, headings, scenario_id=scenario_id,
+                                label=f'perturbed target {int(target_idx)}')
+    except GeometryRefusedError:
+        conn.rollback()
+        raise
+    wkt = _linestring_m_wkt(xs, ys, ts.astype(float))
 
     with conn.cursor() as cur:
         # INSERT ... SELECT ... WHERE, so the check and the write are ONE statement.
