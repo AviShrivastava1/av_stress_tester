@@ -41,6 +41,49 @@ from src.danger.danger_score import score_scenario
 from src.optimization.selection import keeps_challenger
 
 
+class SdcTrackError(ValueError):
+    """
+    The SDC index cannot be scored on: it is not an index into this scene, or the agent it
+    points at was never observed. Raised before any danger value is computed, so no score is
+    produced for the scenario. Names the scenario and the reason; carries only the offending
+    index and the agent count, never the arrays.
+    """
+
+    def __init__(self, scenario_id, problem):
+        self.scenario_id = scenario_id
+        self.problem = problem
+        super().__init__(f'cannot score {scenario_id}: SDC index {problem}')
+
+
+def validate_sdc_track(sdc_index, validity, *, scenario_id=None) -> int:
+    """
+    Return the SDC index as a plain int, or raise SdcTrackError saying why it cannot be used.
+
+    The danger engines treat an SDC index outside the scene (and an SDC that was never
+    observed) as "no interaction" and return their 999 sentinels, so a bad index used to be
+    scored as a scenario with fragility 0, as safe as any scene can look. This is the one
+    place that refuses it, ahead of the engines, whose own behaviour is unchanged.
+
+    Refused: a Boolean (True is not agent 1), anything that is not a whole-number type
+    (a float, even 2.0, a string, None), a negative index, an index at or past the number of
+    agents, and an agent with no observed frame. An SDC that was observed but never
+    interacted with anyone is not refused: that scene is genuinely low-risk.
+    """
+    if isinstance(sdc_index, (bool, np.bool_)):
+        raise SdcTrackError(scenario_id, f'is a Boolean ({bool(sdc_index)}), not an agent index')
+    if not isinstance(sdc_index, (int, np.integer)):
+        raise SdcTrackError(scenario_id, f'is a {type(sdc_index).__name__}, not a whole-number agent index')
+    n_agents = int(validity.shape[0])
+    index = int(sdc_index)
+    if index < 0:
+        raise SdcTrackError(scenario_id, f'{index} is negative')
+    if index >= n_agents:
+        raise SdcTrackError(scenario_id, f'{index} is out of range for {n_agents} agents (0..{n_agents - 1})')
+    if not bool(np.any(validity[index])):
+        raise SdcTrackError(scenario_id, f'{index} points at an agent with no observed frame')
+    return index
+
+
 def _score_one(states, validity, scenario_id, sdc_index,
                shard_name=None, pet_max_pairs=50, types=None):
     """
@@ -51,6 +94,9 @@ def _score_one(states, validity, scenario_id, sdc_index,
     (see its docstring), and a missing sdc_index should fail loudly here rather
     than silently reverting to the all-pairs behaviour.
     """
+    # Refused before anything is computed: a scenario whose SDC index is not usable gets no
+    # record, and score_shard lists it among its errors with this reason.
+    sdc_index = validate_sdc_track(sdc_index, validity, scenario_id=scenario_id)
     t0 = time.time()
     record = score_scenario(states, validity, scenario_id, sdc_index,
                             min_perturbation=None, pet_max_pairs=pet_max_pairs)
