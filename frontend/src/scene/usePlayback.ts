@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { advance, clampFrame, DEFAULT_RATE, isStatic, startFrame, type FrameRange, type Rate } from './playback';
+import { advance, clampFrame, defaultRate, isStatic, startFrame, type FrameRange, type Rate } from './playback';
+import { useReducedMotion } from './reducedMotion';
 
 export interface Playback {
   /** The frame on screen, or null when there is no frame to show. */
@@ -30,7 +31,11 @@ export interface Playback {
 export function usePlayback(range: FrameRange | null, defaultFrame: number | null): Playback {
   const [userFrame, setUserFrame] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [rate, setRate] = useState<Rate>(DEFAULT_RATE);
+  // The rate the viewer picked, if they have. Until they do, the rate is the default for their motion setting, which follows
+  // the setting if it changes while the page is open; once they pick one it is theirs, whatever the setting does after.
+  const reducedMotion = useReducedMotion();
+  const [chosenRate, setRate] = useState<Rate | null>(null);
+  const rate = chosenRate ?? defaultRate(reducedMotion);
 
   const frame =
     range === null ? null : clampFrame(userFrame ?? defaultFrame ?? range.first, range);

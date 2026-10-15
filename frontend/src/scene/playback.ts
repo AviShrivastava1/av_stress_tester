@@ -21,6 +21,17 @@ export interface FrameRange {
 export const RATES = [5, 10, 20, 30] as const;
 export type Rate = (typeof RATES)[number];
 export const DEFAULT_RATE: Rate = 10;
+/** The slowest rate the control offers. */
+export const LOWEST_RATE: Rate = RATES[0];
+
+/**
+ * The rate a replay opens at. A viewer who has asked their system for reduced motion gets the lowest rate the control offers;
+ * everyone else gets DEFAULT_RATE. Only the starting rate changes: Play is still there, nothing starts by itself (playback
+ * only ever starts when the viewer presses Play or Space), and the viewer can pick any rate, which is then kept.
+ */
+export function defaultRate(reducedMotion: boolean): Rate {
+  return reducedMotion ? LOWEST_RATE : DEFAULT_RATE;
+}
 
 /**
  * The most time one tick may add. A backgrounded tab stops requestAnimationFrame;
