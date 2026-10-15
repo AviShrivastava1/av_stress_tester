@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { isStatic, RATES, type FrameRange, type Rate } from './playback';
+import { collisionTarget, isStatic, RATES, type FrameRange, type Rate } from './playback';
 import type { Playback } from './usePlayback';
 
 export interface PlaybackControlsProps {
@@ -34,8 +34,7 @@ export function PlaybackControls({ range, playback, observed, total, collisionFr
   const ticksId = useId();
   const frozen = isStatic(range);
   const frame = playback.frame ?? range.first;
-  const collisionInRange =
-    collisionFrame !== null && collisionFrame >= range.first && collisionFrame <= range.last;
+  const jumpFrame = collisionTarget(collisionFrame, range);
 
   return (
     <div className="playback">
@@ -74,12 +73,12 @@ export function PlaybackControls({ range, playback, observed, total, collisionFr
           step={1}
           value={frame}
           disabled={frozen}
-          list={collisionInRange ? ticksId : undefined}
+          list={jumpFrame !== null ? ticksId : undefined}
           onChange={(e) => playback.seek(Number(e.target.value))}
         />
-        {collisionInRange && (
+        {jumpFrame !== null && (
           <datalist id={ticksId}>
-            <option value={collisionFrame} label="collision" />
+            <option value={jumpFrame} label="collision" />
           </datalist>
         )}
       </div>
@@ -90,9 +89,9 @@ export function PlaybackControls({ range, playback, observed, total, collisionFr
             : `frame ${frame} of ${range.first}–${range.last}`}{' '}
           · {observed} of {total} tracks observed
         </span>
-        {collisionInRange && (
-          <button type="button" className="link-button" onClick={() => playback.seek(collisionFrame)}>
-            Jump to collision (frame {collisionFrame})
+        {jumpFrame !== null && (
+          <button type="button" className="link-button" onClick={() => playback.seek(jumpFrame)}>
+            Jump to collision (frame {jumpFrame})
           </button>
         )}
         <label className="rate">

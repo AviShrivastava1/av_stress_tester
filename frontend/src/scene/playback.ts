@@ -46,6 +46,16 @@ export function isStatic(range: FrameRange | null): boolean {
   return range === null || range.first === range.last;
 }
 
+/**
+ * The frame "Jump to collision" and the C key go to: the collision frame when the scene has one and it lies within the
+ * frames the scene covers, otherwise null (nothing to jump to, and no control or key is offered).
+ */
+export function collisionTarget(collisionFrame: number | null, range: FrameRange): number | null {
+  return collisionFrame !== null && collisionFrame >= range.first && collisionFrame <= range.last
+    ? collisionFrame
+    : null;
+}
+
 export function clampFrame(frame: number, range: FrameRange): number {
   return Math.min(range.last, Math.max(range.first, Math.round(frame)));
 }

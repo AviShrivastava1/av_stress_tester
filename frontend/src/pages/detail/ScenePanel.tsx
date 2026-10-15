@@ -5,7 +5,7 @@ import { describeError } from '../../api/errors';
 import { describeAgentType, type AgentKind } from '../../domain/agentTypes';
 import { chooseReferenceFrame, perFrameSizes, poseAt } from '../../scene/geometry';
 import { PlaybackControls } from '../../scene/PlaybackControls';
-import { frameRange } from '../../scene/playback';
+import { collisionTarget, frameRange } from '../../scene/playback';
 import {
   buildScene,
   canFocusInteraction,
@@ -92,6 +92,19 @@ function Legend({ drawn }: { drawn: DrawnTrack[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/*
+ * The scene frame's accessible name lists the keys it answers, in the order the hint under it does. What backs each one is
+ * onKeyDown in SceneBody: Space (toggle), the arrows (step one frame), Home and End (seek to the first and last frame
+ * of frameRange), and C (seek to collisionTarget, the frame "Jump to collision" goes to). C is named only when the scene
+ * has a collision frame in range, because otherwise the key does nothing.
+ */
+function sceneLabel(hasCollisionKey: boolean): string {
+  return (
+    'Scene. Space plays or pauses; the arrow keys step one frame; Home and End go to the first and last frame' +
+    (hasCollisionKey ? '; C jumps to the collision frame.' : '.')
   );
 }
 
@@ -192,9 +205,15 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
   // Not tied to the playhead: unlike the reference-frame note above, it describes how every frame is drawn.
   if (collisionFrame !== null) notes.push(boxSizeNote(drawn));
 
+  // The frame C goes to; null when the scene has no collision frame in range, and then no key, hint or label offers it.
+  const collisionKeyFrame = collisionTarget(collisionFrame, range);
+  const { first: firstFrame, last: lastFrame } = range; // read here, where `range` is known to exist
+
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     // Bound to the scene frame only; the scrubber and buttons sit outside it and keep
-    // their own keys.
+    // their own keys. A key with Ctrl, Alt or Meta is the browser's (Alt+Left and Cmd+Left are Back, Ctrl+Home scrolls
+    // the page, Ctrl+C and Cmd+C copy), so it is left alone and not cancelled.
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === ' ') {
       e.preventDefault();
       playback.toggle();
@@ -204,6 +223,16 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
       playback.step(1);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      playback.seek(firstFrame);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      playback.seek(lastFrame);
+    } else if ((e.key === 'c' || e.key === 'C') && collisionKeyFrame !== null) {
+      // Only when there is a frame to go to: otherwise the key is not ours and is not cancelled.
+      e.preventDefault();
+      playback.seek(collisionKeyFrame);
     }
   }
 
@@ -229,7 +258,7 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
       <div
         className="scene-frame"
         tabIndex={0}
-        aria-label="Scene. Space plays or pauses; the arrow keys step one frame."
+        aria-label={sceneLabel(collisionKeyFrame !== null)}
         onKeyDown={onKeyDown}
       >
         <SceneView drawn={drawn} focus={focused} frame={frame} collisionFrame={collisionFrame} />
@@ -241,7 +270,11 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
         total={drawn.length}
         collisionFrame={collisionFrame}
       />
-      <p className="keyboard-hint">Focus the scene, then use <kbd>Space</kbd> to play and <kbd>←</kbd> <kbd>→</kbd> to step.</p>
+      <p className="keyboard-hint">
+        Focus the scene, then use <kbd>Space</kbd> to play, <kbd>←</kbd> <kbd>→</kbd> to step,{' '}
+        {collisionKeyFrame !== null ? '' : 'and '}<kbd>Home</kbd> and <kbd>End</kbd> for the first and last frame
+        {collisionKeyFrame !== null && <>, and <kbd>C</kbd> for the collision frame</>}.
+      </p>
       <Legend drawn={drawn} />
       {notes.map((n) => (
         <p key={n} className="note">
