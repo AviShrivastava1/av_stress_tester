@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 
 /*
  * The "Copy brief" control. What each state says, and what backs it:
@@ -12,7 +12,7 @@ import { useState } from 'react';
  */
 type State = { kind: 'idle' } | { kind: 'copied' } | { kind: 'failed'; text: string };
 
-export function BriefButton({ build }: { build: () => string }) {
+export function BriefButton({ build, children }: { build: () => string; children?: ReactNode }) {
   const [state, setState] = useState<State>({ kind: 'idle' });
 
   async function copy() {
@@ -32,6 +32,7 @@ export function BriefButton({ build }: { build: () => string }) {
         Copy brief
       </button>
       <span role="status">{state.kind === 'copied' ? 'Copied the brief.' : ''}</span>
+      {children}
       {state.kind === 'failed' && (
         <>
           <p className="status-error" role="alert">

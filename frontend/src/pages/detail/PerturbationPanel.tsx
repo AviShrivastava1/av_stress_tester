@@ -2,6 +2,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import type { PerturbedResponse } from '../../api/client';
 import { RequestError } from '../../components/RequestError';
 import { formatMagnitude } from '../../domain/format';
+import { OffsetByFrame } from './OffsetByFrame';
 
 /**
  * The raw perturbation vector. `delta` and `delta_labels` both come from /perturbed,
@@ -26,7 +27,12 @@ function PerturbationBody({ perturbed }: { perturbed: UseQueryResult<PerturbedRe
 
   const { delta, delta_labels: labels } = perturbed.data;
   if (delta === null || delta === undefined) {
-    return <p className="status">No stored perturbation.</p>;
+    return (
+      <>
+        <p className="status">No stored perturbation.</p>
+        <OffsetByFrame perturbed={perturbed.data} />
+      </>
+    );
   }
 
   // Labels are usable only if there is exactly one per component; anything else is
@@ -51,6 +57,7 @@ function PerturbationBody({ perturbed }: { perturbed: UseQueryResult<PerturbedRe
           ))}
         </tbody>
       </table>
+      <OffsetByFrame perturbed={perturbed.data} />
     </>
   );
 }

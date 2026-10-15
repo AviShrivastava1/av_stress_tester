@@ -80,9 +80,10 @@ export function useAllScenarios(): {
 // build its request, so the detail page starts all three at once and each panel
 // resolves (or fails) on its own. A trajectories 500 does not hide the score.
 
-export function useScenarioDetail(scenarioId: string) {
+export function useScenarioDetail(scenarioId: string, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['scenario', scenarioId],
+    enabled: options.enabled ?? true,
     queryFn: async ({ signal }) =>
       unwrap(
         await api.GET('/scenarios/{scenario_id}', {
@@ -107,9 +108,10 @@ export function useTrajectories(scenarioId: string, options: { enabled?: boolean
   });
 }
 
-export function usePerturbed(scenarioId: string) {
+export function usePerturbed(scenarioId: string, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['scenario', scenarioId, 'perturbed'],
+    enabled: options.enabled ?? true,
     queryFn: async ({ signal }) =>
       unwrap(
         await api.GET('/scenarios/{scenario_id}/perturbed', {

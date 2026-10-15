@@ -136,7 +136,11 @@ export function ScenarioDetailPage() {
               agents: trajectories.data?.agents,
             })
           }
-        />
+        >
+          <Link className="text-link" to={`/compare?a=${encodeURIComponent(scenarioId)}`}>
+            Compare with another scenario
+          </Link>
+        </BriefButton>
       )}
       <div className="detail-side">
         {detail.isPending ? (

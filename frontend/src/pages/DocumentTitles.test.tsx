@@ -39,6 +39,7 @@ describe('the title of each route, on arrival', () => {
     ['the Method page', '/method', title('Method')],
     ['the Corpus page', '/stats', title('Corpus')],
     ['the Walkthrough page', '/walkthrough', title('Walkthrough')],
+    ['the Compare page', '/compare', title('Compare')],
     ['a scenario page, by its id', '/scenarios/synthetic-0001', title('synthetic-0001')],
     ['an unknown address', '/no/such/page', title('Page not found')],
   ])('is set for %s', async (_name, url, expected) => {

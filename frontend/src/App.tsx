@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link, NavLink, Outlet, ScrollRestoration, createBrowserRouter, useParams, type RouteObject } from 'react-router';
 import { Footer } from './components/Footer';
+import { ComparePage } from './pages/ComparePage';
 import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { MethodPage } from './pages/MethodPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
@@ -50,6 +51,8 @@ function Layout({ children }: { children?: ReactNode }) {
  *   "Method"           the Method page and the nav link of that name
  *   "Corpus"           the Corpus page (the /stats route) and the nav link of that name; its h1 is "Corpus"
  *   "Walkthrough"      the walkthrough page and the nav link of that name; its eyebrow is "WALKTHROUGH"
+ *   "Compare"          the comparison page (/compare) and its h1 "Compare two scenarios"; it has no nav link: it is reached from a
+ *                      scenario page's "Compare with another scenario" or by its address
  *   the scenario id    the scenario page's own h1 shows the same id, taken from the address (:scenarioId)
  *   "Page not found"   the h1 of NotFoundPage below
  *   "Something went wrong"   the eyebrow of RouteErrorPage below, so the error page does not keep the title of the page before
@@ -96,6 +99,7 @@ export const routes: RouteObject[] = [
       { path: 'method', element: <><PageTitle page="Method" /><MethodPage /></> },
       { path: 'stats', element: <><PageTitle page="Corpus" /><StatsPage /></> },
       { path: 'walkthrough', element: <><PageTitle page="Walkthrough" /><WalkthroughPage /></> },
+      { path: 'compare', element: <><PageTitle page="Compare" /><ComparePage /></> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

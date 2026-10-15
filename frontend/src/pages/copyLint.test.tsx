@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HealthResponse, StatsResponse } from '../api/client';
 import { makeDetail, makePage, makePerturbed, makeRow, makeTrack, makeTrajectories, range } from '../test/fixtures';
@@ -159,6 +159,22 @@ describe('the words the project cannot back do not appear', () => {
     renderApp('/walkthrough');
     await screen.findByText(/has the smallest stored perturbation/);
     expect(pageText().length).toBeGreaterThan(500); // the heading, the lede and the three scenes are all there
+    expect(violations(pageText())).toEqual([]);
+  });
+
+  it.each([
+    ['two scenarios of the same model', ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)']],
+    ['two scenarios of different models', ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], ['initial vx (m/s)', 'initial vy (m/s)', 'x-acceleration bias (m/s^2)', 'y-acceleration bias (m/s^2)']],
+  ])('on the comparison page for %s', async (_name, first, second) => {
+    stubFetch((req: RecordedRequest): Reply => {
+      const id = decodeURIComponent(req.path.split('/')[2] ?? '');
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ scenario_id: id, delta: [1, 2, 3, 4], delta_labels: id.endsWith('1') ? first : second, target_idx: 1 }));
+      return ok(makeDetail({ scenario_id: id, stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.02, collision_timestep: 25 }));
+    });
+    renderApp('/compare?a=synthetic-0001&b=synthetic-0002');
+    await screen.findByText(/Min perturbation is a weighted norm/);
+    await waitFor(() => expect(screen.getAllByText(/initial (speed|vx)/).length).toBeGreaterThan(0));
+    expect(pageText().length).toBeGreaterThan(500);
     expect(violations(pageText())).toEqual([]);
   });
 

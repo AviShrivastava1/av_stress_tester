@@ -98,6 +98,18 @@ describe('every class a page renders has a rule', () => {
     expect(unstyled()).toEqual([]);
   });
 
+  it('on the comparison page, with both scenarios shown and their components lined up', async () => {
+    const labels = ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'];
+    stubFetch((req: RecordedRequest): Reply => {
+      const id = decodeURIComponent(req.path.split('/')[2] ?? '');
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ scenario_id: id, delta: [1, 2, 3, 4], delta_labels: labels, target_idx: 1 }));
+      return ok(makeDetail({ scenario_id: id, stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.02, collision_timestep: 25 }));
+    });
+    renderApp('/compare?a=synthetic-0001&b=synthetic-0002');
+    await screen.findByRole('table', { name: 'Perturbation components, side by side' });
+    expect(unstyled()).toEqual([]);
+  });
+
   it('on the page for an unknown address', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/nowhere');
