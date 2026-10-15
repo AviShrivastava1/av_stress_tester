@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.api import config, db_pool, main as api_main, request_pool, search_requests
 from src.api.config import settings
+import tests.test_search_requests_schema as schema_tests
 from tests.test_search_requests_schema import ROLE, requires_db, scratch  # noqa: F401  (scratch is a fixture)
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,7 +47,9 @@ SALT = 'test-salt-' + uuid.uuid4().hex  # made for this run; never printed, neve
 def _enable(monkeypatch, *, hops=0, salt=SALT, user=ROLE):
     monkeypatch.setattr(settings, 'search_requests_enabled', True)
     monkeypatch.setattr(settings, 'request_pg_user', user)
-    monkeypatch.setattr(settings, 'request_pg_password', '')
+    # The password the schema fixture gave the role (a server that asks for passwords, as CI's does, needs it); '' where the
+    # server trusts local connections and the role pre-existed.
+    monkeypatch.setattr(settings, 'request_pg_password', schema_tests.ROLE_PASSWORD or '')
     monkeypatch.setattr(settings, 'request_salt', salt)
     monkeypatch.setattr(settings, 'request_proxy_hops', hops)
 

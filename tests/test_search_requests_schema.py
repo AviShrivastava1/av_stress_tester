@@ -20,6 +20,7 @@ Run:
 
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,10 @@ requires_db = pytest.mark.skipif(
 
 ROLE = 'av_req_insert'
 READ_ROLE = 'av_api_ro'
+#: The throw-away password the fixture gives the request role when it made the role, so that a connection AS the role works on a
+#: server that asks for passwords (CI's does; a laptop that trusts local connections does not). None when the role was already
+#: there: its password is not ours to change, and then only a trusting server can be used.
+ROLE_PASSWORD = None
 HASH_A = 'a' * 64
 HASH_B = 'b' * 64
 HASH_C = 'c' * 64
@@ -62,7 +67,9 @@ def scratch():
     name = f'{base["dbname"]}_req_{uuid.uuid4().hex[:8]}'
     admin = psycopg2.connect(**base)
     admin.autocommit = True
+    global ROLE_PASSWORD
     made_roles = []
+    ROLE_PASSWORD = None
     with admin.cursor() as cur:
         for role in (ROLE, READ_ROLE):
             cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (role,))
@@ -82,8 +89,12 @@ def scratch():
             cur.execute(f'GRANT SELECT ON scenario_scores TO {READ_ROLE}')
             cur.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {READ_ROLE}')
             cur.execute(open(SCRIPT).read())
+            if ROLE in made_roles:  # made for this test: give it a password made for this test
+                ROLE_PASSWORD = secrets.token_hex(16)
+                cur.execute(f"ALTER ROLE {ROLE} PASSWORD %s", (ROLE_PASSWORD,))
         yield name
     finally:
+        ROLE_PASSWORD = None
         owner.close()
         with admin.cursor() as cur:
             cur.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -534,7 +545,6 @@ def test_the_pending_file_lists_the_waiting_requests_oldest_first_and_no_others(
     base = _server()
     env = {**os.environ, 'PGHOST': str(base['host']), 'PGPORT': str(base['port']), 'PGUSER': base['user'],
            'PGDATABASE': scratch}
-    env.pop('PGPASSWORD', None)
     run = subprocess.run([_psql(), '-X', '-q', '-A', '-t', '-F', '|', '-f', PENDING], capture_output=True, text=True, env=env)
     assert run.returncode == 0, run.stderr
     lines = [line for line in run.stdout.splitlines() if line.strip()]
