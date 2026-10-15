@@ -84,6 +84,11 @@ h2 { margin:0 0 18px; font-size:18px; font-weight:650; line-height:1.15; letter-
 .brief [role='status'] { font-size:12px; color:var(--text-muted); }
 .brief .status-error { flex-basis:100%; margin:0; font-size:12px; }
 .brief-text { flex-basis:100%; box-sizing:border-box; padding:10px; border:1px solid var(--border-strong); border-radius:0; color:var(--text); background:transparent; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; line-height:1.55; }
+.search-request { margin:34px 0 0; padding-top:24px; border-top:1px solid var(--border); }
+.search-request h2 { margin:0; font-size:15px; }
+.search-request-form { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin:14px 0 0; font-size:13px; font-weight:620; }
+.search-request-form input { min-height:30px; width:min(100%,200px); padding:5px 8px; border:1px solid var(--text-muted); border-radius:0; color:var(--text); background:transparent; font-size:13px; font-weight:400; font-variant-numeric:tabular-nums; }
+.search-request .status { margin:12px 0 0; font-size:12px; }
 .walk-card { margin:28px 0 0; padding-top:18px; border-top:1px solid var(--border-strong); }
 .walk-card h2 { margin:0 0 10px; font-size:18px; }
 .walk-card p { margin:0 0 12px; line-height:1.65; }

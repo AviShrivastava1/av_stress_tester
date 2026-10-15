@@ -1,4 +1,5 @@
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { makeDetail, makePage, makePerturbed, makeRow, makeTrack, makeTrajectories, range } from '../test/fixtures';
 import { stubFetch, type RecordedRequest, type Reply } from '../test/fetchStub';
@@ -15,6 +16,7 @@ import type { HealthResponse, StatsResponse } from '../api/client';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
@@ -67,6 +69,23 @@ describe('every class a page renders has a rule', () => {
     await screen.findByTestId('frame-readout');
     await screen.findByRole('group', { name: 'Search outcome' });
     expect(renderedClasses().length).toBeGreaterThan(30);
+    expect(unstyled()).toEqual([]);
+  });
+
+  it('on a scenario page with the request form, with a request filed', async () => {
+    vi.stubEnv('VITE_SEARCH_REQUESTS', 'true');
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path === '/search-requests') return { status: 201, body: { request_id: 'r-1', scenario_id: 'synthetic-0001', seed: 3, state: 'filed' } };
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged, perturbed }));
+      return ok(makeDetail({ stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.1, collision_timestep: 25 }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole('textbox', { name: 'Seed' }), '3');
+    await user.click(screen.getByRole('button', { name: 'File request' }));
+    await screen.findByText(/Nothing has run/);
+    expect(document.querySelector('.search-request')).not.toBeNull();
     expect(unstyled()).toEqual([]);
   });
 

@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HealthResponse, StatsResponse } from '../api/client';
 import { makeDetail, makePage, makePerturbed, makeRow, makeTrack, makeTrajectories, range } from '../test/fixtures';
@@ -31,6 +32,7 @@ import { renderApp } from '../test/renderApp';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
@@ -145,6 +147,31 @@ describe('the words the project cannot back do not appear', () => {
     renderApp('/');
     await screen.findByRole('link', { name: 'synthetic-0003' });
     expect(pageText().length).toBeGreaterThan(500); // the hero, the guide and the table are all there
+    expect(violations(pageText())).toEqual([]);
+  });
+
+  it.each([
+    ['a request that is filed', { status: 201, body: { request_id: 'r-1', scenario_id: 'synthetic-0001', seed: 3, state: 'filed' } }, /Nothing has run/],
+    ['a request that was filed before', { status: 200, body: { request_id: 'r-1', scenario_id: 'synthetic-0001', seed: 3, state: 'existing' } }, /Already filed/],
+    ['a limit reached', { status: 429, body: { detail: 'x' }, headers: { 'Retry-After': '3600' } }, /reached a limit/],
+    ['a full queue', { status: 503, body: { detail: 'x' }, headers: { 'Retry-After': '3600' } }, /cannot be filed right now/],
+    ['an unknown scenario', { status: 404, body: { detail: 'x' } }, /not in the stored results/],
+    ['a server error', { status: 500, body: { detail: 'boom' } }, /not known/],
+  ] as const)('on the request form, with %s', async (_name, reply, expected) => {
+    vi.stubEnv('VITE_SEARCH_REQUESTS', 'true');
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path === '/search-requests') return reply as unknown as Reply;
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged }));
+      return ok(makeDetail({ stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.1, collision_timestep: 25 }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    const user = userEvent.setup();
+    expect(violations(pageText())).toEqual([]); // before anything is filed
+    await user.type(await screen.findByRole('textbox', { name: 'Seed' }), '3');
+    await user.click(screen.getByRole('button', { name: 'File request' }));
+    await screen.findByText(expected);
+    expect(pageText()).toContain('Request a search');
     expect(violations(pageText())).toEqual([]);
   });
 

@@ -5,6 +5,7 @@ import { usePerturbed, useScenarioDetail, useTrajectories } from '../api/scenari
 import { BriefButton } from './detail/BriefButton';
 import { buildBrief } from './detail/brief';
 import { PerturbationPanel } from './detail/PerturbationPanel';
+import { RequestSearchPanel } from './detail/RequestSearchPanel';
 import { ScenePanel } from './detail/ScenePanel';
 import { SummaryPanel } from './detail/SummaryPanel';
 import { OutcomeCell } from '../components/OutcomeBadge';
@@ -156,6 +157,7 @@ export function ScenarioDetailPage() {
         )}
         <PerturbationPanel perturbed={perturbed} />
       </div>
+      <RequestSearchPanel scenarioId={scenarioId} />
     </section>
   );
 }
