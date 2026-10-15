@@ -69,12 +69,31 @@ describe('the offset by frame', () => {
     expect(panel.contains(block())).toBe(true);
   });
 
-  it('says what the distance is, and that nothing was simulated', async () => {
+  it('says what the distance is, that nothing is simulated on this page, and that part of it is the replay’s own drift', async () => {
     await open();
     expect(block()).toHaveTextContent(
       'The distance between the logged challenger and the perturbed challenger on each frame where both were observed, ' +
-        'taken from the two stored tracks (their positions only), in metres. Every other agent is as logged.',
+        'taken from the two stored tracks (their positions only), in metres. Every other agent is as logged. ' +
+        "The perturbed track is a re-simulation of the challenger, so part of this distance is the replay's own drift from the log, " +
+        'which Run details reports as the baseline offset.',
     );
+  });
+
+  it('puts that sentence in the note under the title, not in a readout, and leaves the readouts as they were', async () => {
+    await open();
+    const note = block()!.querySelector('p.note')!;
+    expect(note).toHaveTextContent("part of this distance is the replay's own drift from the log");
+    expect(block()!.querySelectorAll('.offset-readouts dt')).toHaveLength(3);
+    expect(block()!.querySelector('.offset-readouts')!.textContent).not.toContain('drift');
+    expect(block()!.querySelector('figure')!.getAttribute('aria-label')).not.toContain('drift');
+  });
+
+  it('refers to a figure that the Run details panel on the same page really shows, under that name', async () => {
+    await open();
+    const details = screen.getByRole('heading', { name: 'Run details' }).closest('section')!;
+    expect(within(details).getByText('Baseline offset at collision')).toBeInTheDocument();
+    expect(details).toHaveTextContent('the zero-perturbation replay of the challenger is');
+    expect(block()).toHaveTextContent('which Run details reports as the baseline offset');
   });
 
   it('draws the offsets as a line chart with a text description of it', async () => {

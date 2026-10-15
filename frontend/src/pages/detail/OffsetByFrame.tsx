@@ -14,6 +14,14 @@ import { frameOffsets, summariseOffsets } from '../../scene/offsets';
  *       scene/offsets.ts frameOffsets: Math.hypot of the two positions, only on frames both tracks have a vertex for. The
  *       positions are in the data's planar metres. "Every other agent is as logged": PerturbationSpace.apply rewrites the
  *       target's track only (src/optimization/perturbation_space.py; the same claim as scene/sceneModel.ts)
+ *   "The perturbed track is a re-simulation of the challenger, so part of this distance is the replay's own drift from the log,
+ *    which Run details reports as the baseline offset."
+ *       the perturbed track is the output of the kinematic replay with the stored perturbation applied (PerturbationSpace.apply),
+ *       not a recording, and the replay with NO perturbation is already some distance from the log: the Run details panel's
+ *       "Baseline offset at collision" and "Replay drift, whole track (max)" (pages/detail/ReplayOffsetBlock.tsx, whose note
+ *       says "the zero-perturbation replay of the challenger is this many metres from its logged position"; the fields are
+ *       baseline_offset_at_collision and baseline_replay_error in src/api/models.py). The two parts are not separated here:
+ *       the drift is stored as one figure at the collision frame and one maximum, not per frame
  *   "At the collision frame (frame N)"
  *       the offset on perturbed.collision_timestep, shown only when that is a frame both tracks share
  *   "Largest, on frame N"
@@ -57,7 +65,9 @@ export function OffsetByFrame({ perturbed }: { perturbed: PerturbedResponse }) {
       <h3>Offset from the recording, by frame</h3>
       <p className="note">
         The distance between the logged challenger and the perturbed challenger on each frame where both were observed, taken
-        from the two stored tracks (their positions only), in metres. Every other agent is as logged.
+        from the two stored tracks (their positions only), in metres. Every other agent is as logged. The perturbed track is
+        a re-simulation of the challenger, so part of this distance is the replay's own drift from the log, which Run details
+        reports as the baseline offset.
       </p>
       <dl className="offset-readouts">
         {atCollision && (
