@@ -669,9 +669,10 @@ def list_scenarios(
     only under the C collation; do not rely on it for other ids.
 
     PAGINATION DOES NOT DEPEND ON THAT. The ORDER BY and the cursor predicate below
-    compare scenario_id as the same column under the same collation, so every row is
-    served exactly once, in a stable order, whichever collation is in use. Only
-    agreement with the batch ranker's order among tied rows is conditional.
+    compare scenario_id as the same column under the same collation, so, while the
+    table does not change between requests, every row is served exactly once, in a
+    stable order, whichever collation is in use. Only agreement with the batch
+    ranker's order among tied rows is conditional.
 
     The scenario_id tiebreak is LOAD-BEARING, not cosmetic. Without a unique second
     key, rows tied on fragility_score have no defined order, and the same row can
@@ -684,8 +685,14 @@ def list_scenarios(
     inserted above the current position between two requests, every subsequent row
     shifts down by one, and the client silently sees a duplicate at the page
     boundary (or, on delete, a gap). Keyset pagination anchors on a value rather
-    than a count, so the page boundary stays put no matter what else is written.
-    That stability is why this is here.
+    than a count: the cursor holds the score and id of the last row served, and the
+    next page is the rows strictly after that position in the ordering. So inserting
+    or deleting OTHER rows does not move the boundary, and the rows still to come are
+    not repeated or skipped because of it. That is all it guarantees. Each request is
+    a separate query with no shared snapshot: a row inserted or deleted behind the
+    cursor is simply not seen by the later pages, and a row whose fragility_score
+    changes between two requests can cross the boundary and be skipped or served
+    twice. That stability against inserts and deletes is why this is here.
 
     WHAT THIS QUERY COSTS — AND WHY IT IS NOT A SEEK
     ------------------------------------------------

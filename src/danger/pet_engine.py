@@ -180,12 +180,14 @@ def compute_pet_pair(
 
       * Per pair, `max(...) <= 0` iff `enter_Bj <= exit_Ai` AND `enter_Ai <= exit_Bj`,
         which is exactly the condition for those two closed intervals to overlap. So a
-        negative per-pair value means the two visits share at least one frame: both
-        agents' boxes intersected the component at the same time. A visit is a box
-        intersecting the component; it does not mean the two boxes overlapped each other.
+        per-pair value of zero or less means the two visits share at least one frame:
+        both agents' boxes intersected the component at the same time. Exactly zero is
+        the case where they share exactly one frame (one visit's last frame is the
+        other's first). A visit is a box intersecting the component; it does not mean
+        the two boxes overlapped each other.
       * Visits partition each agent's presence IN ONE CONNECTED COMPONENT. If any
         frame has both agents' boxes intersecting that component, one visit pair
-        overlaps and the minimum is negative. Visits from different components are
+        overlaps and the minimum is zero or less. Visits from different components are
         never paired; being in different places at the same time is not an
         encroachment.
       * A temporally distant, irrelevant visit pair cannot spuriously win the min:
@@ -207,10 +209,11 @@ def compute_pet_pair(
 
     Returns:
         PET in seconds — the smallest gap over all visit pairings within a component.
-        Negative means both agents' boxes intersected the same connected component of
-        the conflict zone during a common frame; it does not mean their boxes
-        overlapped each other. PET_INFINITY if the agents' swept paths never overlap,
-        or if no component of the zone is entered by both agents.
+        Zero or negative means both agents' boxes intersected the same connected
+        component of the conflict zone during at least one common frame (zero: exactly
+        one); it does not mean their boxes overlapped each other. PET_INFINITY if the
+        agents' swept paths never overlap, or if no component of the zone is entered by
+        both agents.
     """
     # spatial conflict zone — where both agents' swept paths overlap
     if path_a is None:
