@@ -117,7 +117,7 @@ const METHOD_SIGNATURE = [
   ['Serving', 'PostGIS → FastAPI → React'],
 ] as const;
 
-const LIMITS = [
+export const LIMITS = [
   'The minimum perturbation is the best result found within a finite search budget, not a proven global minimum.',
   'Each run searches one heuristically selected challenger, not every possible agent interaction.',
   'A collision is an oriented-box intersection at stored coordinate precision, not a forecast of real-world impact.',

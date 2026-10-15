@@ -2,6 +2,8 @@ import { Link, useLocation, useParams } from 'react-router';
 import type { ScenarioDetail } from '../api/client';
 import { isNotFound } from '../api/errors';
 import { usePerturbed, useScenarioDetail, useTrajectories } from '../api/scenarios';
+import { BriefButton } from './detail/BriefButton';
+import { buildBrief } from './detail/brief';
 import { PerturbationPanel } from './detail/PerturbationPanel';
 import { ScenePanel } from './detail/ScenePanel';
 import { SummaryPanel } from './detail/SummaryPanel';
@@ -123,6 +125,19 @@ export function ScenarioDetailPage() {
       </div>
       <ScenePanel key={scenarioId} trajectories={trajectories} perturbed={perturbed} detail={detail.data} />
       {detail.data && <ResultOverview detail={detail.data} />}
+      {detail.data && (
+        <BriefButton
+          build={() =>
+            buildBrief({
+              origin: window.location.origin,
+              scenarioId,
+              detail: detail.data!,
+              perturbed: perturbed.data,
+              agents: trajectories.data?.agents,
+            })
+          }
+        />
+      )}
       <div className="detail-side">
         {detail.isPending ? (
           <section className="panel">

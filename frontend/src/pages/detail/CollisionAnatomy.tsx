@@ -40,7 +40,12 @@ import type { DrawnTrack } from '../../scene/sceneModel';
  *       drawn from a guessed size (scene/geometry.ts hasDimensions)
  */
 
-function words(anatomy: Anatomy): { derived: boolean; text: string } {
+/** The sentence saying how the figure was got, shown under it and copied into the text brief (pages/detail/brief.ts). */
+export const DERIVED_NOTE =
+  'Worked out in this browser from the stored positions and box sizes of the SDC and the perturbed challenger; the search does not store it. ' +
+  'Contact is decided at the precision of the stored positions, up to about a millimetre at the coordinates in this data, so no finer figure is claimed.';
+
+export function anatomyWords(anatomy: Anatomy): { derived: boolean; text: string } {
   switch (anatomy.kind) {
     case 'gap': {
       if (anatomy.gap === 0) {
@@ -88,18 +93,12 @@ export function CollisionAnatomy({ drawn, collisionFrame }: CollisionAnatomyProp
   );
   if (anatomy === null) return null;
 
-  const { text, derived } = words(anatomy);
+  const { text, derived } = anatomyWords(anatomy);
   return (
     <section className="anatomy" aria-labelledby="anatomy-title">
       <h3 id="anatomy-title" className="anatomy-title">Gap before first contact</h3>
       <p className="note">{text}</p>
-      {derived && (
-        <p className="note">
-          Worked out in this browser from the stored positions and box sizes of the SDC and the perturbed challenger; the
-          search does not store it. Contact is decided at the precision of the stored positions, up to about a millimetre
-          at the coordinates in this data, so no finer figure is claimed.
-        </p>
-      )}
+      {derived && <p className="note">{DERIVED_NOTE}</p>}
     </section>
   );
 }

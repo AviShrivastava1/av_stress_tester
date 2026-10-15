@@ -124,7 +124,7 @@ export interface ScenePanelProps {
  * The panel header prints this interval and the rate it implies, `1 / FRAME_INTERVAL_S` Hz, from this one constant,
  * so "10 Hz · 0.1 s / frame" cannot disagree with itself.
  */
-const FRAME_INTERVAL_S = 0.1;
+export const FRAME_INTERVAL_S = 0.1;
 
 export function ScenePanel(props: ScenePanelProps) {
   // "Recorded vs perturbed" only when a perturbed track is drawn; otherwise it is just the recording.
