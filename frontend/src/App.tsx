@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
-import { Link, NavLink, Outlet, ScrollRestoration, createBrowserRouter, type RouteObject } from 'react-router';
+import { Link, NavLink, Outlet, ScrollRestoration, createBrowserRouter, useParams, type RouteObject } from 'react-router';
 import { Footer } from './components/Footer';
 import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { MethodPage } from './pages/MethodPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
 import { StatsPage } from './pages/StatsPage';
+import { useDocumentTitle } from './useDocumentTitle';
 
 /*
  * The wordmark, and what backs each part:
@@ -41,8 +42,29 @@ function Layout({ children }: { children?: ReactNode }) {
   );
 }
 
+/*
+ * The words each route puts in the document title (see useDocumentTitle for the form), and what backs them:
+ *   "Scenarios"        the list page and the nav link of that name
+ *   "Method"           the Method page and the nav link of that name
+ *   "Corpus"           the Corpus page (the /stats route) and the nav link of that name; its h1 is "Corpus"
+ *   the scenario id    the scenario page's own h1 shows the same id, taken from the address (:scenarioId)
+ *   "Page not found"   the h1 of NotFoundPage below
+ *   "Something went wrong"   the eyebrow of RouteErrorPage below, so the error page does not keep the title of the page before
+ */
+function PageTitle({ page }: { page: string }) {
+  useDocumentTitle(page);
+  return null;
+}
+
+function ScenarioTitle() {
+  const { scenarioId = '' } = useParams();
+  useDocumentTitle(scenarioId);
+  return null;
+}
+
 function NotFoundPage() {
   return <section className="empty-page">
+    <PageTitle page="Page not found" />
     <span className="eyebrow">404 · UNKNOWN ADDRESS</span>
     <h1>Page not found</h1>
     <p>This address does not match a page. Browse the scenarios to get back on track.</p>
@@ -52,6 +74,7 @@ function NotFoundPage() {
 
 function RouteErrorPage() {
   return <Layout><section className="empty-page">
+    <PageTitle page="Something went wrong" />
     <span className="eyebrow">SOMETHING WENT WRONG</span>
     <h1>This page could not be displayed</h1>
     <p role="alert">Please reload the page or return to the scenario explorer.</p>
@@ -65,10 +88,10 @@ export const routes: RouteObject[] = [
     element: <Layout />,
     errorElement: <RouteErrorPage />,
     children: [
-      { index: true, element: <ScenarioListPage /> },
-      { path: 'scenarios/:scenarioId', element: <ScenarioDetailPage /> },
-      { path: 'method', element: <MethodPage /> },
-      { path: 'stats', element: <StatsPage /> },
+      { index: true, element: <><PageTitle page="Scenarios" /><ScenarioListPage /></> },
+      { path: 'scenarios/:scenarioId', element: <><ScenarioTitle /><ScenarioDetailPage /></> },
+      { path: 'method', element: <><PageTitle page="Method" /><MethodPage /></> },
+      { path: 'stats', element: <><PageTitle page="Corpus" /><StatsPage /></> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
