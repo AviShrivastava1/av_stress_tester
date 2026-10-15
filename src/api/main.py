@@ -15,7 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.config import settings
 from src.api.db_pool import close_pool, init_pool
+from src.api.request_pool import close_request_pool, init_request_pool
 from src.api.routes import router
+from src.api import search_requests
 
 
 API_DESCRIPTION = """
@@ -32,6 +34,15 @@ meaningless.
 
 Nothing here starts a computation — the optimizer runs offline and this API reads
 what it wrote.
+"""
+
+
+# Appended to the description only when the request path is switched on, so with it off the published description is unchanged.
+SEARCH_REQUESTS_NOTE = """
+
+**One write exists in this deployment, and it is switched on:** `POST /search-requests` files a request to search one scenario
+with one seed. The request is run later, offline, by the owner. Nothing runs on request, and the stored results above are
+never written by it.
 """
 
 
@@ -57,17 +68,25 @@ async def lifespan(app: FastAPI):
     `with`, lifespan never fires and the pool is never initialized.
     """
     init_pool()
+    if settings.search_requests_enabled:
+        init_request_pool()
     try:
         yield
     finally:
         close_pool()
+        close_request_pool()
 
 
 def create_app() -> FastAPI:
     """Build the application."""
+    # The one write path (src/api/search_requests.py) exists only when API_SEARCH_REQUESTS=1. Read here, at build time, so
+    # that with it off the route is not in the app and not in openapi.json.
+    requests_on = settings.search_requests_enabled
+    if requests_on:
+        search_requests.validate_settings()
     app = FastAPI(
         title="AV Scenario Stress-Tester API",
-        description=API_DESCRIPTION,
+        description=API_DESCRIPTION + (SEARCH_REQUESTS_NOTE if requests_on else ""),
         version="0.6.0",
         lifespan=lifespan,
     )
@@ -80,12 +99,14 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"] if requests_on else ["GET"],
         allow_credentials=False,
         allow_headers=["*"],
     )
 
     app.include_router(router)
+    if requests_on:
+        app.include_router(search_requests.request_router)
     return app
 
 

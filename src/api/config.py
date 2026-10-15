@@ -81,6 +81,26 @@ class Settings:
         self.page_size = int(os.environ.get('API_PAGE_SIZE', 25))
         self.max_page_size = int(os.environ.get('API_MAX_PAGE_SIZE', 200))
 
+        # ── queued search requests (src/api/search_requests.py) ───────────────
+        # OFF unless API_SEARCH_REQUESTS is exactly "1". With it off the route is not registered at all: it is not in
+        # the app and not in openapi.json, the request pool is never opened, and the CORS methods stay GET only. "0",
+        # "true" or an empty value do not turn it on.
+        self.search_requests_enabled = os.environ.get('API_SEARCH_REQUESTS') == '1'
+        # The request path connects as its own role (deploy/search_requests.sql), never as the read-only API role. The
+        # database, host and port are the same; only the user and password differ. No default user: a deployment that
+        # turns the switch on without naming one does not start.
+        self.request_pg_user = os.environ.get('API_REQUEST_PGUSER', '')
+        self.request_pg_password = os.environ.get('API_REQUEST_PGPASSWORD', '')
+        # A small pool of its own: filing a request is one short call, and this must not compete with the read pool.
+        self.request_pool_max = int(os.environ.get('API_REQUEST_POOL_MAX', 2))
+        # The secret under which a requester's address is hashed before anything is stored. No default: without it the
+        # hash could be reversed by trying every address.
+        self.request_salt = os.environ.get('API_REQUEST_SALT', '')
+        # How many reverse proxies stand between the client and this process. 0: the address is the peer of the TCP
+        # connection. N: the address is the Nth entry from the RIGHT of X-Forwarded-For, which is the one the Nth proxy
+        # added; the entries to its left are whatever the client sent and are never trusted.
+        self.request_proxy_hops = int(os.environ.get('API_REQUEST_PROXY_HOPS', 0))
+
     def dsn_kwargs(self) -> dict:
         """psycopg2 connection kwargs. One place that knows the mapping."""
         return {
@@ -93,6 +113,10 @@ class Settings:
             # in force for every statement on every pooled connection.
             'options': f'-c statement_timeout={self.statement_timeout_ms}',
         }
+
+    def request_dsn_kwargs(self) -> dict:
+        """The request role's connection kwargs: this database, that role."""
+        return {**self.dsn_kwargs(), 'user': self.request_pg_user, 'password': self.request_pg_password}
 
 
 settings = Settings()

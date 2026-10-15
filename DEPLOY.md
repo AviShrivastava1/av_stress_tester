@@ -206,6 +206,38 @@ If the API is unreachable, the site shows "Loading…" through two retries, then
 reach the API at <URL>". That is accurate: a Render error page carries no CORS headers, so
 the browser reports a network failure.
 
+## Queued search requests (off; the site does not use them)
+
+A request is a scenario id and a seed, filed through `POST /search-requests` and run **later, offline, by the owner**.
+Nothing runs on request. It is off everywhere until all four layers below are switched on, in order, by hand; merging code
+switches none of them. With it off the route is not in the API, not in `openapi.json`, and not in the site.
+
+1. **Database**, as the default user (the owner of the three result tables). `deploy/search_requests.sql` creates the
+   `search_requests` table, the function `file_search_request()` and the role `av_req_insert`; it is never run by the app
+   or by a schema initialiser and is safe to run again. Then set the role's password at a silent prompt:
+   `psql "$AV_STRESS_DATABASE_URL" -c '\password av_req_insert'`.
+   The role has **no privilege on any table**. It can call that one function, which counts the limits and inserts in one
+   transaction. The read-only role from step 2 cannot read the table: the script revokes the default `SELECT` it would
+   otherwise get on it.
+2. **API**, on the Render service, four more variables: `API_SEARCH_REQUESTS=1` (exactly `1`; `0`, `true` and empty are off),
+   `API_REQUEST_PGUSER=av_req_insert`, `API_REQUEST_PGPASSWORD` (secret) and `API_REQUEST_SALT` (a long random secret; it
+   keys the hash of each visitor's address, so keep it and never change it casually: changing it resets every visitor's
+   limits). The API refuses to start with the switch on and the user or the salt unset. The request pool is its own,
+   `API_REQUEST_POOL_MAX` connections (default 2). `API_CORS_ORIGINS` already names the site; the API then also allows `POST`.
+3. **Which address is a visitor's.** Behind Render's proxy the peer of the connection is the proxy, so with the default
+   `API_REQUEST_PROXY_HOPS=0` every visitor would share one limit. Set it to `1` only after checking, with a request of your own
+   to a throw-away service, which `X-Forwarded-For` entry Render adds and that an entry the client sends stays to its left:
+   the API counts entries from the **right** and never trusts the leftmost. This repository has not verified that for Render.
+4. **Site**, on Vercel: build variable `VITE_SEARCH_REQUESTS=true`. Without it the form is never rendered.
+
+The limits are constants in `src/api/search_requests.py` (per visitor 3 waiting and 10 a day; everyone 50 a day; 10 waiting):
+past a visitor's limit the answer is 429, past the shared ones 503, both with `Retry-After`. The same scenario and seed is one
+request. **With the switch on, "read-only API" (the list's signature) and Method step 05 are no longer strictly true** (the
+API can file a request); neither sentence was changed, so decide their wording before switching it on.
+
+To see what is waiting, as the default user: `psql "$AV_STRESS_DATABASE_URL" -f deploy/pending_search_requests.sql`
+(read-only). Marking a request done is a separate `UPDATE` by hand. Turning it off again: remove `API_SEARCH_REQUESTS`.
+
 ## Replacing the data in a live database
 
 The hosted database's stored results were replaced once, after the geometry export began
