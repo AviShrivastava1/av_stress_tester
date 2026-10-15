@@ -84,6 +84,20 @@ describe('every class a page renders has a rule', () => {
     expect(unstyled()).toEqual([]);
   });
 
+  it('on the walkthrough, with all three scenes shown', async () => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      return ok(makePage([
+        makeRow({ scenario_id: 'synthetic-0001', stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.02, collision_timestep: 25 }),
+        makeRow({ scenario_id: 'synthetic-0002', stress_attempted: true, last_attempt_outcome: 'replay_infeasible', n_agents: 5 }),
+      ], null));
+    });
+    renderApp('/walkthrough');
+    await screen.findByText(/has the smallest stored perturbation/);
+    expect(screen.getAllByRole('link', { name: /^Open scenario/ })).toHaveLength(3);
+    expect(unstyled()).toEqual([]);
+  });
+
   it('on the page for an unknown address', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/nowhere');

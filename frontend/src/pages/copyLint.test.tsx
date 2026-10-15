@@ -148,6 +148,20 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it('on the walkthrough, with all three scenes shown', async () => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      return ok(makePage([
+        makeRow({ scenario_id: 'synthetic-0001', stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.02, collision_timestep: 25 }),
+        makeRow({ scenario_id: 'synthetic-0002', stress_attempted: true, last_attempt_outcome: 'replay_infeasible', n_agents: 5 }),
+      ], null));
+    });
+    renderApp('/walkthrough');
+    await screen.findByText(/has the smallest stored perturbation/);
+    expect(pageText().length).toBeGreaterThan(500); // the heading, the lede and the three scenes are all there
+    expect(violations(pageText())).toEqual([]);
+  });
+
   it('on the Method page', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/method');

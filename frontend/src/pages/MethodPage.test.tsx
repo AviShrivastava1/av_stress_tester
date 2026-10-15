@@ -228,7 +228,7 @@ describe('the navigation to it', () => {
     await openMethod();
     const nav = screen.getByRole('navigation', { name: 'Main' });
     const links = within(nav).getAllByRole('link');
-    expect(links.map((a) => a.textContent)).toEqual(['Scenarios', 'Method', 'Corpus']);
+    expect(links.map((a) => a.textContent)).toEqual(['Scenarios', 'Method', 'Corpus', 'Walkthrough']);
     expect(within(nav).getByRole('link', { name: 'Method' })).toHaveAttribute('href', '/method');
     expect(within(nav).getByRole('link', { name: 'Method' })).toHaveClass('active');
     expect(within(nav).getByRole('link', { name: 'Scenarios' })).not.toHaveClass('active');

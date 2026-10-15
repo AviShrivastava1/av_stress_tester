@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { api, unwrap, type ScenarioPage } from './client';
+import { useEffect } from 'react';
+import { api, unwrap, type ScenarioPage, type ScenarioSummary } from './client';
 
 export interface ScenarioListParams {
   stressTestedOnly: boolean;
@@ -46,6 +47,33 @@ export function useScenarioPages(params: ScenarioListParams) {
   });
 }
 
+/**
+ * Every row of the list, with no filter: the pages are followed to the end, and `rows` is null until the last one has arrived
+ * (a partial list is never handed out as the whole). The query key is the list page's own for the unfiltered list, so the
+ * pages are shared with it. After a failed page the cursor is not followed again by itself; `retry` asks for it.
+ */
+export function useAllScenarios(): {
+  rows: ScenarioSummary[] | null;
+  error: unknown;
+  retrying: boolean;
+  retry(): void;
+} {
+  const query = useScenarioPages({ stressTestedOnly: false });
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = query;
+  const pageCount = query.data?.pages.length ?? 0;
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage();
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage, pageCount]);
+
+  const failed = query.isError;
+  return {
+    rows: query.isSuccess && !hasNextPage ? query.data.pages.flatMap((p) => p.items) : null,
+    error: failed ? query.error : null,
+    retrying: query.isFetching,
+    retry: () => void (isFetchNextPageError ? fetchNextPage() : query.refetch()),
+  };
+}
+
 // ── one scenario ─────────────────────────────────────────────────────────────────
 //
 // Three separate queries, deliberately not chained: none needs another's result to
@@ -65,9 +93,10 @@ export function useScenarioDetail(scenarioId: string) {
   });
 }
 
-export function useTrajectories(scenarioId: string) {
+export function useTrajectories(scenarioId: string, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['scenario', scenarioId, 'trajectories'],
+    enabled: options.enabled ?? true,
     queryFn: async ({ signal }) =>
       unwrap(
         await api.GET('/scenarios/{scenario_id}/trajectories', {

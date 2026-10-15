@@ -5,6 +5,7 @@ import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { MethodPage } from './pages/MethodPage';
 import { ScenarioListPage } from './pages/ScenarioListPage';
 import { StatsPage } from './pages/StatsPage';
+import { WalkthroughPage } from './pages/WalkthroughPage';
 import { useDocumentTitle } from './useDocumentTitle';
 
 /*
@@ -31,6 +32,7 @@ function Layout({ children }: { children?: ReactNode }) {
           </NavLink>
           <NavLink to="/method">Method</NavLink>
           <NavLink to="/stats">Corpus</NavLink>
+          <NavLink to="/walkthrough">Walkthrough</NavLink>
         </nav>
       </header>
       <main id="main-content" tabIndex={-1}>
@@ -47,6 +49,7 @@ function Layout({ children }: { children?: ReactNode }) {
  *   "Scenarios"        the list page and the nav link of that name
  *   "Method"           the Method page and the nav link of that name
  *   "Corpus"           the Corpus page (the /stats route) and the nav link of that name; its h1 is "Corpus"
+ *   "Walkthrough"      the walkthrough page and the nav link of that name; its eyebrow is "WALKTHROUGH"
  *   the scenario id    the scenario page's own h1 shows the same id, taken from the address (:scenarioId)
  *   "Page not found"   the h1 of NotFoundPage below
  *   "Something went wrong"   the eyebrow of RouteErrorPage below, so the error page does not keep the title of the page before
@@ -92,6 +95,7 @@ export const routes: RouteObject[] = [
       { path: 'scenarios/:scenarioId', element: <><ScenarioTitle /><ScenarioDetailPage /></> },
       { path: 'method', element: <><PageTitle page="Method" /><MethodPage /></> },
       { path: 'stats', element: <><PageTitle page="Corpus" /><StatsPage /></> },
+      { path: 'walkthrough', element: <><PageTitle page="Walkthrough" /><WalkthroughPage /></> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

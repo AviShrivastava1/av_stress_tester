@@ -53,6 +53,10 @@ h2 { margin:0 0 18px; font-size:18px; font-weight:650; line-height:1.15; letter-
 .view-note { margin:0 0 14px; font-size:12px; color:var(--text-muted); }
 .anatomy { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); }
 .anatomy-title { margin:0 0 6px; font-size:13px; font-weight:620; }
+.walkthrough { max-width:760px; padding-top:44px; }
+.walk-card { margin:28px 0 0; padding-top:18px; border-top:1px solid var(--border-strong); }
+.walk-card h2 { margin:0 0 10px; font-size:18px; }
+.walk-card p { margin:0 0 12px; line-height:1.65; }
 .metric-guide { max-width:760px; margin:0 0 30px; color:var(--text-muted); font-size:12px; }
 .metric-guide summary { width:fit-content; cursor:pointer; color:var(--text); font-weight:620; }
 .metric-guide summary:hover { color:var(--accent); }
