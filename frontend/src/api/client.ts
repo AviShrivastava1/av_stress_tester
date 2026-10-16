@@ -7,6 +7,7 @@ export type ScenarioSummary = components['schemas']['ScenarioSummary'];
 export type ScenarioPage = components['schemas']['ScenarioPage'];
 export type ScenarioDetail = components['schemas']['ScenarioDetail'];
 export type AgentTrack = components['schemas']['AgentTrack'];
+export type FragilityBreakdown = components['schemas']['FragilityBreakdown'];
 export type TrajectoryResponse = components['schemas']['TrajectoryResponse'];
 export type PerturbedResponse = components['schemas']['PerturbedResponse'];
 export type StatsResponse = components['schemas']['StatsResponse'];

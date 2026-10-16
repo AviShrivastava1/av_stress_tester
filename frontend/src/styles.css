@@ -56,6 +56,12 @@ h2 { margin:0 0 18px; font-size:18px; font-weight:650; line-height:1.15; letter-
 .walkthrough { max-width:760px; padding-top:44px; }
 /* the offset by frame, in the Perturbation panel */
 .offset-block { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); }
+.fragility-terms { margin:22px 0 0; }
+.fragility-terms h3 { margin:0 0 6px; font-size:13px; font-weight:620; }
+.fragility-table { margin-top:12px; }
+.fragility-table thead th { color:var(--text-muted); font-size:11px; border-bottom:1px solid var(--border-strong); }
+.fragility-table tbody th { font-weight:620; }
+.fragility-table tfoot th,.fragility-table tfoot td { border-top:1px solid var(--border-strong); border-bottom:0; font-weight:620; }
 .offset-block h3 { margin:0 0 6px; font-size:13px; font-weight:620; }
 .offset-readouts { margin:12px 0 10px; display:grid; gap:6px; font-size:13px; }
 .offset-readouts div { display:flex; justify-content:space-between; gap:14px; }

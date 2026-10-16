@@ -188,6 +188,22 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it.each([
+    ['a breakdown that adds up', { ttc_weight: 0.6, pet_weight: 0.4, ttc_signal: 0.5, pet_signal: 0.25, ttc_term: 0.3, pet_term: 0.1, recomputed_score: 0.4, ttc_floor_s: 0.5, pet_floor_s: 0.25, ttc_none: false, pet_none: false, ttc_at_floor: false, pet_at_floor: false, reproduces_stored_score: true }],
+    ['a breakdown that does not add up', { ...{ ttc_weight: 0.6, pet_weight: 0.4, ttc_signal: 0.5, pet_signal: 0.25, ttc_term: 0.3, pet_term: 0.1, recomputed_score: 0.4, ttc_floor_s: 0.5, pet_floor_s: 0.25, ttc_none: false, pet_none: false, ttc_at_floor: false, pet_at_floor: false, reproduces_stored_score: true }, reproduces_stored_score: false }],
+    ['no breakdown', null],
+  ])('on the fragility breakdown in Run details, with %s', async (_name, breakdown) => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed());
+      return ok(makeDetail({ min_ttc: 2, min_pet: 4, fragility_score: 0.4, fragility_breakdown: breakdown }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await screen.findByRole('group', { name: 'Fragility, by term' });
+    expect(pageText()).toContain('Fragility, by term');
+    expect(violations(pageText())).toEqual([]);
+  });
+
   it('on the walkthrough, with all three scenes shown', async () => {
     stubFetch((req: RecordedRequest): Reply => {
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));

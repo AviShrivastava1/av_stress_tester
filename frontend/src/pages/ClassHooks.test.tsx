@@ -89,6 +89,18 @@ describe('every class a page renders has a rule', () => {
     expect(unstyled()).toEqual([]);
   });
 
+  it('on a scenario page with the fragility breakdown', async () => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged, perturbed }));
+      return ok(makeDetail({ min_ttc: 0, min_pet: -2, fragility_score: 100, fragility_breakdown: { ttc_weight: 0.6, pet_weight: 0.4, ttc_signal: 0.5, pet_signal: 0.25, ttc_term: 0.3, pet_term: 0.1, recomputed_score: 0.4, ttc_floor_s: 0.5, pet_floor_s: 0.25, ttc_none: false, pet_none: false, ttc_at_floor: false, pet_at_floor: false, reproduces_stored_score: true } }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await screen.findByRole('group', { name: 'Fragility, by term' });
+    expect(document.querySelector('.fragility-table')).not.toBeNull();
+    expect(unstyled()).toEqual([]);
+  });
+
   it('on the Method page', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/method');

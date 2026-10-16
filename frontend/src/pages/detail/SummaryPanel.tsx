@@ -1,5 +1,6 @@
 import type { ScenarioDetail } from '../../api/client';
 import { TimeMetricCell } from '../../components/TimeMetricCell';
+import { FragilityBreakdown } from './FragilityBreakdown';
 import { ReplayOffsetBlock } from './ReplayOffsetBlock';
 
 function Dash() {
@@ -32,6 +33,7 @@ export function SummaryPanel({ detail, targetIdx }: { detail: ScenarioDetail; ta
         <dt>Shard</dt>
         <dd className="mono">{detail.shard ?? <Dash />}</dd>
       </dl>
+      <FragilityBreakdown detail={detail} />
     </section>
   );
 }
