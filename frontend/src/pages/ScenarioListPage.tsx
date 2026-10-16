@@ -109,6 +109,26 @@ const SYSTEM_SIGNATURE = [
 const DATASET_LABEL = 'Waymo Open Dataset';
 
 /*
+ * The caption under the filter and sort controls, and what backs each sentence. It says how the rows are ordered, so it follows the sort:
+ * the fragility caption is the one below under the fragility sort (the default, and the API's own order), the perturbation caption
+ * under the Min perturbation sort. The Scenario ID sort keeps the fragility caption, which does not describe it; not changed here.
+ *
+ * Under the Min perturbation sort (domain/listView.ts applyView, comparePerturbation):
+ *   "Sorted by the smallest perturbation found, smallest first."
+ *       comparePerturbation returns -1 when a's min_perturbation is less than b's, so the smallest comes first (ascending)
+ *   "Min perturbation is a weighted norm over components of mixed units, so figures from scenarios searched under different models are
+ *    not comparable."
+ *       the same statement as the Run details note (pages/detail/ReplayOffsetBlock.tsx) and the API's own field descriptions
+ *       (src/api/models.py: "a weighted norm over components of mixed units"); the components differ by model (DELTA_LABELS and
+ *       LINEAR_DELTA_LABELS), so two scenarios' norms may be over different components
+ *   "Scenarios with no perturbation found come after those that have one."
+ *       comparePerturbation: when one row has a min_perturbation and the other has none, the one that has it is first; a row has none
+ *       when no search found a collision, the replay was refused or the scenario was not searched
+ *   "Scenarios with equal Min perturbation are listed by scenario ID."
+ *       comparePerturbation falls through to compareIds (scenario_id ascending) when both have the same value or both have none
+ *   "Min perturbation is the smallest found by a finite search, not a proven minimum."
+ *       the Differential Evolution budget in search_provenance (scipy_optimizer.optimize_scenario); kept under every sort
+ *
  * The words on the ranked table. What backs each one:
  *
  *   "Ranked by fragility score, most fragile first"
@@ -214,6 +234,16 @@ function PerturbationCell({ row }: { row: ScenarioSummary }) {
     </span>
   );
 }
+
+const FRAGILITY_CAPTION =
+  'Ranked by fragility score, most fragile first. Equal scores are tie-broken by scenario ID; position within a tie does not mean one ' +
+  'scenario is more fragile than another. Min perturbation is the smallest found by a finite search, not a proven minimum.';
+
+const PERTURBATION_CAPTION =
+  'Sorted by the smallest perturbation found, smallest first. Min perturbation is a weighted norm over components of mixed units, so ' +
+  'figures from scenarios searched under different models are not comparable. Scenarios with no perturbation found come after those ' +
+  'that have one. Scenarios with equal Min perturbation are listed by scenario ID. Min perturbation is the smallest found by a finite ' +
+  'search, not a proven minimum.';
 
 export function ScenarioListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -371,11 +401,7 @@ export function ScenarioListPage() {
           </div>
         </div>
       </div>
-      <p className="caption">
-        Ranked by fragility score, most fragile first. Equal scores are tie-broken by scenario ID; position within
-        a tie does not mean one scenario is more fragile than another. Min perturbation is the smallest found by a
-        finite search, not a proven minimum.
-      </p>
+      <p className="caption">{view.sort === 'perturbation' ? PERTURBATION_CAPTION : FRAGILITY_CAPTION}</p>
       <details className="metric-guide"><summary>Metric definitions</summary>
         <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted perturbation found within a finite search budget, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A PET of zero or less marks overlapping occupancy of one connected conflict zone.</p>
       </details>
