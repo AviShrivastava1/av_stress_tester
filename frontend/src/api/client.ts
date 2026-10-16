@@ -10,6 +10,7 @@ export type AgentTrack = components['schemas']['AgentTrack'];
 export type FragilityBreakdown = components['schemas']['FragilityBreakdown'];
 export type ProvenanceResponse = components['schemas']['ProvenanceResponse'];
 export type SearchRecord = components['schemas']['SearchRecord'];
+export type PipelineRun = components['schemas']['PipelineRun'];
 export type TrajectoryResponse = components['schemas']['TrajectoryResponse'];
 export type PerturbedResponse = components['schemas']['PerturbedResponse'];
 export type StatsResponse = components['schemas']['StatsResponse'];

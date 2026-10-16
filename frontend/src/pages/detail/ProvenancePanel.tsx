@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import type { ProvenanceResponse, SearchRecord } from '../../api/client';
+import type { PipelineRun, ProvenanceResponse, SearchRecord } from '../../api/client';
 import { RequestError } from '../../components/RequestError';
 import { useProvenance } from '../../api/scenarios';
 import { formatMagnitude } from '../../domain/format';
@@ -41,12 +41,25 @@ import { formatMagnitude } from '../../domain/format';
  *   "The challenger"
  *       target_min_speed (m/s, the logged speed's minimum), frames_observed, frames_below_heading_floor,
  *       frames_in_heading_transition_band, target_has_interior_gap
- *   "Not stored anywhere, so not shown"
- *       the git revision of the code, library versions and the shard file's checksum: nothing in src/scoring records them
- *       (the roadmap inventory's #10 and #20)
+ *   "Run manifest" and its rows
+ *       ProvenanceResponse.run: the manifest of the run that stored this result (src/scoring/manifest.py writes it, found through
+ *       pipeline_run_results by scenario and stress_run_id; src/api/models.py PipelineRun). Kind and status; when it started and
+ *       finished (UTC); the git revision (shown as its first characters, the whole one as the tooltip) and whether the working tree
+ *       had changes when the run started ("Has changes the revision does not contain": the revision alone then does not reproduce
+ *       the code); the Python version and the versions of the five packages; the shard's name and sha256; the counts and the
+ *       parameters it reported (labelled "of the run", "in the run" and "per scenario" so that they are not read as the search's own seed
+ *       and budget above them, which are the stored result's). Only the keys the API serves through its allow-lists appear (src/api/manifest.py), and only the
+ *       counts and parameters that were reported; the command line, host label and notes are never served
+ *   "Not recorded for this run"
+ *       a field of the manifest that is null: the run did not record it (a Colab session that is not a git checkout has no
+ *       revision; a shard that was not hashed has no checksum). It is never shown as none or zero
+ *   "No run manifest is recorded for this result."
+ *       run is null: no run is linked to this result's (scenario, stress_run_id). That is every result stored before manifests
+ *       existed, and a result stored by a run that did not record one; none is invented for them
  */
 
 const NOT_RECORDED = 'Not recorded for this result';
+const NOT_RECORDED_FOR_RUN = 'Not recorded for this run';
 
 function Missing() {
   return <span className="muted">{NOT_RECORDED}</span>;
@@ -57,6 +70,10 @@ export function formatUtc(iso: string): string {
   const moment = new Date(iso);
   if (Number.isNaN(moment.getTime())) return iso;
   return `${moment.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+function MissingForRun() {
+  return <span className="muted">{NOT_RECORDED_FOR_RUN}</span>;
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -107,6 +124,73 @@ function Bounds({ search, labels, recordedLabels }: { search: SearchRecord; labe
   );
 }
 
+const COUNT_LABELS: [keyof NonNullable<PipelineRun['counts']>, string][] = [
+  ['scenarios', 'Scenarios in the run'], ['scored', 'Scenarios scored'], ['searched', 'Scenarios searched'], ['refused', 'Scenarios refused'], ['errors', 'Errors'],
+  ['stored_results', 'Results stored'], ['collisions_found', 'Collisions found'], ['no_collision_found', 'Searches with no collision found'],
+];
+const PARAMETER_LABELS: [keyof Omit<NonNullable<PipelineRun['parameters']>, 'seeds' | 'de_tol'>, string][] = [
+  ['de_seed', 'Seed of the run'], ['de_popsize', 'Population size of the run'], ['de_maxiter', 'Maximum iterations of the run'], ['challengers_k', 'Challengers per scenario'],
+];
+const PACKAGE_LABELS: [keyof NonNullable<PipelineRun['package_versions']>, string][] = [
+  ['python', 'Python'], ['numpy', 'numpy'], ['scipy', 'scipy'], ['shapely', 'shapely'], ['torch', 'torch'], ['psycopg2', 'psycopg2'],
+];
+
+const forRun = (value: string | null | undefined, mono = false) =>
+  value === null || value === undefined ? <MissingForRun /> : mono ? <span className="mono">{value}</span> : value;
+
+/** The manifest of the run that stored the result, or the plain statement that none is recorded. */
+function RunManifest({ run }: { run: PipelineRun | null | undefined }) {
+  if (run === null || run === undefined) {
+    return <p className="note">No run manifest is recorded for this result.</p>;
+  }
+  const counts = run.counts ?? null;
+  const parameters = run.parameters ?? null;
+  const reportedCounts = counts === null ? [] : COUNT_LABELS.filter(([key]) => counts[key] !== null && counts[key] !== undefined);
+  const reportedParameters: [string, string][] = [];
+  if (parameters !== null) {
+    for (const [key, label] of PARAMETER_LABELS) {
+      const value = parameters[key];
+      if (value !== null && value !== undefined) reportedParameters.push([label, String(value)]);
+    }
+    if (parameters.de_tol !== null && parameters.de_tol !== undefined) reportedParameters.push(['Convergence tolerance of the run', formatMagnitude(parameters.de_tol, 4)]);
+    if (parameters.seeds !== null && parameters.seeds !== undefined) reportedParameters.push(['Seeds of the run', parameters.seeds.join(', ')]);
+  }
+  return (
+    <>
+      <h3>Run manifest</h3>
+      <dl className="facts">
+        <Row label="Run">{forRun(run.kind)}, {forRun(run.status)}</Row>
+        <Row label="Started">{when(run.started_at)}</Row>
+        <Row label="Finished">{run.finished_at === null || run.finished_at === undefined ? <MissingForRun /> : when(run.finished_at)}</Row>
+        <Row label="Code revision">
+          {run.git_revision === null || run.git_revision === undefined ? <MissingForRun /> : <span className="mono" title={run.git_revision}>{run.git_revision.slice(0, 12)}</span>}
+        </Row>
+        <Row label="Working tree">
+          {run.git_dirty === null || run.git_dirty === undefined ? <MissingForRun /> : run.git_dirty ? 'Has changes the revision does not contain' : 'Matched the revision'}
+        </Row>
+        {PACKAGE_LABELS.map(([key, label]) => (
+          <Row key={key} label={label}>{forRun(run.package_versions?.[key], true)}</Row>
+        ))}
+        <Row label="Shard">{forRun(run.shard_name, true)}</Row>
+        <Row label="Shard checksum (sha256)">{forRun(run.shard_sha256, true)}</Row>
+      </dl>
+      <h3>Run parameters and counts</h3>
+      {reportedParameters.length === 0 && reportedCounts.length === 0 ? (
+        <p className="note">{NOT_RECORDED_FOR_RUN}.</p>
+      ) : (
+        <dl className="facts">
+          {reportedParameters.map(([label, value]) => (
+            <Row key={`p-${label}`} label={label}>{value}</Row>
+          ))}
+          {reportedCounts.map(([key, label]) => (
+            <Row key={`c-${key}`} label={label}>{whole(counts?.[key])}</Row>
+          ))}
+        </dl>
+      )}
+    </>
+  );
+}
+
 function Body({ data, labels }: { data: ProvenanceResponse; labels: string[] | null | undefined }) {
   const s = data.search ?? null;
   if (s === null) {
@@ -121,6 +205,7 @@ function Body({ data, labels }: { data: ProvenanceResponse; labels: string[] | n
           <Row label="Result stored">{when(data.stress_tested_at)}</Row>
         </dl>
         <p className="note">No search provenance is stored for this scenario, so how it was searched is not recorded.</p>
+        <RunManifest run={data.run} />
       </>
     );
   }
@@ -178,10 +263,7 @@ function Body({ data, labels }: { data: ProvenanceResponse; labels: string[] | n
         <Row label="Frames in the transition band">{whole(s.frames_in_heading_transition_band)}</Row>
         <Row label="Has a gap inside its track">{yesNo(s.target_has_interior_gap)}</Row>
       </dl>
-      <p className="note">
-        Not stored anywhere, so not shown: the version of the code, the versions of the libraries, and a checksum of the shard
-        the scenario was read from.
-      </p>
+      <RunManifest run={data.run} />
     </>
   );
 }

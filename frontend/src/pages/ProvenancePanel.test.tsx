@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import type { ProvenanceResponse, SearchRecord } from '../api/client';
+import type { PipelineRun, ProvenanceResponse, SearchRecord } from '../api/client';
 import { makeDetail, makePerturbed, makeTrajectories } from '../test/fixtures';
 import { stubFetch, type RecordedRequest, type Reply } from '../test/fetchStub';
 import { readFrontendFile } from '../test/readFrontendFile';
@@ -30,11 +30,21 @@ const SEARCH: SearchRecord = {
   frames_observed: 88, frames_below_heading_floor: 0, frames_in_heading_transition_band: 4, target_has_interior_gap: false,
 };
 
+const RUN: PipelineRun = {
+  pipeline_run_id: '5b7c0f6e-1111-4222-8333-444455556666', kind: 'stress', status: 'finished',
+  started_at: '2026-09-01T08:00:00Z', finished_at: '2026-09-01T09:30:00+00:00',
+  git_revision: 'abcdef0123456789abcdef0123456789abcdef01', git_dirty: false, python_version: '3.9.9',
+  package_versions: { python: '3.9.9', numpy: '7.7.7', scipy: '8.8.8', shapely: '9.9.9', torch: '6.6.6+cpu', psycopg2: '5.5.5' },
+  shard_name: 'shard-test-00007-of-00123', shard_sha256: 'c'.repeat(64),
+  parameters: { de_seed: 424242, de_popsize: 33, de_maxiter: 77, challengers_k: 3, de_tol: 0.0042, seeds: [11, 22, 33] },
+  counts: { scenarios: 61, scored: 59, searched: 17, refused: 0, errors: 2, stored_results: 16, collisions_found: 15, no_collision_found: 1 },
+};
+
 function prov(over: Partial<ProvenanceResponse> = {}): ProvenanceResponse {
   return {
     scenario_id: ID, stress_run_id: 'run-abc123', scene_fingerprint: 'scene-def456', sdc_idx: 7,
     scored_at: '2026-09-01T10:15:30Z', stress_attempted_at: '2026-09-03T01:02:03+00:00', stress_tested_at: '2026-09-02T23:59:59Z',
-    search: SEARCH, delta_labels: LABELS, ...over,
+    search: SEARCH, delta_labels: LABELS, run: null, ...over,
   };
 }
 
@@ -161,11 +171,139 @@ describe('what it shows', () => {
     expect(fact(panel, 'Has a gap inside its track')).toBe('No');
   });
 
-  it('says what is not stored anywhere', async () => {
+  it('says no run manifest is recorded when the result has none, and no longer says what is "not stored anywhere"', async () => {
     open();
     const panel = await expand();
     await screen.findByText('Run ID');
-    expect(panel).toHaveTextContent('Not stored anywhere, so not shown: the version of the code, the versions of the libraries, and a checksum of the shard the scenario was read from.');
+    expect(panel).toHaveTextContent('No run manifest is recorded for this result.');
+    expect(panel).not.toHaveTextContent('Not stored anywhere');
+    expect(within(panel).queryByText('Run manifest')).not.toBeInTheDocument();
+  });
+
+  it('says the same when the API sent no run at all', async () => {
+    open(() => ok((() => { const p = prov(); delete (p as { run?: unknown }).run; return p; })()));
+    const panel = await expand();
+    await screen.findByText('Run ID');
+    expect(panel).toHaveTextContent('No run manifest is recorded for this result.');
+  });
+});
+
+describe('the run manifest', () => {
+  it('shows what the run recorded, as the payload has it', async () => {
+    open(() => ok(prov({ run: RUN })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(within(panel).getByRole('heading', { level: 3, name: 'Run manifest' })).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent('No run manifest is recorded');
+    expect(fact(panel, 'Run')).toBe('stress, finished');
+    expect(fact(panel, 'Started')).toBe('2026-09-01 08:00 UTC');
+    expect(fact(panel, 'Finished')).toBe('2026-09-01 09:30 UTC');
+    expect(fact(panel, 'Shard')).toBe('shard-test-00007-of-00123');
+    expect(fact(panel, 'Shard checksum (sha256)')).toBe('c'.repeat(64));
+  });
+
+  it('shows the revision by its first twelve characters, the whole one as the tooltip', async () => {
+    open(() => ok(prov({ run: RUN })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(fact(panel, 'Code revision')).toBe('abcdef012345');
+    expect(within(panel).getByText('abcdef012345')).toHaveAttribute('title', 'abcdef0123456789abcdef0123456789abcdef01');
+  });
+
+  it.each([
+    [false, 'Matched the revision'],
+    [true, 'Has changes the revision does not contain'],
+    [null, 'Not recorded for this run'],
+  ])('says, for a working tree flag of %s, "%s"', async (dirty, words) => {
+    open(() => ok(prov({ run: { ...RUN, git_dirty: dirty } })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(fact(panel, 'Working tree')).toBe(words);
+  });
+
+  it('shows Python and each package with its version, and "Not recorded for this run" for one that is missing', async () => {
+    open(() => ok(prov({ run: { ...RUN, package_versions: { ...RUN.package_versions!, torch: null } } })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(fact(panel, 'Python')).toBe('3.9.9');
+    expect(fact(panel, 'numpy')).toBe('7.7.7');
+    expect(fact(panel, 'scipy')).toBe('8.8.8');
+    expect(fact(panel, 'shapely')).toBe('9.9.9');
+    expect(fact(panel, 'psycopg2')).toBe('5.5.5');
+    expect(fact(panel, 'torch')).toBe('Not recorded for this run');
+  });
+
+  it('says "Not recorded for this run" for a run that recorded almost nothing, never none or zero', async () => {
+    const bare: PipelineRun = {
+      pipeline_run_id: 'x', kind: 'score', status: 'running', started_at: '2026-09-01T08:00:00Z', finished_at: null, git_revision: null, git_dirty: null,
+      python_version: null, package_versions: null, shard_name: null, shard_sha256: null, parameters: null, counts: null,
+    };
+    open(() => ok(prov({ run: bare })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    for (const label of ['Finished', 'Code revision', 'Working tree', 'Python', 'numpy', 'torch', 'Shard', 'Shard checksum (sha256)']) {
+      expect(fact(panel, label), label).toBe('Not recorded for this run');
+    }
+    expect(fact(panel, 'Run')).toBe('score, running');
+    expect(within(panel).getByRole('heading', { level: 3, name: 'Run parameters and counts' })).toBeInTheDocument();
+    expect(panel).toHaveTextContent('Not recorded for this run.');
+  });
+
+  it('shows the counts and parameters that were reported, a zero included, and only those', async () => {
+    open(() => ok(prov({ run: { ...RUN, counts: { scored: 59, errors: 0 }, parameters: { de_seed: 0, seeds: [] } } })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(fact(panel, 'Scenarios scored')).toBe('59');
+    expect(fact(panel, 'Errors')).toBe('0');
+    expect(fact(panel, 'Seed of the run')).toBe('0');
+    expect(fact(panel, 'Seeds of the run')).toBe('');
+    for (const absent of ['Scenarios refused', 'Scenarios searched', 'Scenarios in the run', 'Population size of the run', 'Convergence tolerance of the run']) {
+      expect(within(panel).queryByText(absent, { selector: 'dt' }), absent).not.toBeInTheDocument();
+    }
+  });
+
+  it('shows every reported parameter and count with the right label', async () => {
+    open(() => ok(prov({ run: RUN })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    const pairs: [string, string][] = [
+      ['Seed of the run', '424242'], ['Population size of the run', '33'], ['Maximum iterations of the run', '77'], ['Challengers per scenario', '3'],
+      ['Convergence tolerance of the run', '0.0042'], ['Seeds of the run', '11, 22, 33'],
+      ['Scenarios in the run', '61'], ['Scenarios scored', '59'], ['Scenarios searched', '17'], ['Scenarios refused', '0'], ['Errors', '2'], ['Results stored', '16'],
+      ['Collisions found', '15'], ['Searches with no collision found', '1'],
+    ];
+    for (const [label, value] of pairs) expect(fact(panel, label), label).toBe(value);
+  });
+
+  it('says a kind or status the API could not vouch for was not recorded', async () => {
+    open(() => ok(prov({ run: { ...RUN, kind: null, status: null, shard_name: null } })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(fact(panel, 'Run')).toBe('Not recorded for this run, Not recorded for this run');
+    expect(fact(panel, 'Shard')).toBe('Not recorded for this run');
+  });
+
+  it('writes the convergence tolerance to four places, as the search budget above it is written', async () => {
+    open(() => ok(prov({ run: { ...RUN, parameters: { de_tol: 0.001 } } })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(fact(panel, 'Convergence tolerance of the run')).toBe('0.0010');
+    expect(fact(panel, 'Convergence tolerance')).toBe('0.0042');
+  });
+
+  it('is shown for a result that has a manifest but no search provenance', async () => {
+    open(() => ok(prov({ search: null, run: RUN })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(panel).toHaveTextContent('No search provenance is stored for this scenario');
+    expect(fact(panel, 'Code revision')).toBe('abcdef012345');
+  });
+
+  it('has nothing in it that the API does not serve: no command line, host or notes', async () => {
+    open(() => ok(prov({ run: RUN })));
+    const panel = await expand();
+    await screen.findByText('Run manifest');
+    expect(panel.textContent).not.toMatch(/command|host|notes/i);
   });
 });
 
@@ -296,6 +434,6 @@ describe('the page writes no number of its own', () => {
   it('has no figure of the data in the component outside its comments', () => {
     const source = readFrontendFile('src/pages/detail/ProvenancePanel.tsx').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     const numbers = [...source.matchAll(/(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g)].map((m) => m[0]);
-    for (const n of numbers) expect(['0', '1', '4', '10', '16'], `a number in the source: ${n}`).toContain(n);
+    for (const n of numbers) expect(['0', '1', '4', '10', '12', '16'], `a number in the source: ${n}`).toContain(n);
   });
 });
