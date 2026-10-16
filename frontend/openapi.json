@@ -153,6 +153,46 @@
         }
       }
     },
+    "/scenarios/{scenario_id}/provenance": {
+      "get": {
+        "summary": "Get Provenance",
+        "description": "Where this scenario's stored result came from: the run id, the scene fingerprint, which agent is the SDC, when it was\nscored and searched, and how it was searched (the public keys of the stored search provenance).\n\n404 ONLY when the scenario is unknown. A scenario with no stored search returns 200 with nulls: \"nothing recorded\" is a\nnormal state. Read from `scenario_scores` alone; the stored blob is served through an allow-list (src/api/provenance.py),\nnever whole, and a value of the wrong type is null rather than an error.",
+        "operationId": "get_provenance_scenarios__scenario_id__provenance_get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvenanceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scenarios/{scenario_id}/trajectories": {
       "get": {
         "summary": "Get Trajectories",
@@ -578,6 +618,114 @@
         "title": "PerturbedResponse",
         "description": "The Phase 4 answer, made drawable: the challenger's logged path next to its\nminimally-perturbed one.\n\nEvery field except scenario_id is nullable, because \"this scenario has not been\nstress-tested yet\" is a normal state that returns 200, not an error.\n\ndelta_labels USED to be the second exception, and this docstring said so. It stopped\nbeing one in Batch 3 (audit B13): a delta can only be labelled if we know which\nkinematic model produced it, and for a legacy row with neither recorded provenance\nnor exported geometry, nothing does. Corrected here rather than quietly reworded,\nbecause the old sentence is exactly the guarantee a frontend would have been written\nagainst."
       },
+      "ProvenanceResponse": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "stress_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Run Id"
+          },
+          "scene_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Fingerprint"
+          },
+          "sdc_idx": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sdc Idx"
+          },
+          "scored_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scored At"
+          },
+          "stress_attempted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Attempted At"
+          },
+          "stress_tested_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Tested At"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delta_labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Labels",
+            "description": "The names, with units, of the components of the perturbation under the parameterization recorded in `search`, from the table GET /perturbed uses (DELTA_LABELS_BY_PARAMETERIZATION). Null when no parameterization is recorded or it is one this API does not know. A client names `search.bounds` with them only when the labels GET /perturbed served are the same list."
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id"
+        ],
+        "title": "ProvenanceResponse",
+        "description": "Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.\n\nRead from `scenario_scores` only. Every field is null when it was not recorded; a scenario with no stored search has\nnulls and `search` null. `stress_run_id` is the hash of the run's identity (the inputs it was searched with and the\ncode-contract versions), `scene_fingerprint` the hash of the scene it was searched against, `sdc_idx` which agent was the\nSDC. The times are when the scenario was scored, when a stress-test pass last reached it, and when the stored result was\nwritten; they are timestamps of the offline runs, in UTC, not of any request to this API."
+      },
       "ScenarioDetail": {
         "properties": {
           "scenario_id": {
@@ -990,6 +1138,318 @@
         ],
         "title": "ScenarioSummary",
         "description": "One row of the ranked list."
+      },
+      "SearchRecord": {
+        "properties": {
+          "replay_model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replay Model Version"
+          },
+          "collision_geometry_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collision Geometry Version"
+          },
+          "delta_parameterization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Parameterization",
+            "description": "'bicycle' or 'linear': which model's units the four components of the delta carry."
+          },
+          "challenger_selection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenger Selection"
+          },
+          "selected_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Stage",
+            "description": "Which stage's answer the stored result is: 'de' or 'de+autograd'."
+          },
+          "de_popsize": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Popsize"
+          },
+          "de_maxiter": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Maxiter"
+          },
+          "de_tol": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Tol"
+          },
+          "de_seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Seed"
+          },
+          "de_n_iter": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De N Iter"
+          },
+          "de_n_eval": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De N Eval"
+          },
+          "de_candidate_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Candidate Source"
+          },
+          "de_archive_covered_all_evaluations": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Archive Covered All Evaluations"
+          },
+          "refine_n_iters": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refine N Iters"
+          },
+          "bounds": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bounds"
+          },
+          "max_baseline_drift": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Baseline Drift"
+          },
+          "max_speed_step": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Speed Step"
+          },
+          "speed_step_hold_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed Step Hold S"
+          },
+          "held_speed_excess": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Speed Excess"
+          },
+          "a_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "A Max"
+          },
+          "heading_speed_floor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading Speed Floor"
+          },
+          "heading_transition_width": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading Transition Width"
+          },
+          "target_min_speed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Min Speed"
+          },
+          "frames_observed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames Observed"
+          },
+          "frames_below_heading_floor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames Below Heading Floor"
+          },
+          "frames_in_heading_transition_band": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames In Heading Transition Band"
+          },
+          "target_has_interior_gap": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Has Interior Gap"
+          }
+        },
+        "type": "object",
+        "title": "SearchRecord",
+        "description": "How the stored result was searched: the keys of `search_provenance` that are public, each as recorded or null.\n\nNull means \"not recorded for this result\" (an older result, or a key the search did not write) and is never zero. The keys\nare an allow-list (src/api/provenance.py); nothing else in the stored blob is served. `bounds` has one [low, high] per\ncomponent of the perturbation, in the order of `delta` and `delta_labels`."
       },
       "StatsResponse": {
         "properties": {

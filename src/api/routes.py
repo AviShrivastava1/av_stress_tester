@@ -12,16 +12,18 @@ import base64
 import json
 import math
 import unicodedata
+from datetime import timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
+from src.api.provenance import select_search_record
 from src.danger.fragility_terms import breakdown as fragility_breakdown
 from src.api.models import (
     DELTA_LABELS_BY_PARAMETERIZATION,
-    AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, ScenarioDetail,
+    AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, ProvenanceResponse, ScenarioDetail,
     ScenarioPage, ScenarioSummary, StatsResponse, TrajectoryResponse,
 )
 
@@ -821,6 +823,57 @@ def get_scenario(scenario_id: ScenarioId, conn=Depends(get_db)):
         fragility_breakdown=FragilityBreakdown(**terms) if terms is not None else None,
         baseline_offset_at_collision=row.get('baseline_offset_at_collision'),
         baseline_replay_error=row.get('baseline_replay_error'),
+    )
+
+
+def _provenance_delta_labels(search: dict | None) -> list[str] | None:
+    """
+    The labels of the perturbation's components under the parameterization the provenance records, from the one table
+    GET /perturbed resolves its own labels from (DELTA_LABELS_BY_PARAMETERIZATION). None when nothing is recorded or the
+    recorded name is not in the table: a label is never guessed.
+    """
+    if search is None:
+        return None
+    labels = DELTA_LABELS_BY_PARAMETERIZATION.get(search['delta_parameterization'])
+    return list(labels) if labels is not None else None
+
+
+def _utc(moment):
+    """A timestamp as UTC, whatever time zone the database session used to hand it back; None stays None."""
+    return moment.astimezone(timezone.utc) if moment is not None else None
+
+
+@router.get('/scenarios/{scenario_id}/provenance', response_model=ProvenanceResponse)
+def get_provenance(scenario_id: ScenarioId, conn=Depends(get_db)):
+    """
+    Where this scenario's stored result came from: the run id, the scene fingerprint, which agent is the SDC, when it was
+    scored and searched, and how it was searched (the public keys of the stored search provenance).
+
+    404 ONLY when the scenario is unknown. A scenario with no stored search returns 200 with nulls: "nothing recorded" is a
+    normal state. Read from `scenario_scores` alone; the stored blob is served through an allow-list (src/api/provenance.py),
+    never whole, and a value of the wrong type is null rather than an error.
+    """
+    with dict_cursor(conn) as cur:
+        cur.execute("""
+            SELECT scenario_id, stress_run_id, scene_fingerprint, sdc_idx, scored_at,
+                   stress_attempted_at, stress_tested_at, search_provenance
+            FROM scenario_scores
+            WHERE scenario_id = %s
+        """, (scenario_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario_id}")
+    search = select_search_record(row['search_provenance'])
+    return ProvenanceResponse(
+        scenario_id=row['scenario_id'],
+        stress_run_id=row['stress_run_id'],
+        scene_fingerprint=row['scene_fingerprint'],
+        sdc_idx=row['sdc_idx'],
+        scored_at=_utc(row['scored_at']),
+        stress_attempted_at=_utc(row['stress_attempted_at']),
+        stress_tested_at=_utc(row['stress_tested_at']),
+        search=search,
+        delta_labels=_provenance_delta_labels(search),
     )
 
 

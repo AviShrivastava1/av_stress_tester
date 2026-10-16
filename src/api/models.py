@@ -135,6 +135,8 @@ This distinction is load-bearing: on real WOMD data the all-pairs minimum TTC wa
 which is why ranking moved to the SDC-restricted signal.
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -264,6 +266,72 @@ class ScenarioDetail(ScenarioSummary):
                     "position. Null when the figure was not recorded for the stored "
                     "result. Not comparable with min_perturbation, a weighted norm "
                     "over components of mixed units.",
+    )
+
+
+class SearchRecord(BaseModel):
+    """
+    How the stored result was searched: the keys of `search_provenance` that are public, each as recorded or null.
+
+    Null means "not recorded for this result" (an older result, or a key the search did not write) and is never zero. The keys
+    are an allow-list (src/api/provenance.py); nothing else in the stored blob is served. `bounds` has one [low, high] per
+    component of the perturbation, in the order of `delta` and `delta_labels`.
+    """
+
+    replay_model_version: str | None = None
+    collision_geometry_version: str | None = None
+    delta_parameterization: str | None = Field(default=None, description="'bicycle' or 'linear': which model's units the four components of the delta carry.")
+    challenger_selection: str | None = None
+    selected_stage: str | None = Field(default=None, description="Which stage's answer the stored result is: 'de' or 'de+autograd'.")
+    de_popsize: int | None = None
+    de_maxiter: int | None = None
+    de_tol: float | None = None
+    de_seed: int | None = None
+    de_n_iter: int | None = None
+    de_n_eval: int | None = None
+    de_candidate_source: str | None = None
+    de_archive_covered_all_evaluations: bool | None = None
+    refine_n_iters: int | None = None
+    bounds: list[list[float]] | None = None
+    max_baseline_drift: float | None = None
+    max_speed_step: float | None = None
+    speed_step_hold_s: float | None = None
+    held_speed_excess: float | None = None
+    a_max: float | None = None
+    heading_speed_floor: float | None = None
+    heading_transition_width: float | None = None
+    target_min_speed: float | None = None
+    frames_observed: int | None = None
+    frames_below_heading_floor: int | None = None
+    frames_in_heading_transition_band: int | None = None
+    target_has_interior_gap: bool | None = None
+
+
+class ProvenanceResponse(BaseModel):
+    """
+    Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.
+
+    Read from `scenario_scores` only. Every field is null when it was not recorded; a scenario with no stored search has
+    nulls and `search` null. `stress_run_id` is the hash of the run's identity (the inputs it was searched with and the
+    code-contract versions), `scene_fingerprint` the hash of the scene it was searched against, `sdc_idx` which agent was the
+    SDC. The times are when the scenario was scored, when a stress-test pass last reached it, and when the stored result was
+    written; they are timestamps of the offline runs, in UTC, not of any request to this API.
+    """
+
+    scenario_id: str
+    stress_run_id: str | None = None
+    scene_fingerprint: str | None = None
+    sdc_idx: int | None = None
+    scored_at: datetime | None = None
+    stress_attempted_at: datetime | None = None
+    stress_tested_at: datetime | None = None
+    search: SearchRecord | None = None
+    delta_labels: list[str] | None = Field(
+        default=None,
+        description="The names, with units, of the components of the perturbation under the parameterization recorded in "
+                    "`search`, from the table GET /perturbed uses (DELTA_LABELS_BY_PARAMETERIZATION). Null when no "
+                    "parameterization is recorded or it is one this API does not know. A client names `search.bounds` "
+                    "with them only when the labels GET /perturbed served are the same list.",
     )
 
 
