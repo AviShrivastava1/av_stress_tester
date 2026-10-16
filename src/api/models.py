@@ -370,6 +370,39 @@ class PipelineRun(BaseModel):
     counts: RunCounts | None = None
 
 
+class TracePoint(BaseModel):
+    generation: int = Field(description="1 for the first generation of Differential Evolution that the search completed.")
+    n_eval_cumulative: int = Field(description="How many candidates had been evaluated when this generation ended.")
+    best_weighted_norm: float | None = Field(
+        default=None,
+        description="The smallest weighted norm of a candidate that exactly collides, among all evaluated so far. Null until one "
+                    "has been found.",
+    )
+
+
+class TraceResponse(BaseModel):
+    """
+    How a stored search closed in on its answer: the best weighted norm found after each generation of Differential Evolution.
+
+    The trace belongs to a RE-RUN of the stored search (same seed and budget, with a callback that only records), not to the stored
+    run itself, and it is served only when that re-run ended at the stored delta to within `tolerance` (the largest absolute difference
+    in any component). `trace` is null when no trace is recorded for this result, when the recorded re-run ended somewhere else, or when
+    the result it re-ran is not the one now stored: all normal states. The trace covers the Differential Evolution stage only; when the
+    stored result was then refined by gradient descent, its norm can be lower than the trace's last point.
+    """
+
+    scenario_id: str
+    stress_run_id: str | None = None
+    trace: list[TracePoint] | None = None
+    max_abs_delta_difference: float | None = Field(
+        default=None,
+        description="How far the re-run's final delta is from the stored delta (largest absolute difference of any component). "
+                    "Null when no trace is served.",
+    )
+    tolerance: float = Field(description="The largest difference at which a trace is served.")
+    recorded_at: datetime | None = None
+
+
 class ProvenanceResponse(BaseModel):
     """
     Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.

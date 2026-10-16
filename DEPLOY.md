@@ -216,13 +216,15 @@ The offline pipeline can record each run (git revision, versions, shard name and
 4. Only then the live database. The API needs no setting: with the tables absent `GET /pipeline-runs` answers `[]` and the provenance panel says no manifest is recorded.
 5. **After the migration on the live database, open one scenario's provenance and check that the manifest group appears**: `GET /scenarios/<id>/provenance` (or the Provenance panel on its page) for a result a run has linked shows a `run` object and the panel's "Run manifest" group; for a result with none it shows `run: null` and "No run manifest is recorded for this result." If the API log says "The run manifest tables cannot be read by the API role", the grant below is missing: the API then serves no manifests (and `GET /pipeline-runs` answers `[]`) instead of failing, so nothing else breaks, but nothing shows either.
 
-The script grants the read-only role what the API reads and takes away the raw table (its command line, host label and notes are never public). If the role was created **after** the script ran, give it the two grants by hand (the check in `tests/test_deploy_contract.py` pins this line to the tables and views the API reads):
+The script grants the read-only role what the API reads and takes away the raw table (its command line, host label and notes are never public). If the role was created **after** the script ran, give it the grants by hand (the check in `tests/test_deploy_contract.py` pins this line to the tables and views the API reads):
 
 ```sql
-GRANT SELECT ON pipeline_runs_public, pipeline_run_results TO av_api_ro;
+GRANT SELECT ON pipeline_runs_public, pipeline_run_results, search_runs, search_traces TO av_api_ro;
 ```
 
 The results stored before manifests existed have no manifest, and none is invented: the panel says "No run manifest is recorded for this result". The writer is `src/scoring/manifest.py` (`begin_run`, `link_result`, `finish_run`); it needs the tables and says so when they are missing.
+
+The same tables hold the convergence traces. `GET /scenarios/<id>/trace` serves a trace only for a result that has a recorded re-run (`record_trace_rerun` in `src/scoring/search_runs.py`, run by hand like the other offline passes) whose final perturbation is within 1e-6 of the stored one; for every other result it answers `trace: null` and the panel says "No convergence trace is recorded for this result.", so after the migration alone no trace shows, and that is correct. If the API log says "The search trace tables cannot be read by the API role", the grant above is missing for `search_runs` or `search_traces`: the API then serves no traces instead of failing.
 
 ## Queued search requests (off; the site does not use them)
 

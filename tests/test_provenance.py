@@ -138,7 +138,8 @@ def test_the_contract_has_the_route_and_its_two_models():
 
 def test_the_route_reads_scenario_scores_and_nothing_else():
     text = open(os.path.join(PROJECT, 'src', 'api', 'routes.py')).read()
-    body = text[text.index("def get_provenance"):text.index("@router.get('/scenarios/{scenario_id}/trajectories'")]
+    start = text.index("def get_provenance")
+    body = text[start:text.index("\n@router.", start)]       # this route's own function, up to the next route
     tables = set(re.findall(r'\b(?:FROM|JOIN)\s+([a-z_]+)', body))
     assert tables == {'scenario_scores'}
 

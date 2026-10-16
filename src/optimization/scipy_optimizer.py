@@ -192,6 +192,48 @@ class _DEObjective:
         return norm * norm + self.lam * max(0.0, g)
 
 
+class _Counted:
+    """
+    The objective with a count of how many times scipy called it, used ONLY when a convergence trace is asked for.
+
+    It calls the wrapped objective with the same argument and returns exactly what it returns, so the search it serves is the same
+    search (asserted bit for bit in tests/test_convergence_trace.py). It exists so the trace can say how many evaluations had been
+    spent when each generation ended, without scipy's internals and without touching _DEObjective.
+    """
+
+    def __init__(self, objective):
+        self.objective = objective
+        self.n = 0
+
+    def __call__(self, delta):
+        self.n += 1
+        return self.objective(delta)
+
+
+class _TraceCallback:
+    """
+    Records, after each generation of Differential Evolution, how many evaluations have been spent and the smallest weighted norm
+    of an exactly verified colliding delta found so far (the archive's best: the number that becomes `min_perturbation`).
+
+    A callback that returns None changes nothing in scipy's run: it draws no random number, does not read or write the population and
+    does not ask to stop. The `intermediate_result` parameter name is what makes scipy (1.11 and later) pass the progress object.
+    """
+
+    def __init__(self, counted, objective, trace):
+        self.counted = counted
+        self.objective = objective
+        self.trace = trace
+
+    def __call__(self, intermediate_result=None):
+        best = self.objective.best_norm
+        self.trace.append({
+            'generation': len(self.trace) + 1,
+            'n_eval_cumulative': int(self.counted.n),
+            'best_weighted_norm': float(best) if np.isfinite(best) else None,
+        })
+        return None
+
+
 def optimize_scenario(
     space,
     lam: float = LAMBDA,
@@ -201,6 +243,7 @@ def optimize_scenario(
     seed: int = 0,
     workers: int = 1,
     verbose: bool = False,
+    trace: list | None = None,
 ) -> dict:
     """
     Run Differential Evolution over a PerturbationSpace.
@@ -214,6 +257,10 @@ def optimize_scenario(
         seed:     RNG seed — makes the audit reproducible.
         workers:  parallel workers (-1 uses all cores). Each eval is one sim.
         verbose:  print DE progress.
+        trace:    None (the default: the search is exactly as it always was), or a list that receives one dict per generation,
+                  {generation, n_eval_cumulative, best_weighted_norm} (None until a verified collision exists). The search itself
+                  is unchanged by it: same seed and budget give the same delta, n_iter and n_eval, bit for bit. Needs workers=1:
+                  the archive the trace reads is not visible across processes (see _DEObjective).
 
     Returns:
         dict with:
@@ -236,11 +283,18 @@ def optimize_scenario(
 
     bounds = [tuple(b) for b in space.bounds]
 
+    func, callback = objective, None
+    if trace is not None:
+        if workers != 1:
+            raise ValueError('a convergence trace needs workers=1: the archive it reads is not visible across processes')
+        func = _Counted(objective)
+        callback = _TraceCallback(func, objective, trace)
+
     result = differential_evolution(
-        objective, bounds,
+        func, bounds,
         popsize=popsize, mutation=(0.5, 1.0), recombination=0.7,
         maxiter=maxiter, tol=tol, seed=seed, workers=workers,
-        polish=False, init='latinhypercube', disp=verbose,
+        polish=False, init='latinhypercube', disp=verbose, callback=callback,
     )
 
     sdc, tgt = space.sdc_idx, space.target_idx

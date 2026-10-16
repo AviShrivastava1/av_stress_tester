@@ -240,6 +240,46 @@
         }
       }
     },
+    "/scenarios/{scenario_id}/trace": {
+      "get": {
+        "summary": "Get Trace",
+        "description": "How the stored search closed in on its answer, from a recorded re-run of it (src/scoring/search_runs.py).\n\nA trace is served only if a re-run is recorded that names THIS stored result (`reruns_stress_run_id` = the stored `stress_run_id`),\nsearched the same scene, and ended within src/api/trace.py TRACE_DELTA_TOLERANCE of the stored delta (the query applies it, so a newer\nre-run that ended elsewhere does not hide an older one that followed the stored search; a difference that is NULL or NaN is not below\nanything). Otherwise 200 with `trace` null: \"no trace\" is a normal state. 404 only when the scenario is unknown. When several re-runs\nqualify, the newest is served.",
+        "operationId": "get_trace_scenarios__scenario_id__trace_get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scenarios/{scenario_id}/trajectories": {
       "get": {
         "summary": "Get Trajectories",
@@ -1983,6 +2023,107 @@
         ],
         "title": "StatsResponse",
         "description": "Corpus-level summary for the dashboard header."
+      },
+      "TracePoint": {
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "title": "Generation",
+            "description": "1 for the first generation of Differential Evolution that the search completed."
+          },
+          "n_eval_cumulative": {
+            "type": "integer",
+            "title": "N Eval Cumulative",
+            "description": "How many candidates had been evaluated when this generation ended."
+          },
+          "best_weighted_norm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Weighted Norm",
+            "description": "The smallest weighted norm of a candidate that exactly collides, among all evaluated so far. Null until one has been found."
+          }
+        },
+        "type": "object",
+        "required": [
+          "generation",
+          "n_eval_cumulative"
+        ],
+        "title": "TracePoint"
+      },
+      "TraceResponse": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "stress_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Run Id"
+          },
+          "trace": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TracePoint"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace"
+          },
+          "max_abs_delta_difference": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Abs Delta Difference",
+            "description": "How far the re-run's final delta is from the stored delta (largest absolute difference of any component). Null when no trace is served."
+          },
+          "tolerance": {
+            "type": "number",
+            "title": "Tolerance",
+            "description": "The largest difference at which a trace is served."
+          },
+          "recorded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "tolerance"
+        ],
+        "title": "TraceResponse",
+        "description": "How a stored search closed in on its answer: the best weighted norm found after each generation of Differential Evolution.\n\nThe trace belongs to a RE-RUN of the stored search (same seed and budget, with a callback that only records), not to the stored\nrun itself, and it is served only when that re-run ended at the stored delta to within `tolerance` (the largest absolute difference\nin any component). `trace` is null when no trace is recorded for this result, when the recorded re-run ended somewhere else, or when\nthe result it re-ran is not the one now stored: all normal states. The trace covers the Differential Evolution stage only; when the\nstored result was then refined by gradient descent, its norm can be lower than the trace's last point."
       },
       "TrajectoryResponse": {
         "properties": {

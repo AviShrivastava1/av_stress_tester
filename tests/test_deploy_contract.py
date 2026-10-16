@@ -157,6 +157,9 @@ def test_deploy_md_says_to_open_a_provenance_after_the_manifest_migration_and_wh
     # the sentence the API logs is the one DEPLOY.md quotes
     routes_text = open(os.path.join(API_DIR, 'routes.py')).read()
     assert 'The run manifest tables cannot be read by the API role' in routes_text
+    # and the same for the trace tables, which the grant line also names
+    assert 'The search trace tables cannot be read by the API role' in flat
+    assert 'The search trace tables cannot be read by the API role' in routes_text
 
 
 def test_the_manifest_script_changes_nothing_that_exists_and_is_run_by_hand():

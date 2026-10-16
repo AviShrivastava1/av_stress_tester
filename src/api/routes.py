@@ -23,12 +23,13 @@ import psycopg2.errors
 from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
 from src.api import manifest
+from src.api import trace as trace_rules
 from src.api.provenance import select_search_record
 from src.danger.fragility_terms import breakdown as fragility_breakdown
 from src.api.models import (
     DELTA_LABELS_BY_PARAMETERIZATION,
     AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, PipelineRun, ProvenanceResponse, ScenarioDetail,
-    ScenarioPage, ScenarioSummary, StatsResponse, TrajectoryResponse,
+    ScenarioPage, ScenarioSummary, StatsResponse, TracePoint, TraceResponse, TrajectoryResponse,
 )
 
 # Ceiling on a client-supplied scenario_id. A resource guard, not a format rule —
@@ -966,6 +967,63 @@ def get_provenance(scenario_id: ScenarioId, conn=Depends(get_db)):
         search=search,
         run=run,
         delta_labels=_provenance_delta_labels(search),
+    )
+
+
+def _trace_unreadable(cur) -> None:
+    """The same state as _manifest_unreadable, for the tables behind GET /trace: the role cannot read them. Serve no trace, say so once."""
+    cur.connection.rollback()
+    log.warning('The search trace tables cannot be read by the API role; serving no traces. Check the grant in DEPLOY.md, "Run manifests".')
+
+
+@router.get('/scenarios/{scenario_id}/trace', response_model=TraceResponse)
+def get_trace(scenario_id: ScenarioId, conn=Depends(get_db)):
+    """
+    How the stored search closed in on its answer, from a recorded re-run of it (src/scoring/search_runs.py).
+
+    A trace is served only if a re-run is recorded that names THIS stored result (`reruns_stress_run_id` = the stored `stress_run_id`),
+    searched the same scene, and ended within src/api/trace.py TRACE_DELTA_TOLERANCE of the stored delta (the query applies it, so a newer
+    re-run that ended elsewhere does not hide an older one that followed the stored search; a difference that is NULL or NaN is not below
+    anything). Otherwise 200 with `trace` null: "no trace" is a normal state. 404 only when the scenario is unknown. When several re-runs
+    qualify, the newest is served.
+    """
+    with dict_cursor(conn) as cur:
+        cur.execute("SELECT scenario_id, stress_run_id, scene_fingerprint, sdc_idx FROM scenario_scores WHERE scenario_id = %s", (scenario_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario_id}")
+        none = TraceResponse(scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'], tolerance=trace_rules.TRACE_DELTA_TOLERANCE)
+        if row['stress_run_id'] is None or not (_table_exists(cur, 'search_runs') and _table_exists(cur, 'search_traces')):
+            return none
+        try:
+            cur.execute("""
+                SELECT search_run_id, max_abs_delta_difference, created_at
+                FROM search_runs
+                WHERE scenario_id = %s AND kind = 'trace_rerun' AND reruns_stress_run_id = %s
+                  AND max_abs_delta_difference >= 0 AND max_abs_delta_difference < %s
+                  AND (scene_fingerprint IS NULL OR %s::text IS NULL OR scene_fingerprint = %s)
+                  AND (sdc_idx IS NULL OR %s::integer IS NULL OR sdc_idx = %s)
+                ORDER BY created_at DESC, search_run_id
+                LIMIT 1
+            """, (scenario_id, row['stress_run_id'], trace_rules.TRACE_DELTA_TOLERANCE,
+                  row['scene_fingerprint'], row['scene_fingerprint'], row['sdc_idx'], row['sdc_idx']))
+            run = cur.fetchone()
+            if run is None:
+                return none
+            cur.execute("""
+                SELECT generation, n_eval_cumulative, best_weighted_norm
+                FROM search_traces WHERE search_run_id = %s ORDER BY generation LIMIT %s
+            """, (run['search_run_id'], trace_rules.MAX_POINTS))
+            points = trace_rules.select_points([(r['generation'], r['n_eval_cumulative'], r['best_weighted_norm']) for r in cur.fetchall()])
+        except psycopg2.errors.InsufficientPrivilege:
+            _trace_unreadable(cur)
+            return none
+    if not points:
+        return none
+    return TraceResponse(
+        scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'], trace=[TracePoint(**p) for p in points],
+        max_abs_delta_difference=float(run['max_abs_delta_difference']), tolerance=trace_rules.TRACE_DELTA_TOLERANCE,
+        recorded_at=_utc(run['created_at']),
     )
 
 
