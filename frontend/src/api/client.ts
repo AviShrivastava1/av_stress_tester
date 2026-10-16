@@ -9,6 +9,7 @@ export type ScenarioDetail = components['schemas']['ScenarioDetail'];
 export type AgentTrack = components['schemas']['AgentTrack'];
 export type FragilityBreakdown = components['schemas']['FragilityBreakdown'];
 export type ProvenanceResponse = components['schemas']['ProvenanceResponse'];
+export type TraceResponse = components['schemas']['TraceResponse'];
 export type SearchRecord = components['schemas']['SearchRecord'];
 export type PipelineRun = components['schemas']['PipelineRun'];
 export type TrajectoryResponse = components['schemas']['TrajectoryResponse'];

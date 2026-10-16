@@ -53,6 +53,7 @@ function open(reply: () => Reply = () => ok(prov()), labels: string[] | null = L
   stubFetch((req: RecordedRequest): Reply => {
     requests.push(req);
     if (req.path.endsWith('/provenance')) return reply();
+    if (req.path.endsWith('/trace')) return ok({ scenario_id: ID, stress_run_id: 'run-abc123', trace: null, max_abs_delta_difference: null, tolerance: 1e-6, recorded_at: null });
     if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
     if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ delta: [1, 2, 3, 4], delta_labels: labels }));
     return ok(makeDetail({ scenario_id: ID }));
@@ -100,6 +101,7 @@ describe('opening the panel', () => {
     const deferred = stubFetchDeferred((req) => {
       requests.push(req);
       if (req.path.endsWith('/provenance')) return ok(prov());
+      if (req.path.endsWith('/trace')) return ok({ scenario_id: ID, stress_run_id: 'run-abc123', trace: null, max_abs_delta_difference: null, tolerance: 1e-6, recorded_at: null });
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
       if (req.path.endsWith('/perturbed')) return ok(makePerturbed());
       return ok(makeDetail({ scenario_id: ID }));

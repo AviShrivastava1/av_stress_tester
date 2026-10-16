@@ -139,3 +139,20 @@ export function useProvenance(scenarioId: string, options: { enabled?: boolean }
       ),
   });
 }
+
+/**
+ * The convergence trace of a scenario's stored search: GET /scenarios/{id}/trace. Asked for when the provenance panel is open and the
+ * provenance has loaded and holds a search, so a page that is only looked at costs no extra request.
+ */
+export function useTrace(scenarioId: string) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId, 'trace'],
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}/trace', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
+  });
+}

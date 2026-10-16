@@ -3,6 +3,7 @@ import type { PipelineRun, ProvenanceResponse, SearchRecord } from '../../api/cl
 import { RequestError } from '../../components/RequestError';
 import { useProvenance } from '../../api/scenarios';
 import { formatMagnitude } from '../../domain/format';
+import { TraceFigure } from './TraceFigure';
 
 /*
  * The words in the provenance panel, and what backs each. Every value is read from GET /scenarios/{id}/provenance
@@ -50,6 +51,9 @@ import { formatMagnitude } from '../../domain/format';
  *       parameters it reported (labelled "of the run", "in the run" and "per scenario" so that they are not read as the search's own seed
  *       and budget above them, which are the stored result's). Only the keys the API serves through its allow-lists appear (src/api/manifest.py), and only the
  *       counts and parameters that were reported; the command line, host label and notes are never served
+ *   "How the search closed in"
+ *       the convergence trace of a re-run of the stored search (pages/detail/TraceFigure.tsx, GET /scenarios/{id}/trace). Asked for
+ *       only once the provenance has loaded and holds a search with a run id; its words and what backs them are in that file
  *   "Not recorded for this run"
  *       a field of the manifest that is null: the run did not record it (a Colab session that is not a git checkout has no
  *       revision; a shard that was not hashed has no checksum). It is never shown as none or zero
@@ -191,7 +195,7 @@ function RunManifest({ run }: { run: PipelineRun | null | undefined }) {
   );
 }
 
-function Body({ data, labels }: { data: ProvenanceResponse; labels: string[] | null | undefined }) {
+function Body({ data, labels, scenarioId }: { data: ProvenanceResponse; labels: string[] | null | undefined; scenarioId: string }) {
   const s = data.search ?? null;
   if (s === null) {
     return (
@@ -243,6 +247,7 @@ function Body({ data, labels }: { data: ProvenanceResponse; labels: string[] | n
         <Row label="Archive covered every evaluation">{yesNo(s.de_archive_covered_all_evaluations)}</Row>
         <Row label="Refinement iterations">{whole(s.refine_n_iters)}</Row>
       </dl>
+      {data.stress_run_id !== null && data.stress_run_id !== undefined && <TraceFigure scenarioId={scenarioId} />}
       <h3>Bounds</h3>
       <Bounds search={s} labels={labels} recordedLabels={data.delta_labels} />
       <h3>Admission gates</h3>
@@ -279,7 +284,7 @@ export function ProvenancePanel({ scenarioId, labels }: { scenarioId: string; la
       {opened && provenance.isError && (
         <RequestError error={provenance.error} retry={() => provenance.refetch()} retrying={provenance.isFetching} />
       )}
-      {opened && provenance.isSuccess && <Body data={provenance.data} labels={labels} />}
+      {opened && provenance.isSuccess && <Body data={provenance.data} labels={labels} scenarioId={scenarioId} />}
     </details>
   );
 }

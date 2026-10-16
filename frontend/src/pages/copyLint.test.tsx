@@ -226,6 +226,7 @@ describe('the words the project cannot back do not appear', () => {
   ])('on the provenance panel, opened, with %s', async (_name, provenance) => {
     stubFetch((req: RecordedRequest): Reply => {
       if (req.path.endsWith('/provenance')) return ok(provenance);
+      if (req.path.endsWith('/trace')) return ok({ scenario_id: 'synthetic-0001', stress_run_id: 'r', trace: [{ generation: 1, n_eval_cumulative: 30, best_weighted_norm: null }, { generation: 2, n_eval_cumulative: 60, best_weighted_norm: 0.5 }, { generation: 3, n_eval_cumulative: 90, best_weighted_norm: 0.25 }], max_abs_delta_difference: 0, tolerance: 1e-6, recorded_at: '2026-10-10T10:00:00Z' });
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
       if (req.path.endsWith('/perturbed')) return ok(makePerturbed());
       return ok(makeDetail());
@@ -233,6 +234,7 @@ describe('the words the project cannot back do not appear', () => {
     renderApp('/scenarios/synthetic-0001');
     await userEvent.click(await screen.findByText('Provenance: where this result came from'));
     await screen.findByText('Scored');
+    if (provenance.search) expect(await screen.findByRole('group', { name: 'How the search closed in' })).toBeInTheDocument();
     expect(violations(pageText())).toEqual([]);
   });
 
