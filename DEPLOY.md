@@ -206,6 +206,24 @@ If the API is unreachable, the site shows "Loading…" through two retries, then
 reach the API at <URL>". That is accurate: a Render error page carries no CORS headers, so
 the browser reports a network failure.
 
+## Run manifests (the tables are added by hand; the site shows a manifest when there is one)
+
+The offline pipeline can record each run (git revision, versions, shard name and checksum, parameters, counts) and which stored results it wrote. The tables come from `deploy/rerun_class_additive.sql`, which changes nothing that exists, is safe to run again, and is **run by hand, as the default user, on a copy of the database first**:
+
+1. Make the copy as in "Replacing the data in a live database", and count what must not change: `SELECT count(*), md5(string_agg(t::text, E'\n' ORDER BY scenario_id)) FROM scenario_scores t;` (and the same for `scenario_agents` and `perturbed_paths`).
+2. `psql "$COPY" -v ON_ERROR_STOP=1 -f deploy/rerun_class_additive.sql`, twice: the second run prints no error. Repeat the counts: they must be identical.
+3. Connected to the copy as `av_api_ro`: `SELECT count(*) FROM pipeline_runs_public;` works, `SELECT count(*) FROM pipeline_runs;` is `permission denied`, any `INSERT` is `permission denied`.
+4. Only then the live database. The API needs no setting: with the tables absent `GET /pipeline-runs` answers `[]` and the provenance panel says no manifest is recorded.
+5. **After the migration on the live database, open one scenario's provenance and check that the manifest group appears**: `GET /scenarios/<id>/provenance` (or the Provenance panel on its page) for a result a run has linked shows a `run` object and the panel's "Run manifest" group; for a result with none it shows `run: null` and "No run manifest is recorded for this result." If the API log says "The run manifest tables cannot be read by the API role", the grant below is missing: the API then serves no manifests (and `GET /pipeline-runs` answers `[]`) instead of failing, so nothing else breaks, but nothing shows either.
+
+The script grants the read-only role what the API reads and takes away the raw table (its command line, host label and notes are never public). If the role was created **after** the script ran, give it the two grants by hand (the check in `tests/test_deploy_contract.py` pins this line to the tables and views the API reads):
+
+```sql
+GRANT SELECT ON pipeline_runs_public, pipeline_run_results TO av_api_ro;
+```
+
+The results stored before manifests existed have no manifest, and none is invented: the panel says "No run manifest is recorded for this result". The writer is `src/scoring/manifest.py` (`begin_run`, `link_result`, `finish_run`); it needs the tables and says so when they are missing.
+
 ## Queued search requests (off; the site does not use them)
 
 A request is a scenario id and a seed, filed through `POST /search-requests` and run **later, offline, by the owner**.

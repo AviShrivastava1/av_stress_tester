@@ -10,6 +10,7 @@ through one helper here so the summary and detail paths cannot drift apart.
 
 import base64
 import json
+import logging
 import math
 import unicodedata
 from datetime import timezone
@@ -17,13 +18,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+import psycopg2.errors
+
 from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
+from src.api import manifest
 from src.api.provenance import select_search_record
 from src.danger.fragility_terms import breakdown as fragility_breakdown
 from src.api.models import (
     DELTA_LABELS_BY_PARAMETERIZATION,
-    AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, ProvenanceResponse, ScenarioDetail,
+    AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, PipelineRun, ProvenanceResponse, ScenarioDetail,
     ScenarioPage, ScenarioSummary, StatsResponse, TrajectoryResponse,
 )
 
@@ -32,6 +36,7 @@ from src.api.models import (
 _MAX_SCENARIO_ID_LEN = 4096
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 # The columns every scenario response needs. Kept in one constant so the list
@@ -843,6 +848,91 @@ def _utc(moment):
     return moment.astimezone(timezone.utc) if moment is not None else None
 
 
+# The public columns of the manifest view, in the order the two routes below select them. The raw table pipeline_runs is never read by
+# the API (its command line, host label and notes are not public, and its role has no privilege on it): only this view is.
+_RUN_COLUMNS = """pipeline_run_id, kind, status, started_at, finished_at, git_revision, git_dirty, python_version,
+                  package_versions, shard_name, shard_sha256, parameters, counts"""
+
+
+def _pipeline_run(row) -> PipelineRun:
+    """A row of pipeline_runs_public as the API serves it: the JSON columns through their allow-lists, the text through its checks."""
+    python_version = row['python_version']
+    git_dirty = row['git_dirty']
+    return PipelineRun(
+        pipeline_run_id=str(row['pipeline_run_id']),
+        kind=row['kind'] if manifest.valid_kind(row['kind']) else None,
+        status=row['status'] if manifest.valid_status(row['status']) else None,
+        started_at=_utc(row['started_at']),
+        finished_at=_utc(row['finished_at']),
+        git_revision=row['git_revision'] if manifest.valid_revision(row['git_revision']) else None,
+        git_dirty=git_dirty if isinstance(git_dirty, bool) else None,
+        python_version=python_version if manifest._is_version(python_version) else None,
+        package_versions=manifest.select_package_versions(row['package_versions']),
+        shard_name=row['shard_name'] if manifest.valid_shard_name(row['shard_name']) else None,
+        shard_sha256=row['shard_sha256'] if manifest.valid_sha256(row['shard_sha256']) else None,
+        parameters=manifest.select_parameters(row['parameters']),
+        counts=manifest.select_counts(row['counts']),
+    )
+
+
+def _manifest_unreadable(cur) -> None:
+    """
+    The database role this API connects as has no SELECT on the manifest tables (the migration was run but the grant was not, or the
+    role was made after it). The manifest is an addition to the provenance, not the provenance: roll back the failed statement so the
+    pooled connection is clean, say so once in the log (a fixed sentence: no query, no role name, no connection detail), and serve
+    what there is without it. The same state is a mistake to fix, and DEPLOY.md's check after the migration finds it.
+    """
+    cur.connection.rollback()
+    log.warning('The run manifest tables cannot be read by the API role; serving no manifests. Check the grant in DEPLOY.md, "Run manifests".')
+
+
+def _manifest_of(cur, scenario_id: str, stress_run_id) -> PipelineRun | None:
+    """
+    The manifest of the run that stored this result, or None: nothing is linked (every result stored before manifests existed),
+    the result has no run id, or the manifest tables are not in this database. All three are normal states, not errors.
+    """
+    if stress_run_id is None or not (_table_exists(cur, 'pipeline_run_results') and _table_exists(cur, 'pipeline_runs_public')):
+        return None
+    try:
+        cur.execute(f"""
+            SELECT {', '.join('r.' + c.strip() for c in _RUN_COLUMNS.split(','))}
+            FROM pipeline_run_results l
+            JOIN pipeline_runs_public r ON r.pipeline_run_id = l.pipeline_run_id
+            WHERE l.scenario_id = %s AND l.stress_run_id = %s
+            ORDER BY r.started_at DESC, r.pipeline_run_id
+            LIMIT 1
+        """, (scenario_id, stress_run_id))
+        row = cur.fetchone()
+    except psycopg2.errors.InsufficientPrivilege:
+        _manifest_unreadable(cur)
+        return None
+    return _pipeline_run(row) if row is not None else None
+
+
+@router.get('/pipeline-runs', response_model=list[PipelineRun])
+def list_pipeline_runs(limit: int = Query(default=20, ge=1, le=200), conn=Depends(get_db)):
+    """
+    The most recent runs of the offline pipeline, newest first, as their manifests recorded them.
+
+    Only the public columns (the view pipeline_runs_public); `package_versions`, `parameters` and `counts` through allow-lists. An
+    empty list when no run is recorded or the manifest tables are not in this database: both are normal states.
+    """
+    with dict_cursor(conn) as cur:
+        if not _table_exists(cur, 'pipeline_runs_public'):
+            return []
+        try:
+            cur.execute(f"""
+                SELECT {_RUN_COLUMNS}
+                FROM pipeline_runs_public
+                ORDER BY started_at DESC, pipeline_run_id
+                LIMIT %s
+            """, (limit,))
+            return [_pipeline_run(r) for r in cur.fetchall()]
+        except psycopg2.errors.InsufficientPrivilege:
+            _manifest_unreadable(cur)
+            return []
+
+
 @router.get('/scenarios/{scenario_id}/provenance', response_model=ProvenanceResponse)
 def get_provenance(scenario_id: ScenarioId, conn=Depends(get_db)):
     """
@@ -861,8 +951,9 @@ def get_provenance(scenario_id: ScenarioId, conn=Depends(get_db)):
             WHERE scenario_id = %s
         """, (scenario_id,))
         row = cur.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario_id}")
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario_id}")
+        run = _manifest_of(cur, scenario_id, row['stress_run_id'])
     search = select_search_record(row['search_provenance'])
     return ProvenanceResponse(
         scenario_id=row['scenario_id'],
@@ -873,6 +964,7 @@ def get_provenance(scenario_id: ScenarioId, conn=Depends(get_db)):
         stress_attempted_at=_utc(row['stress_attempted_at']),
         stress_tested_at=_utc(row['stress_tested_at']),
         search=search,
+        run=run,
         delta_labels=_provenance_delta_labels(search),
     )
 

@@ -131,7 +131,7 @@ def test_the_contract_has_the_route_and_its_two_models():
     assert 'get' in schema['paths']['/scenarios/{scenario_id}/provenance']
     assert set(schema['components']['schemas']['ProvenanceResponse']['properties']) == {
         'scenario_id', 'stress_run_id', 'scene_fingerprint', 'sdc_idx', 'scored_at', 'stress_attempted_at', 'stress_tested_at', 'search',
-        'delta_labels'}
+        'delta_labels', 'run'}
     assert set(schema['components']['schemas']['SearchRecord']['properties']) == set(prov.KEYS)
     assert 'provenance' not in schema['components']['schemas']['ScenarioDetail']['properties']
 

@@ -107,12 +107,15 @@ def _deploy():
 
 
 def _tables_the_api_reads():
-    """The schema's tables (every CREATE TABLE in src/scoring) named after FROM or JOIN
-    anywhere in src/api. Derived, so a new table the API starts reading fails the grant
-    test below until DEPLOY.md grants it too."""
+    """The schema's tables and views (every CREATE TABLE in src/scoring, and every table or view the run-manifest script
+    deploy/rerun_class_additive.sql creates) named after FROM or JOIN anywhere in src/api. Derived, so a table or view the API
+    starts reading fails the grant test below until DEPLOY.md grants it too."""
     schema = ''.join(open(os.path.join(PROJECT, 'src', 'scoring', f)).read()
                      for f in ('db.py', 'export_geometry.py'))
     tables = set(re.findall(r'CREATE TABLE IF NOT EXISTS ([a-z_]+)', schema))
+    manifest_script = open(os.path.join(PROJECT, 'deploy', 'rerun_class_additive.sql')).read()
+    tables |= set(re.findall(r'CREATE TABLE IF NOT EXISTS ([a-z_]+)', manifest_script))
+    tables |= set(re.findall(r'CREATE OR REPLACE VIEW ([a-z_]+)', manifest_script))
     source = ''.join(open(os.path.join(API_DIR, f)).read()
                      for f in os.listdir(API_DIR) if f.endswith('.py'))
     read = {t for t in re.findall(r'\b(?:FROM|JOIN)\s+([a-z_]+)', source) if t in tables}
@@ -122,10 +125,49 @@ def _tables_the_api_reads():
 
 def test_the_read_only_role_is_granted_select_on_exactly_the_tables_the_api_reads():
     sql = _deploy()
-    grant = re.search(r'GRANT SELECT ON ([a-z_, ]+) TO av_api_ro;', sql)
-    assert grant, 'DEPLOY.md has no GRANT SELECT ... TO av_api_ro'
-    granted = {t.strip() for t in grant.group(1).split(',')}
+    grants = re.findall(r'GRANT SELECT ON ([a-z_, ]+) TO av_api_ro;', sql)
+    assert grants, 'DEPLOY.md has no GRANT SELECT ... TO av_api_ro'
+    granted = {t.strip() for grant in grants for t in grant.split(',')}
     assert granted == _tables_the_api_reads()
+
+
+def test_the_api_reads_the_manifest_view_and_links_never_the_raw_table():
+    reads = _tables_the_api_reads()
+    assert {'pipeline_runs_public', 'pipeline_run_results'} <= reads
+    assert 'pipeline_runs' not in reads, 'the raw table holds the command line, host label and notes: the API reads the view'
+    source = ''.join(open(os.path.join(API_DIR, f)).read() for f in os.listdir(API_DIR) if f.endswith('.py'))
+    assert not re.search(r'\b(?:FROM|JOIN)\s+pipeline_runs\b(?!_)', source)
+
+
+def test_the_manifest_script_closes_the_raw_table_to_the_read_only_role_and_opens_the_view():
+    script = open(os.path.join(PROJECT, 'deploy', 'rerun_class_additive.sql')).read()
+    assert 'REVOKE ALL ON TABLE pipeline_runs FROM av_api_ro;' in script
+    assert 'GRANT SELECT ON pipeline_runs_public TO av_api_ro;' in script
+    view = re.search(r'CREATE OR REPLACE VIEW pipeline_runs_public AS\s+SELECT(.*?)FROM pipeline_runs;', script, re.S).group(1)
+    for private in ('command_line', 'host_label', 'notes'):
+        assert private not in view, f'{private} must not be in the public view'
+
+
+def test_deploy_md_says_to_open_a_provenance_after_the_manifest_migration_and_what_a_missing_grant_looks_like():
+    text = _deploy()
+    section = text[text.index('## Run manifests'):text.index('## Queued search requests')]
+    flat = ' '.join(section.split())
+    assert "open one scenario's provenance and check that the manifest group appears" in flat
+    assert 'The run manifest tables cannot be read by the API role' in flat
+    # the sentence the API logs is the one DEPLOY.md quotes
+    routes_text = open(os.path.join(API_DIR, 'routes.py')).read()
+    assert 'The run manifest tables cannot be read by the API role' in routes_text
+
+
+def test_the_manifest_script_changes_nothing_that_exists_and_is_run_by_hand():
+    script = open(os.path.join(PROJECT, 'deploy', 'rerun_class_additive.sql')).read()
+    code = re.sub(r'--[^\n]*', '', script)
+    for existing in ('scenario_scores', 'scenario_agents', 'perturbed_paths', 'search_provenance'):
+        assert not re.search(rf'\b(ALTER TABLE|DROP|TRUNCATE|UPDATE|DELETE FROM|INSERT INTO|REFERENCES)\s+{existing}\b', code), existing
+        assert not re.search(rf'REFERENCES\s+{existing}\b', code)
+    assert 'RUN BY HAND' in script
+    for src in ('db.py', 'export_geometry.py'):
+        assert 'rerun_class_additive' not in open(os.path.join(PROJECT, 'src', 'scoring', src)).read()
 
 
 def test_the_read_only_role_also_sees_tables_created_later():

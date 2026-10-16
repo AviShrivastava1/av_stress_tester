@@ -153,6 +153,53 @@
         }
       }
     },
+    "/pipeline-runs": {
+      "get": {
+        "summary": "List Pipeline Runs",
+        "description": "The most recent runs of the offline pipeline, newest first, as their manifests recorded them.\n\nOnly the public columns (the view pipeline_runs_public); `package_versions`, `parameters` and `counts` through allow-lists. An\nempty list when no run is recorded or the manifest tables are not in this database: both are normal states.",
+        "operationId": "list_pipeline_runs_pipeline_runs_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PipelineRun"
+                  },
+                  "title": "Response List Pipeline Runs Pipeline Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scenarios/{scenario_id}/provenance": {
       "get": {
         "summary": "Get Provenance",
@@ -523,6 +570,79 @@
         "title": "HealthResponse",
         "description": "Liveness plus a real database round-trip.\n\n`status` is \"ok\" when the database and PostGIS both answered, and \"degraded\" when the\ndatabase answered but PostGIS did not: `postgis` is then None (the extension is\nmissing, or the version call raised). That is degraded, not dead: the scores\nendpoints work fine without it, only geometry is unavailable. Both are HTTP 200."
       },
+      "PackageVersions": {
+        "properties": {
+          "python": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Python"
+          },
+          "numpy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numpy"
+          },
+          "scipy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scipy"
+          },
+          "shapely": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shapely"
+          },
+          "torch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torch"
+          },
+          "psycopg2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Psycopg2"
+          }
+        },
+        "type": "object",
+        "title": "PackageVersions",
+        "description": "The versions the run recorded: Python and the five packages the pipeline depends on. Null = not recorded."
+      },
       "PerturbedResponse": {
         "properties": {
           "scenario_id": {
@@ -618,6 +738,145 @@
         "title": "PerturbedResponse",
         "description": "The Phase 4 answer, made drawable: the challenger's logged path next to its\nminimally-perturbed one.\n\nEvery field except scenario_id is nullable, because \"this scenario has not been\nstress-tested yet\" is a normal state that returns 200, not an error.\n\ndelta_labels USED to be the second exception, and this docstring said so. It stopped\nbeing one in Batch 3 (audit B13): a delta can only be labelled if we know which\nkinematic model produced it, and for a legacy row with neither recorded provenance\nnor exported geometry, nothing does. Corrected here rather than quietly reworded,\nbecause the old sentence is exactly the guarantee a frontend would have been written\nagainst."
       },
+      "PipelineRun": {
+        "properties": {
+          "pipeline_run_id": {
+            "type": "string",
+            "title": "Pipeline Run Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "git_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Revision"
+          },
+          "git_dirty": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Dirty"
+          },
+          "python_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Python Version"
+          },
+          "package_versions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackageVersions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shard_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard Name"
+          },
+          "shard_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard Sha256"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunParameters"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "pipeline_run_id",
+          "started_at"
+        ],
+        "title": "PipelineRun",
+        "description": "One run of the offline pipeline, as its manifest recorded it (the public columns only: the command line, the host label and the\nnotes are never served).\n\nEvery text column is checked before it is served (src/api/manifest.py): `kind` and `status` must be one of the known words, the revision 40 hex\ndigits, the checksum 64, the Python version a version string and `shard_name` a file name (letters, digits, `.`, `_`, `-`, at most 200\ncharacters); anything else is null, not repaired. Null always means \"not recorded for this run\", never \"none\". `git_dirty` true means the working tree had uncommitted changes when\nthe run started, so the revision alone does not reproduce the code. `package_versions`, `parameters` and `counts` are served through\nallow-lists of keys and types (src/api/manifest.py); a key that is not listed is not served, and a value of the wrong type is null.\nThe times are those of the run, in UTC."
+      },
       "ProvenanceResponse": {
         "properties": {
           "scenario_id": {
@@ -703,6 +962,17 @@
               }
             ]
           },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest of the run that stored this result, found through pipeline_run_results by scenario and stress_run_id (the most recent if several are linked). Null when no manifest is recorded for this result: the results stored before manifests existed have none, and that is not an error."
+          },
           "delta_labels": {
             "anyOf": [
               {
@@ -725,6 +995,177 @@
         ],
         "title": "ProvenanceResponse",
         "description": "Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.\n\nRead from `scenario_scores` only. Every field is null when it was not recorded; a scenario with no stored search has\nnulls and `search` null. `stress_run_id` is the hash of the run's identity (the inputs it was searched with and the\ncode-contract versions), `scene_fingerprint` the hash of the scene it was searched against, `sdc_idx` which agent was the\nSDC. The times are when the scenario was scored, when a stress-test pass last reached it, and when the stored result was\nwritten; they are timestamps of the offline runs, in UTC, not of any request to this API."
+      },
+      "RunCounts": {
+        "properties": {
+          "scenarios": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenarios"
+          },
+          "scored": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scored"
+          },
+          "searched": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Searched"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          },
+          "stored_results": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Results"
+          },
+          "collisions_found": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collisions Found"
+          },
+          "no_collision_found": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Collision Found"
+          }
+        },
+        "type": "object",
+        "title": "RunCounts",
+        "description": "What the run reported having done. Null = not reported, never zero."
+      },
+      "RunParameters": {
+        "properties": {
+          "de_seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Seed"
+          },
+          "de_popsize": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Popsize"
+          },
+          "de_maxiter": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Maxiter"
+          },
+          "challengers_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challengers K"
+          },
+          "de_tol": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "De Tol"
+          },
+          "seeds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeds"
+          }
+        },
+        "type": "object",
+        "title": "RunParameters",
+        "description": "The parameters that varied a run: seeds, budgets, the number of challengers. Null = not reported."
       },
       "ScenarioDetail": {
         "properties": {

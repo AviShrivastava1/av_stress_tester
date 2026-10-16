@@ -307,6 +307,69 @@ class SearchRecord(BaseModel):
     target_has_interior_gap: bool | None = None
 
 
+class PackageVersions(BaseModel):
+    """The versions the run recorded: Python and the five packages the pipeline depends on. Null = not recorded."""
+
+    python: str | None = None
+    numpy: str | None = None
+    scipy: str | None = None
+    shapely: str | None = None
+    torch: str | None = None
+    psycopg2: str | None = None
+
+
+class RunCounts(BaseModel):
+    """What the run reported having done. Null = not reported, never zero."""
+
+    scenarios: int | None = None
+    scored: int | None = None
+    searched: int | None = None
+    refused: int | None = None
+    errors: int | None = None
+    stored_results: int | None = None
+    collisions_found: int | None = None
+    no_collision_found: int | None = None
+
+
+class RunParameters(BaseModel):
+    """The parameters that varied a run: seeds, budgets, the number of challengers. Null = not reported."""
+
+    de_seed: int | None = None
+    de_popsize: int | None = None
+    de_maxiter: int | None = None
+    challengers_k: int | None = None
+    de_tol: float | None = None
+    seeds: list[int] | None = None
+
+
+class PipelineRun(BaseModel):
+    """
+    One run of the offline pipeline, as its manifest recorded it (the public columns only: the command line, the host label and the
+    notes are never served).
+
+    Every text column is checked before it is served (src/api/manifest.py): `kind` and `status` must be one of the known words, the revision 40 hex
+    digits, the checksum 64, the Python version a version string and `shard_name` a file name (letters, digits, `.`, `_`, `-`, at most 200
+    characters); anything else is null, not repaired. Null always means "not recorded for this run", never "none". `git_dirty` true means the working tree had uncommitted changes when
+    the run started, so the revision alone does not reproduce the code. `package_versions`, `parameters` and `counts` are served through
+    allow-lists of keys and types (src/api/manifest.py); a key that is not listed is not served, and a value of the wrong type is null.
+    The times are those of the run, in UTC.
+    """
+
+    pipeline_run_id: str
+    kind: str | None = None
+    status: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    git_revision: str | None = None
+    git_dirty: bool | None = None
+    python_version: str | None = None
+    package_versions: PackageVersions | None = None
+    shard_name: str | None = None
+    shard_sha256: str | None = None
+    parameters: RunParameters | None = None
+    counts: RunCounts | None = None
+
+
 class ProvenanceResponse(BaseModel):
     """
     Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.
@@ -326,6 +389,12 @@ class ProvenanceResponse(BaseModel):
     stress_attempted_at: datetime | None = None
     stress_tested_at: datetime | None = None
     search: SearchRecord | None = None
+    run: PipelineRun | None = Field(
+        default=None,
+        description="The manifest of the run that stored this result, found through pipeline_run_results by scenario and "
+                    "stress_run_id (the most recent if several are linked). Null when no manifest is recorded for this result: "
+                    "the results stored before manifests existed have none, and that is not an error.",
+    )
     delta_labels: list[str] | None = Field(
         default=None,
         description="The names, with units, of the components of the perturbation under the parameterization recorded in "
