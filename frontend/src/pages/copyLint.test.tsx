@@ -153,6 +153,21 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it('on the scenario list under the Scenario ID sort, with its own caption', async () => {
+    stubFetch((req: RecordedRequest): Reply => (req.path === '/stats'
+      ? ok({ total_scenarios: 3, stress_tested: 2, collisions_found: 1, no_collision_found: 1, replay_infeasible: 0, heading_blend_singularity: 0, no_challenger: 0, stress_errors: 0, robustly_safe: 0, with_geometry: 0, fragility_min: 1, fragility_max: 2, fragility_mean: 1.5 })
+      : ok(makePage([
+        makeRow({ scenario_id: 'synthetic-0001', stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.02 }),
+        makeRow({ scenario_id: 'synthetic-0002' }),
+        makeRow({ scenario_id: 'synthetic-0003', stress_tested: true, stress_attempted: true, stress_outcome: 'no_collision_found', no_collision_found: true }),
+      ], null))));
+    renderApp('/?sort=id');
+    await screen.findByRole('link', { name: 'synthetic-0003' });
+    expect(pageText()).toContain('Sorted by scenario ID, ascending, compared as text, character by character, so “10” comes before “9”.');
+    expect(pageText()).not.toContain('Ranked by fragility score');
+    expect(violations(pageText())).toEqual([]);
+  });
+
   it('on the scenario list', async () => {
     stubFetch(() => ok(makePage([
       makeRow({ scenario_id: 'synthetic-0001', stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.02 }),

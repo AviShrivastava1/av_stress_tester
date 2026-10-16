@@ -111,7 +111,14 @@ const DATASET_LABEL = 'Waymo Open Dataset';
 /*
  * The caption under the filter and sort controls, and what backs each sentence. It says how the rows are ordered, so it follows the sort:
  * the fragility caption is the one below under the fragility sort (the default, and the API's own order), the perturbation caption
- * under the Min perturbation sort. The Scenario ID sort keeps the fragility caption, which does not describe it; not changed here.
+ * under the Min perturbation sort and the ID caption under the Scenario ID sort.
+ *
+ * Under the Scenario ID sort (domain/listView.ts applyView with compareIds):
+ *   "Sorted by scenario ID, ascending, compared as text, character by character, so “10” comes before “9”."
+ *       compareIds returns -1 when a.scenario_id < b.scenario_id, a JavaScript string comparison (by UTF-16 code unit, which for the
+ *       ASCII ids is character by character), so "10" < "9" and "B" < "a"; ascending, A before Z. No number is parsed from the id
+ *   "The fragility score does not decide the order."
+ *       applyView sorts by compareIds alone for this sort; fragility_score is not read, so the order is not the fragility ranking
  *
  * Under the Min perturbation sort (domain/listView.ts applyView, comparePerturbation):
  *   "Sorted by the smallest perturbation found, smallest first."
@@ -238,6 +245,10 @@ function PerturbationCell({ row }: { row: ScenarioSummary }) {
 const FRAGILITY_CAPTION =
   'Ranked by fragility score, most fragile first. Equal scores are tie-broken by scenario ID; position within a tie does not mean one ' +
   'scenario is more fragile than another. Min perturbation is the smallest found by a finite search, not a proven minimum.';
+
+const ID_CAPTION =
+  'Sorted by scenario ID, ascending, compared as text, character by character, so “10” comes before “9”. ' +
+  'The fragility score does not decide the order.';
 
 const PERTURBATION_CAPTION =
   'Sorted by the smallest perturbation found, smallest first. Min perturbation is a weighted norm over components of mixed units, so ' +
@@ -401,7 +412,7 @@ export function ScenarioListPage() {
           </div>
         </div>
       </div>
-      <p className="caption">{view.sort === 'perturbation' ? PERTURBATION_CAPTION : FRAGILITY_CAPTION}</p>
+      <p className="caption">{view.sort === 'perturbation' ? PERTURBATION_CAPTION : view.sort === 'id' ? ID_CAPTION : FRAGILITY_CAPTION}</p>
       <details className="metric-guide"><summary>Metric definitions</summary>
         <p>Fragility ranks the recorded scene; it is not a collision probability. Min perturbation is the smallest weighted perturbation found within a finite search budget, not a proven global minimum. TTC is time-to-collision; PET is post-encroachment time. “None” means no finite value in that model. A PET of zero or less marks overlapping occupancy of one connected conflict zone.</p>
       </details>

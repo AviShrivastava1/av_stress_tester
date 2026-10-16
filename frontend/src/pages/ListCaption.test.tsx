@@ -9,7 +9,7 @@ import { renderApp } from '../test/renderApp';
 /*
  * The caption under the list's controls follows the sort (pages/ScenarioListPage.tsx FRAGILITY_CAPTION and PERTURBATION_CAPTION).
  * Under the fragility sort, the API's own order, it says the list is ranked by fragility and that equal scores are tied by scenario
- * ID. Under the Min perturbation sort that would be false, so it says the order that sort really has: smallest first, rows with no
+ * ID. Under the Scenario ID sort it says that order. Under the Min perturbation sort that would be false, so it says the order that sort really has: smallest first, rows with no
  * perturbation after the rest, equal values by scenario ID, and that the figure is a weighted norm over components of mixed units
  * and not comparable between scenarios searched under different models. Each of those claims is checked below against the rows
  * the page actually shows.
@@ -23,6 +23,10 @@ const PERTURBATION =
   'figures from scenarios searched under different models are not comparable. Scenarios with no perturbation found come after those ' +
   'that have one. Scenarios with equal Min perturbation are listed by scenario ID. Min perturbation is the smallest found by a finite ' +
   'search, not a proven minimum.';
+
+const ID =
+  'Sorted by scenario ID, ascending, compared as text, character by character, so “10” comes before “9”. ' +
+  'The fragility score does not decide the order.';
 
 const hit = (id: string, perturbation: number, fragility: number) =>
   makeRow({ scenario_id: id, min_perturbation: perturbation, stress_outcome: 'collision_found', stress_tested: true, stress_attempted: true, fragility_score: fragility });
@@ -85,9 +89,24 @@ describe('the caption under each sort', () => {
     expect(PERTURBATION).not.toMatch(/\d/);
   });
 
-  it('keeps the fragility caption under the Scenario ID sort, as it was (it does not describe that sort; not changed by this patch)', async () => {
+  it('under the Scenario ID sort is the ID caption, word for word, and none of the other two captions’ sentences', async () => {
     await open('/?sort=id');
-    expect(caption()).toBe(FRAGILITY);
+    expect(caption()).toBe(ID);
+    expect(caption()).not.toMatch(/Ranked by fragility score|most fragile first|Equal scores are tie-broken|finite search|proven minimum/);
+    expect(caption()).not.toMatch(/Sorted by the smallest perturbation|weighted norm|no perturbation found/);
+  });
+
+  it('follows the control through all three sorts and back', async () => {
+    await open('/');
+    for (const [value, expected] of [['id', ID], ['perturbation', PERTURBATION], ['id', ID], ['fragility', FRAGILITY]] as const) {
+      await userEvent.selectOptions(screen.getByLabelText('Sort'), value);
+      await waitFor(() => expect(caption()).toBe(expected));
+    }
+  });
+
+  it('is the same under an outcome filter on the Scenario ID sort', async () => {
+    await open('/?sort=id&outcome=collision_found');
+    expect(caption()).toBe(ID);
   });
 });
 
@@ -96,6 +115,18 @@ describe('what the perturbation caption says is what the rows do', () => {
     await open('/?sort=perturbation');
     // 0.1 a, 0.1 b (tied: a before b by id, though the API lists b first), 0.4 c, 0.9 d, then the two with none: k, m by id
     expect(order()).toEqual(['a', 'b', 'c', 'd', 'k', 'm']);
+  });
+
+  it('under the Scenario ID sort the rows are in ascending text order, whatever their fragility', async () => {
+    await open('/?sort=id');
+    expect(order()).toEqual(['a', 'b', 'c', 'd', 'k', 'm']);
+  });
+
+  it('and compares as text: “10” comes before “9”, and an upper-case letter before a lower-case one', async () => {
+    stubFetch((req: RecordedRequest): Reply => ({ status: 200, body: req.path === '/stats' ? STATS : makePage([hit('9', 0.1, 9), hit('a', 0.1, 8), hit('10', 0.1, 7), hit('B', 0.1, 6)], null) }));
+    renderApp('/?sort=id');
+    await screen.findByRole('link', { name: '9' });
+    expect(order()).toEqual(['10', '9', 'B', 'a']);
   });
 
   it('and the fragility sort keeps the API’s order, the thing its caption says', async () => {
