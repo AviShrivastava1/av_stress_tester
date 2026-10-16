@@ -156,3 +156,21 @@ export function useTrace(scenarioId: string) {
       ),
   });
 }
+
+/**
+ * The other searches recorded for a scenario: GET /scenarios/{id}/other-searches. Asked for when the "Other searches of this scenario"
+ * section is opened (`enabled`), so a page that is only looked at costs no extra request.
+ */
+export function useOtherSearches(scenarioId: string, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId, 'other-searches'],
+    enabled: options.enabled ?? true,
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}/other-searches', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
+  });
+}

@@ -253,6 +253,24 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it.each([
+    ['searches under the stored result’s model and another', true],
+    ['no other search', false],
+  ])('on the other searches, opened, with %s', async (_name, some) => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/other-searches')) return ok({ scenario_id: 'synthetic-0001', stress_run_id: 'r', stored_delta_parameterization: 'bicycle', truncated: some, searches: some ? [{ search_run_id: '0123456789abcdef', kind: 'seed', challenger_rank: null, target_idx: 1, seed: 3, popsize: 15, maxiter: 200, tol: 0.001, outcome: 'collision_found', min_perturbation: 0.25, collision_timestep: 40, delta: [0.5, 0.01, -0.2, 0.003], delta_parameterization: 'bicycle', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], n_iter: 12, n_eval: 900 }, { ...{ search_run_id: '0123456789abcdef', kind: 'seed', challenger_rank: null, target_idx: 1, seed: 3, popsize: 15, maxiter: 200, tol: 0.001, outcome: 'collision_found', min_perturbation: 0.25, collision_timestep: 40, delta: [0.5, 0.01, -0.2, 0.003], delta_parameterization: 'bicycle', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], n_iter: 12, n_eval: 900 }, search_run_id: 'fedcba9876543210', kind: 'budget', delta_parameterization: 'linear', delta_labels: null }] : [] });
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed());
+      return ok(makeDetail());
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByText('Other searches of this scenario'));
+    await screen.findByText(some ? 'Another seed' : 'No other search is recorded for this scenario.');
+    expect(pageText()).toContain('None is shown to be the smallest');
+    if (some) expect(pageText()).toContain('Not every recorded search is listed here');
+    expect(violations(pageText())).toEqual([]);
+  });
+
   it('on the walkthrough, with all three scenes shown', async () => {
     stubFetch((req: RecordedRequest): Reply => {
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));

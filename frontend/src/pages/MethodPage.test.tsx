@@ -67,8 +67,12 @@ const SIGNATURE = [
 const GONE = ['ENGINEERING PRINCIPLES', 'Built to expose assumptions, not hide them.', 'Failure is a first-class result', 'The online path stays lightweight', 'Claims carry their provenance'];
 
 const LIMITS = [
-  'The minimum perturbation is the best result found within a finite search budget, not a proven global minimum.',
-  'Each run searches one heuristically selected challenger, not every possible agent interaction.',
+  'The minimum perturbation is the best result found within a finite search budget, not a proven global minimum. ' +
+    'A scenario’s page can list other searches of it, with other seeds or budgets; each is a separate finite search, ' +
+    'and none of them, nor the stored result, is shown to be the smallest.',
+  'Each search is of one heuristically selected challenger, not every possible agent interaction. The stored result ' +
+    'is one such search; the other searches listed under “Other searches of this scenario” search the same challenger ' +
+    'again, with another seed or budget.',
   'A collision is an oriented-box intersection at stored coordinate precision, not a forecast of real-world impact.',
   'The browser draws each box at the size recorded for that frame, which is the size the collision check used. ' +
     'Data exported before per-frame sizes were stored is drawn at one size per agent, and the note under the ' +

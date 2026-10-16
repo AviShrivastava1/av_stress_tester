@@ -117,6 +117,23 @@ describe('every class a page renders has a rule', () => {
     expect(unstyled()).toEqual([]);
   });
 
+  it('on a scenario page with the other searches opened', async () => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/other-searches')) return ok({ scenario_id: 'synthetic-0001', stress_run_id: 'r', stored_delta_parameterization: 'bicycle', truncated: true, searches: [{ search_run_id: '0123456789abcdef', kind: 'seed', challenger_rank: null, target_idx: 1, seed: 3, popsize: 15, maxiter: 200, tol: 0.001, outcome: 'collision_found', min_perturbation: 0.25, collision_timestep: 40, delta: [0.5, 0.01, -0.2, 0.003], delta_parameterization: 'bicycle', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], n_iter: 12, n_eval: 900 }, { ...{ search_run_id: '0123456789abcdef', kind: 'seed', challenger_rank: null, target_idx: 1, seed: 3, popsize: 15, maxiter: 200, tol: 0.001, outcome: 'collision_found', min_perturbation: 0.25, collision_timestep: 40, delta: [0.5, 0.01, -0.2, 0.003], delta_parameterization: 'bicycle', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], n_iter: 12, n_eval: 900 }, search_run_id: 'fedcba9876543210', kind: 'budget', delta_parameterization: 'linear', delta_labels: null }] });
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged, perturbed }));
+      return ok(makeDetail({ stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.1, collision_timestep: 25 }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByText('Other searches of this scenario'));
+    await screen.findByRole('table', { name: 'Other searches of this scenario' });
+    await userEvent.click(screen.getByText('Perturbation components'));
+    expect(document.querySelector('.other-searches-table')).not.toBeNull();
+    expect(screen.getByText(/Not every recorded search is listed here/)).toBeInTheDocument();
+    expect(document.querySelector('.other-searches-components h4')).not.toBeNull();
+    expect(unstyled()).toEqual([]);
+  });
+
   it('on the Method page', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/method');

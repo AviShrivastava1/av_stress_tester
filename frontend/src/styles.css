@@ -61,6 +61,10 @@ h2 { margin:0 0 18px; font-size:18px; font-weight:650; line-height:1.15; letter-
 .provenance h3 { margin:22px 0 4px; font-size:13px; font-weight:620; }
 .provenance .facts { margin-top:6px; }
 .provenance-bounds { margin-top:6px; }
+.other-searches { margin-top:20px; }
+.other-searches-table { margin-top:10px; }
+.other-searches-components { margin-top:10px; }
+.other-searches-components h4 { margin:14px 0 2px; font-size:12px; font-weight:620; }
 .fragility-terms { margin:22px 0 0; }
 .fragility-terms h3 { margin:0 0 6px; font-size:13px; font-weight:620; }
 .fragility-table { margin-top:12px; }
