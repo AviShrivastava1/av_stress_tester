@@ -23,13 +23,14 @@ import psycopg2.errors
 from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
 from src.api import manifest
+from src.api import other_searches as other_rules
 from src.api import trace as trace_rules
 from src.api.provenance import select_search_record
 from src.danger.fragility_terms import breakdown as fragility_breakdown
 from src.api.models import (
     DELTA_LABELS_BY_PARAMETERIZATION,
     AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, PipelineRun, ProvenanceResponse, ScenarioDetail,
-    ScenarioPage, ScenarioSummary, StatsResponse, TracePoint, TraceResponse, TrajectoryResponse,
+    OtherSearch, OtherSearchesResponse, ScenarioPage, ScenarioSummary, StatsResponse, TracePoint, TraceResponse, TrajectoryResponse,
 )
 
 # Ceiling on a client-supplied scenario_id. A resource guard, not a format rule —
@@ -1025,6 +1026,70 @@ def get_trace(scenario_id: ScenarioId, conn=Depends(get_db)):
         max_abs_delta_difference=float(run['max_abs_delta_difference']), tolerance=trace_rules.TRACE_DELTA_TOLERANCE,
         recorded_at=_utc(run['created_at']),
     )
+
+
+def _other_searches_unreadable(cur) -> None:
+    """The same state as _trace_unreadable, for GET /other-searches: the role cannot read search_runs. Serve an empty list, say so once."""
+    cur.connection.rollback()
+    log.warning('The other-searches table cannot be read by the API role; serving no other searches. Check the grant in DEPLOY.md, "Run manifests".')
+
+
+@router.get('/scenarios/{scenario_id}/other-searches', response_model=OtherSearchesResponse)
+def get_other_searches(scenario_id: ScenarioId, conn=Depends(get_db)):
+    """
+    The other searches recorded for this scenario (other seeds, other budgets, other challengers), each a separate search that is not
+    its stored result (src/scoring/other_searches.py records them). Public fields only, through the allow-list in src/api/other_searches.py.
+
+    The same identity gate as GET /trace: a row is listed only if its scene fingerprint and SDC index do not conflict with the stored
+    result's (where both are recorded), and a row whose id is the stored `stress_run_id` is never listed (that is the stored search, not
+    an alternative). The order is fixed and is not a ranking. At most MAX_SEARCHES (200) are listed; the query asks for one more, and
+    `truncated` is true only if that one was there, so a row the limit cuts off is never dropped silently (the listed ones are the first
+    in the order). 200 with an empty list and `truncated` false for every state with nothing to list; 404 only when the scenario is
+    unknown.
+    """
+    with dict_cursor(conn) as cur:
+        cur.execute("""
+            SELECT scenario_id, stress_run_id, scene_fingerprint, sdc_idx, search_provenance ->> 'delta_parameterization' AS parameterization
+            FROM scenario_scores WHERE scenario_id = %s
+        """, (scenario_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario_id}")
+        stored_parameterization = other_rules.select_parameterization(row['parameterization'])
+        empty = OtherSearchesResponse(scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'],
+                                      stored_delta_parameterization=stored_parameterization)
+        if not _table_exists(cur, 'search_runs'):
+            return empty
+        try:
+            cur.execute("""
+                SELECT search_run_id, kind, challenger_rank, target_idx, seed, popsize, maxiter, tol, outcome, min_perturbation,
+                       collision_timestep, delta, delta_parameterization, n_iter, n_eval
+                FROM search_runs
+                WHERE scenario_id = %s AND kind IN ('seed', 'budget', 'challenger')
+                  AND (scene_fingerprint IS NULL OR %s::text IS NULL OR scene_fingerprint = %s)
+                  AND (sdc_idx IS NULL OR %s::integer IS NULL OR sdc_idx = %s)
+                  AND (%s::text IS NULL OR search_run_id <> %s)
+                ORDER BY CASE kind WHEN 'seed' THEN 0 WHEN 'budget' THEN 1 ELSE 2 END, challenger_rank NULLS LAST, seed, popsize, maxiter, tol,
+                         search_run_id
+                LIMIT %s
+            """, (scenario_id, row['scene_fingerprint'], row['scene_fingerprint'], row['sdc_idx'], row['sdc_idx'],
+                  row['stress_run_id'], row['stress_run_id'], other_rules.MAX_SEARCHES + 1))
+            rows = cur.fetchall()
+        except psycopg2.errors.InsufficientPrivilege:
+            _other_searches_unreadable(cur)
+            return empty
+    # One more than the limit was asked for, so that a row the limit cuts off is known about: it is not listed, and `truncated` says so.
+    truncated = len(rows) > other_rules.MAX_SEARCHES
+    searches = []
+    for r in rows[:other_rules.MAX_SEARCHES]:
+        served = other_rules.select_search(r)
+        if served is None:
+            continue
+        labels = DELTA_LABELS_BY_PARAMETERIZATION.get(served['delta_parameterization'])
+        searches.append(OtherSearch(**served, delta_labels=list(labels) if labels is not None else None))
+    return OtherSearchesResponse(scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'],
+                                 stored_delta_parameterization=stored_parameterization, searches=searches,
+                                 truncated=truncated)
 
 
 @router.get('/scenarios/{scenario_id}/trajectories',

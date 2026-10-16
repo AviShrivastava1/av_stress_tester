@@ -280,6 +280,46 @@
         }
       }
     },
+    "/scenarios/{scenario_id}/other-searches": {
+      "get": {
+        "summary": "Get Other Searches",
+        "description": "The other searches recorded for this scenario (other seeds, other budgets, other challengers), each a separate search that is not\nits stored result (src/scoring/other_searches.py records them). Public fields only, through the allow-list in src/api/other_searches.py.\n\nThe same identity gate as GET /trace: a row is listed only if its scene fingerprint and SDC index do not conflict with the stored\nresult's (where both are recorded), and a row whose id is the stored `stress_run_id` is never listed (that is the stored search, not\nan alternative). The order is fixed and is not a ranking. At most MAX_SEARCHES (200) are listed; the query asks for one more, and\n`truncated` is true only if that one was there, so a row the limit cuts off is never dropped silently (the listed ones are the first\nin the order). 200 with an empty list and `truncated` false for every state with nothing to list; 404 only when the scenario is\nunknown.",
+        "operationId": "get_other_searches_scenarios__scenario_id__other_searches_get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OtherSearchesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scenarios/{scenario_id}/trajectories": {
       "get": {
         "summary": "Get Trajectories",
@@ -609,6 +649,245 @@
         ],
         "title": "HealthResponse",
         "description": "Liveness plus a real database round-trip.\n\n`status` is \"ok\" when the database and PostGIS both answered, and \"degraded\" when the\ndatabase answered but PostGIS did not: `postgis` is then None (the extension is\nmissing, or the version call raised). That is degraded, not dead: the scores\nendpoints work fine without it, only geometry is unavailable. Both are HTTP 200."
+      },
+      "OtherSearch": {
+        "properties": {
+          "search_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Run Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "'seed', 'budget' or 'challenger'."
+          },
+          "challenger_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenger Rank"
+          },
+          "target_idx": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Idx"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "popsize": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Popsize"
+          },
+          "maxiter": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxiter"
+          },
+          "tol": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tol"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome",
+            "description": "'collision_found' or 'no_collision_found'; null for anything else."
+          },
+          "min_perturbation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Perturbation"
+          },
+          "collision_timestep": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collision Timestep"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "delta_parameterization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Parameterization",
+            "description": "'bicycle' or 'linear': whose units the components of `delta` carry."
+          },
+          "delta_labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Labels",
+            "description": "The names, with units, of the components of `delta` under this search's own `delta_parameterization` (DELTA_LABELS_BY_PARAMETERIZATION). Null when it is not recorded or not one this API knows."
+          },
+          "n_iter": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Iter"
+          },
+          "n_eval": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Eval"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "OtherSearch",
+        "description": "One search of a scenario that is not its stored result: another seed, another budget, or another challenger.\n\nEvery field is null when it was not recorded or is not of the expected type. `min_perturbation` is a weighted norm over components\nof mixed units, as everywhere else; it is the smallest perturbation THIS search found, not the smallest there is, and it is not\ncomparable with a figure from a search under another kinematic model (`delta_parameterization`)."
+      },
+      "OtherSearchesResponse": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "stress_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Run Id"
+          },
+          "stored_delta_parameterization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Delta Parameterization",
+            "description": "The stored result's own `delta_parameterization`, so that a client can tell which searches are under the same model."
+          },
+          "searches": {
+            "items": {
+              "$ref": "#/components/schemas/OtherSearch"
+            },
+            "type": "array",
+            "title": "Searches"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "description": "True only when more searches matched than are listed here (the limit is 200); the listed ones are the first in the fixed order. False when everything that matched is listed, and when nothing is.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id"
+        ],
+        "title": "OtherSearchesResponse",
+        "description": "The other searches of a scenario, in a fixed order (seeds, then budgets, then challengers; within a kind by seed or budget). The\norder is not a ranking and nothing here marks a search as the smallest. Searches whose scene or SDC index conflicts with the stored\nresult's are not listed, and neither is a search that is the stored result itself. An empty list is a normal state: no other search\nis recorded, the tables are not in this database, or the API role cannot read them.\n\nAt most 200 searches are listed. `truncated` is true only when more than that matched (the 201st was found and not listed); the ones\nlisted are then the first 200 in the order above. It is false for every other state, an empty list included."
       },
       "PackageVersions": {
         "properties": {

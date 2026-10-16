@@ -62,6 +62,34 @@ def _stored_result(cur, scenario_id):
     return dict(zip(cols, row))
 
 
+def load_stored_search(conn, scenario_id, states, validity, types, sdc_idx):
+    """
+    The stored result of `scenario_id` and what is needed to search it again as it was searched: (stored row as a dict, the seed and
+    budget as `optimize_scenario` keywords, whether the gradient stage ran). The checks every offline pass over a stored result makes:
+    the tables are there; there is a stored search; the scene and SDC index given are the ones it was searched against; the stored
+    provenance holds the seed and the budget. Refuses with TraceRerunRefused otherwise, having written nothing.
+    """
+    from src.scoring.db import compute_scene_fingerprint
+
+    with conn.cursor() as cur:
+        _require_tables(cur)
+        stored = _stored_result(cur, scenario_id)
+    if stored['stress_run_id'] is None or stored['delta'] is None or not isinstance(stored['search_provenance'], dict):
+        raise TraceRerunRefused(f'{scenario_id}: no stored search to re-run')
+    if stored['scene_fingerprint'] is not None and stored['scene_fingerprint'] != compute_scene_fingerprint(states, validity, types):
+        raise TraceRerunRefused(f'{scenario_id}: the scene given is not the scene the stored result was searched against')
+    if stored['sdc_idx'] is not None and int(stored['sdc_idx']) != int(sdc_idx):
+        raise TraceRerunRefused(f'{scenario_id}: the SDC index given is not the one the stored result was searched with')
+    prov = stored['search_provenance']
+    try:
+        de_kwargs = {'popsize': int(prov['de_popsize']), 'maxiter': int(prov['de_maxiter']),
+                     'tol': float(prov['de_tol']), 'seed': int(prov['de_seed'])}
+    except (KeyError, TypeError, ValueError):
+        raise TraceRerunRefused(f'{scenario_id}: the stored provenance does not hold the seed and the budget') from None
+    # The gradient stage ran if and only if it recorded its iteration count (refine_n_iters is None otherwise).
+    return stored, de_kwargs, prov.get('refine_n_iters') is not None
+
+
 def record_trace_rerun(conn, scenario_id, states, validity, types, sdc_idx, *, pipeline_run_id=None) -> dict:
     """
     Re-run the stored search of `scenario_id` with a trace and record it. `states`, `validity`, `types` and `sdc_idx` are the scene as
@@ -77,24 +105,7 @@ def record_trace_rerun(conn, scenario_id, states, validity, types, sdc_idx, *, p
     from src.scoring.batch_scorer import _stress_one
     from src.scoring.db import _json_safe, compute_scene_fingerprint, compute_stress_run_id
 
-    with conn.cursor() as cur:
-        _require_tables(cur)
-        stored = _stored_result(cur, scenario_id)
-
-    if stored['stress_run_id'] is None or stored['delta'] is None or not isinstance(stored['search_provenance'], dict):
-        raise TraceRerunRefused(f'{scenario_id}: no stored search to re-run')
-    if stored['scene_fingerprint'] is not None and stored['scene_fingerprint'] != compute_scene_fingerprint(states, validity, types):
-        raise TraceRerunRefused(f'{scenario_id}: the scene given is not the scene the stored result was searched against')
-    if stored['sdc_idx'] is not None and int(stored['sdc_idx']) != int(sdc_idx):
-        raise TraceRerunRefused(f'{scenario_id}: the SDC index given is not the one the stored result was searched with')
-    prov = stored['search_provenance']
-    try:
-        de_kwargs = {'popsize': int(prov['de_popsize']), 'maxiter': int(prov['de_maxiter']),
-                     'tol': float(prov['de_tol']), 'seed': int(prov['de_seed'])}
-    except (KeyError, TypeError, ValueError):
-        raise TraceRerunRefused(f'{scenario_id}: the stored provenance does not hold the seed and the budget') from None
-    # The gradient stage ran if and only if it recorded its iteration count (refine_n_iters is None otherwise).
-    use_autograd = prov.get('refine_n_iters') is not None
+    stored, de_kwargs, use_autograd = load_stored_search(conn, scenario_id, states, validity, types, sdc_idx)
 
     trace = []
     result = _stress_one(states, validity, types, sdc_idx, use_autograd=use_autograd, de_kwargs={**de_kwargs, 'trace': trace})
@@ -130,9 +141,10 @@ def record_trace_rerun(conn, scenario_id, states, validity, types, sdc_idx, *, p
     conn.commit()
     return {'search_run_id': search_run_id, 'max_abs_delta_difference': difference, 'generations': len(trace),
             'matches_stored': search_run_id == stored['stress_run_id'], 'inserted': inserted,
-            # What the database holds now, not what this call computed: True only if a trace re-run row with this id names the stored
-            # result, is under the tolerance and has trace points, i.e. what GET /scenarios/{id}/trace would pick (src/api/trace.py).
-            # A row of another kind that already has the id (search_run_id is the primary key) keeps it, nothing is inserted and this is False.
+            # What the database holds now, not what this call computed: whether a servable trace_rerun row with this id exists, that is
+            # one that names the stored result, has a difference under the tolerance and has trace points (_is_servable checks exactly
+            # those conditions and the scenario). A row of another kind that already has the id (search_run_id is the primary key)
+            # keeps it, nothing is inserted and this is False.
             'will_be_served': _is_servable(conn, scenario_id, search_run_id, stored['stress_run_id'], TRACE_DELTA_TOLERANCE)}
 
 

@@ -226,6 +226,8 @@ The results stored before manifests existed have no manifest, and none is invent
 
 The same tables hold the convergence traces. `GET /scenarios/<id>/trace` serves a trace only for a result that has a recorded re-run (`record_trace_rerun` in `src/scoring/search_runs.py`, run by hand like the other offline passes) whose final perturbation is within 1e-6 of the stored one; for every other result it answers `trace: null` and the panel says "No convergence trace is recorded for this result.", so after the migration alone no trace shows, and that is correct. If the API log says "The search trace tables cannot be read by the API role", the grant above is missing for `search_runs` or `search_traces`: the API then serves no traces instead of failing.
 
+`search_runs` also holds the other searches of a scenario (other seeds and budgets, run by hand with `src/scoring/other_searches.py`), which the site lists on a scenario's page under "Other searches of this scenario" (`GET /scenarios/<id>/other-searches`). Nothing is listed until some are recorded, and the route reads no table the grant above does not already cover. If the API log says "The other-searches table cannot be read by the API role", `search_runs` is not granted: the route answers an empty list instead of failing.
+
 ## Queued search requests (off; the site does not use them)
 
 A request is a scenario id and a seed, filed through `POST /search-requests` and run **later, offline, by the owner**.

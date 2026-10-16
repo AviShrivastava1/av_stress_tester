@@ -403,6 +403,60 @@ class TraceResponse(BaseModel):
     recorded_at: datetime | None = None
 
 
+class OtherSearch(BaseModel):
+    """
+    One search of a scenario that is not its stored result: another seed, another budget, or another challenger.
+
+    Every field is null when it was not recorded or is not of the expected type. `min_perturbation` is a weighted norm over components
+    of mixed units, as everywhere else; it is the smallest perturbation THIS search found, not the smallest there is, and it is not
+    comparable with a figure from a search under another kinematic model (`delta_parameterization`).
+    """
+
+    search_run_id: str | None = None
+    kind: str = Field(description="'seed', 'budget' or 'challenger'.")
+    challenger_rank: int | None = None
+    target_idx: int | None = None
+    seed: int | None = None
+    popsize: int | None = None
+    maxiter: int | None = None
+    tol: float | None = None
+    outcome: str | None = Field(default=None, description="'collision_found' or 'no_collision_found'; null for anything else.")
+    min_perturbation: float | None = None
+    collision_timestep: int | None = None
+    delta: list[float] | None = None
+    delta_parameterization: str | None = Field(default=None, description="'bicycle' or 'linear': whose units the components of `delta` carry.")
+    delta_labels: list[str] | None = Field(
+        default=None,
+        description="The names, with units, of the components of `delta` under this search's own `delta_parameterization` "
+                    "(DELTA_LABELS_BY_PARAMETERIZATION). Null when it is not recorded or not one this API knows.",
+    )
+    n_iter: int | None = None
+    n_eval: int | None = None
+
+
+class OtherSearchesResponse(BaseModel):
+    """
+    The other searches of a scenario, in a fixed order (seeds, then budgets, then challengers; within a kind by seed or budget). The
+    order is not a ranking and nothing here marks a search as the smallest. Searches whose scene or SDC index conflicts with the stored
+    result's are not listed, and neither is a search that is the stored result itself. An empty list is a normal state: no other search
+    is recorded, the tables are not in this database, or the API role cannot read them.
+
+    At most 200 searches are listed. `truncated` is true only when more than that matched (the 201st was found and not listed); the ones
+    listed are then the first 200 in the order above. It is false for every other state, an empty list included.
+    """
+
+    scenario_id: str
+    stress_run_id: str | None = None
+    stored_delta_parameterization: str | None = Field(
+        default=None, description="The stored result's own `delta_parameterization`, so that a client can tell which searches are under the same model.")
+    searches: list[OtherSearch] = Field(default_factory=list)
+    truncated: bool = Field(
+        default=False,
+        description="True only when more searches matched than are listed here (the limit is 200); the listed ones are the first in the "
+                    "fixed order. False when everything that matched is listed, and when nothing is.",
+    )
+
+
 class ProvenanceResponse(BaseModel):
     """
     Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.
