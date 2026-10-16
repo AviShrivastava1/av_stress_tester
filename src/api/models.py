@@ -169,6 +169,36 @@ DELTA_LABELS_BY_PARAMETERIZATION = {
 }
 
 
+class FragilityBreakdown(BaseModel):
+    """
+    The two terms of the stored `fragility_score`, worked out from the stored `min_ttc` and `min_pet`.
+
+    The score ranks the recorded scene only (no perturbation term):
+
+        fragility = ttc_weight * ttc_signal + pet_weight * pet_signal
+
+    with `ttc_weight` 0.4/0.7 and `pet_weight` 0.3/0.7, and each signal 1 / max(value, floor), or 0 when the value is the 999.0
+    "none" sentinel. The floors are 0.01 s: a value at or below the floor, a PET of zero or an overlap (negative PET)
+    included, contributes the same as 0.01 s. `reproduces_stored_score` says whether the two terms add up to the stored score;
+    when it is false the breakdown does not describe that score and is not to be shown as if it did.
+    """
+
+    ttc_weight: float
+    pet_weight: float
+    ttc_signal: float
+    pet_signal: float
+    ttc_term: float
+    pet_term: float
+    recomputed_score: float
+    ttc_floor_s: float
+    pet_floor_s: float
+    ttc_none: bool = Field(description="min_ttc is the 999.0 sentinel: the SDC is never in a closing pair; the term is 0.")
+    pet_none: bool = Field(description="min_pet is the 999.0 sentinel: no shared conflict zone; the term is 0.")
+    ttc_at_floor: bool = Field(description="min_ttc is at or below the floor, so its signal is capped.")
+    pet_at_floor: bool = Field(description="min_pet is at or below the floor (an overlap included), so its signal is capped.")
+    reproduces_stored_score: bool
+
+
 class ScenarioSummary(BaseModel):
     """One row of the ranked list."""
 
@@ -209,6 +239,10 @@ class ScenarioDetail(ScenarioSummary):
     """A single scenario, including the raw perturbation vector."""
 
     delta: list[float] | None = None
+
+    # Computed by the API from the stored min_ttc and min_pet (src/danger/fragility_terms.py), not stored. Null when either is
+    # null. Only the detail carries it: the ranked list does not.
+    fragility_breakdown: FragilityBreakdown | None = None
 
     # Read from search_provenance, which records them for every searched scenario. Both
     # are distances in metres between the zero-perturbation replay of the challenger and

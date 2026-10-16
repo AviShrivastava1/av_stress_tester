@@ -357,6 +357,89 @@
         "title": "AgentTrack",
         "description": "One agent's path through space and time.\n\n`path`, `timesteps` and `headings` are index-aligned: element i of each\ndescribes the same vertex. Coordinates are LOCAL PLANAR METRES, not lon/lat.\n\n`lengths_m` and `widths_m` are index-aligned with them too: element i is the\nagent's box size at vertex i, which is the size the collision check used at that\nframe. A null ELEMENT means the recorded size at that frame was unusable (not\nfinite, or not above zero). A null ARRAY means this agent was exported before\nper-frame sizes were recorded, or the database has no such columns; `length_m` and\n`width_m` (read at the first valid frame) are all there is then. The scalars are\nunchanged and remain what they were."
       },
+      "FragilityBreakdown": {
+        "properties": {
+          "ttc_weight": {
+            "type": "number",
+            "title": "Ttc Weight"
+          },
+          "pet_weight": {
+            "type": "number",
+            "title": "Pet Weight"
+          },
+          "ttc_signal": {
+            "type": "number",
+            "title": "Ttc Signal"
+          },
+          "pet_signal": {
+            "type": "number",
+            "title": "Pet Signal"
+          },
+          "ttc_term": {
+            "type": "number",
+            "title": "Ttc Term"
+          },
+          "pet_term": {
+            "type": "number",
+            "title": "Pet Term"
+          },
+          "recomputed_score": {
+            "type": "number",
+            "title": "Recomputed Score"
+          },
+          "ttc_floor_s": {
+            "type": "number",
+            "title": "Ttc Floor S"
+          },
+          "pet_floor_s": {
+            "type": "number",
+            "title": "Pet Floor S"
+          },
+          "ttc_none": {
+            "type": "boolean",
+            "title": "Ttc None",
+            "description": "min_ttc is the 999.0 sentinel: the SDC is never in a closing pair; the term is 0."
+          },
+          "pet_none": {
+            "type": "boolean",
+            "title": "Pet None",
+            "description": "min_pet is the 999.0 sentinel: no shared conflict zone; the term is 0."
+          },
+          "ttc_at_floor": {
+            "type": "boolean",
+            "title": "Ttc At Floor",
+            "description": "min_ttc is at or below the floor, so its signal is capped."
+          },
+          "pet_at_floor": {
+            "type": "boolean",
+            "title": "Pet At Floor",
+            "description": "min_pet is at or below the floor (an overlap included), so its signal is capped."
+          },
+          "reproduces_stored_score": {
+            "type": "boolean",
+            "title": "Reproduces Stored Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ttc_weight",
+          "pet_weight",
+          "ttc_signal",
+          "pet_signal",
+          "ttc_term",
+          "pet_term",
+          "recomputed_score",
+          "ttc_floor_s",
+          "pet_floor_s",
+          "ttc_none",
+          "pet_none",
+          "ttc_at_floor",
+          "pet_at_floor",
+          "reproduces_stored_score"
+        ],
+        "title": "FragilityBreakdown",
+        "description": "The two terms of the stored `fragility_score`, worked out from the stored `min_ttc` and `min_pet`.\n\nThe score ranks the recorded scene only (no perturbation term):\n\n    fragility = ttc_weight * ttc_signal + pet_weight * pet_signal\n\nwith `ttc_weight` 0.4/0.7 and `pet_weight` 0.3/0.7, and each signal 1 / max(value, floor), or 0 when the value is the 999.0\n\"none\" sentinel. The floors are 0.01 s: a value at or below the floor, a PET of zero or an overlap (negative PET)\nincluded, contributes the same as 0.01 s. `reproduces_stored_score` says whether the two terms add up to the stored score;\nwhen it is false the breakdown does not describe that score and is not to be shown as if it did."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -657,6 +740,16 @@
               }
             ],
             "title": "Delta"
+          },
+          "fragility_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FragilityBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "baseline_offset_at_collision": {
             "anyOf": [

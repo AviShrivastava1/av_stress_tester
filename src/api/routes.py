@@ -18,9 +18,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
+from src.danger.fragility_terms import breakdown as fragility_breakdown
 from src.api.models import (
     DELTA_LABELS_BY_PARAMETERIZATION,
-    AgentTrack, HealthResponse, PerturbedResponse, ScenarioDetail,
+    AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, ScenarioDetail,
     ScenarioPage, ScenarioSummary, StatsResponse, TrajectoryResponse,
 )
 
@@ -814,8 +815,10 @@ def get_scenario(scenario_id: ScenarioId, conn=Depends(get_db)):
 
     # Built from the row, not converted from a ScenarioSummary — see _summary_fields.
     delta = [float(x) for x in row['delta']] if row['delta'] is not None else None
+    terms = fragility_breakdown(row['min_ttc'], row['min_pet'], row['fragility_score'])
     return ScenarioDetail(
         **_summary_fields(row), delta=delta,
+        fragility_breakdown=FragilityBreakdown(**terms) if terms is not None else None,
         baseline_offset_at_collision=row.get('baseline_offset_at_collision'),
         baseline_replay_error=row.get('baseline_replay_error'),
     )

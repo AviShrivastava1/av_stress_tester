@@ -1,0 +1,605 @@
+{
+"note": "Scores of the 100 scenarios on the public API (GET /scenarios), read 2026-10-15: results only, no geometry.",
+"rows": [
+{
+"scenario_id": "1492befc8cd5b7cd",
+"min_ttc": 0.0,
+"min_pet": -6.7,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "14de9ce340b5762c",
+"min_ttc": 4.5402390988853,
+"min_pet": 999.0,
+"fragility_score": 0.1258586957609493
+},
+{
+"scenario_id": "182dfffefecdaac0",
+"min_ttc": 0.0,
+"min_pet": -2.6,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "19043d68220d68ac",
+"min_ttc": 0.0,
+"min_pet": -3.7,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "1a64c26c56412fc5",
+"min_ttc": 0.0,
+"min_pet": 3.2,
+"fragility_score": 57.27678571428572
+},
+{
+"scenario_id": "1deaf924b596f4dd",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "1e4d2dd7274d2d88",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "1f073f81b598ed7a",
+"min_ttc": 3.6459416128827584,
+"min_pet": -3.6,
+"fragility_score": 43.01387289621136
+},
+{
+"scenario_id": "222f4391bac05212",
+"min_ttc": 0.0,
+"min_pet": -4.1000000000000005,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "269d12905dc248de",
+"min_ttc": 0.9884709898486319,
+"min_pet": 1.6,
+"fragility_score": 0.8459505591506007
+},
+{
+"scenario_id": "28fe360951cf98d6",
+"min_ttc": 34.156534762147686,
+"min_pet": 999.0,
+"fragility_score": 0.016729699760463682
+},
+{
+"scenario_id": "31541266c6a045e",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "370c359ae7d1c20a",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "381b67cfc7df83f7",
+"min_ttc": 0.6593041056980431,
+"min_pet": 999.0,
+"fragility_score": 0.866714717063027
+},
+{
+"scenario_id": "3896c032852bd1b",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "38c703d6cb4da5ce",
+"min_ttc": 0.0,
+"min_pet": -1.0,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "3dcd956cb7d6828e",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "3e77227fbd77b2fe",
+"min_ttc": 1.0950467425780464,
+"min_pet": -5.2,
+"fragility_score": 43.37897315827071
+},
+{
+"scenario_id": "4577e3b1c56abdd5",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "492472b14b5c2dbf",
+"min_ttc": 4.429993203210271,
+"min_pet": 999.0,
+"fragility_score": 0.12899084608402467
+},
+{
+"scenario_id": "4aea29192f2b270b",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "4b1dd88e51025ee0",
+"min_ttc": 2.655931657104947,
+"min_pet": -4.7,
+"fragility_score": 43.072294692808484
+},
+{
+"scenario_id": "4d99ac365cde07cb",
+"min_ttc": 0.0,
+"min_pet": -1.5,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "4ffe8bec59ba7a13",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "504dd39047b4c07a",
+"min_ttc": 0.0,
+"min_pet": -0.8,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "51a24bb9addc980e",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "58d5f1b9e6a1a2f7",
+"min_ttc": 0.0,
+"min_pet": -4.6000000000000005,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "64da7211f858e9a5",
+"min_ttc": 2.5569878472818863,
+"min_pet": 1.1,
+"fragility_score": 0.6130876235894279
+},
+{
+"scenario_id": "6506f848ce775f5d",
+"min_ttc": 0.0,
+"min_pet": 1.1,
+"fragility_score": 57.53246753246754
+},
+{
+"scenario_id": "6725f3566168ce34",
+"min_ttc": 0.0,
+"min_pet": -5.2,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "67f4400888fe291d",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "6c2f9d51b11e5433",
+"min_ttc": 0.0,
+"min_pet": 6.0,
+"fragility_score": 57.21428571428572
+},
+{
+"scenario_id": "6d529eb1f3e72fb5",
+"min_ttc": 2.884333629653768,
+"min_pet": 999.0,
+"fragility_score": 0.19811458894828513
+},
+{
+"scenario_id": "6f03a7b4a1b69597",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "70c05dc071a6813",
+"min_ttc": 2.678089832155804,
+"min_pet": -4.800000000000001,
+"fragility_score": 43.070514553852746
+},
+{
+"scenario_id": "715d3486ae51c657",
+"min_ttc": 0.0,
+"min_pet": 1.1,
+"fragility_score": 57.53246753246754
+},
+{
+"scenario_id": "78afd0d26d19ef41",
+"min_ttc": 0.0,
+"min_pet": -4.9,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "78ddc8698f212d27",
+"min_ttc": 1.428033689895431,
+"min_pet": -2.1,
+"fragility_score": 43.25729348066941
+},
+{
+"scenario_id": "7e00bbaa716855a9",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "7f6598243a367480",
+"min_ttc": 2.3628248781271024,
+"min_pet": -3.1,
+"fragility_score": 43.098984128037856
+},
+{
+"scenario_id": "8125f2fe4cfdff0b",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "82a995e215c7039f",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "83f088b3ddcfcad1",
+"min_ttc": 5.388520024433517,
+"min_pet": 999.0,
+"fragility_score": 0.10604555032504394
+},
+{
+"scenario_id": "85333d34425536d9",
+"min_ttc": 0.0,
+"min_pet": -5.800000000000001,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "888d2ac2b622078b",
+"min_ttc": 0.0,
+"min_pet": -3.6,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "8c1cc515fe04ebd4",
+"min_ttc": 3.817273093572778,
+"min_pet": 999.0,
+"fragility_score": 0.14969549136809146
+},
+{
+"scenario_id": "8d2d7fabb0dbafc9",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "8d42fc0018c6f8d7",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "8ec2910bbae8e13a",
+"min_ttc": 0.0,
+"min_pet": -5.9,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "8f4af5778105c0da",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "91a2a6ad0c50ce55",
+"min_ttc": 0.0,
+"min_pet": -0.1,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "94ee2703b90be90f",
+"min_ttc": 3.805187490191074,
+"min_pet": 999.0,
+"fragility_score": 0.15017093714871793
+},
+{
+"scenario_id": "953785ed69f6abeb",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "95b58f664f58005c",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "9ee1338a9d59f694",
+"min_ttc": 3.152725786833676,
+"min_pet": -3.8000000000000003,
+"fragility_score": 43.03839191274261
+},
+{
+"scenario_id": "a4fe6991e8f98201",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "a6bf1ade33cb6e93",
+"min_ttc": 0.0,
+"min_pet": -7.0,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "a7d54585441f1b0c",
+"min_ttc": 2.4941303474880567,
+"min_pet": -2.7,
+"fragility_score": 43.08625220261235
+},
+{
+"scenario_id": "a819d023e9906d34",
+"min_ttc": 2.8897648752643996,
+"min_pet": -5.6000000000000005,
+"fragility_score": 43.05488509434695
+},
+{
+"scenario_id": "acccd66dd1bfa766",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "adfa8900e80b9522",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "afa0611a84f34021",
+"min_ttc": 999.0,
+"min_pet": -3.6,
+"fragility_score": 42.85714285714286
+},
+{
+"scenario_id": "b063065d55a07d22",
+"min_ttc": 31.27439155941291,
+"min_pet": -5.9,
+"fragility_score": 42.87541431001327
+},
+{
+"scenario_id": "b1e5a34520fe6043",
+"min_ttc": 0.0,
+"min_pet": -5.2,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "b262200be0d2b7f0",
+"min_ttc": 0.0,
+"min_pet": -7.300000000000001,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "b3fe135b04165b53",
+"min_ttc": 0.0,
+"min_pet": 2.0,
+"fragility_score": 57.35714285714287
+},
+{
+"scenario_id": "b57b18b2eed93e31",
+"min_ttc": 0.0,
+"min_pet": -1.6,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "b677bf205ebd2f50",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "bb1294ef8c0f1ff0",
+"min_ttc": 0.0,
+"min_pet": -5.6000000000000005,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "bb33d73040187c42",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "bdffdf4d02f430a9",
+"min_ttc": 0.0,
+"min_pet": 1.3,
+"fragility_score": 57.47252747252748
+},
+{
+"scenario_id": "c1034d5185fd44c0",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "c26975a3a5ae44cc",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "c302c9057fbedca7",
+"min_ttc": 0.0,
+"min_pet": 1.3,
+"fragility_score": 57.47252747252748
+},
+{
+"scenario_id": "c31a6a2a9c9fe373",
+"min_ttc": 4.009892934022038,
+"min_pet": -5.9,
+"fragility_score": 42.99964755261248
+},
+{
+"scenario_id": "c549c69c076a2718",
+"min_ttc": 0.0,
+"min_pet": -1.0,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "c54c78b994225840",
+"min_ttc": 0.0,
+"min_pet": -2.0,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "c9fb513861664c22",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "cbe0937378626828",
+"min_ttc": 2.5985916159525764,
+"min_pet": 999.0,
+"fragility_score": 0.2198993362098956
+},
+{
+"scenario_id": "cf6213460bd28b77",
+"min_ttc": 0.0,
+"min_pet": -6.2,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "d87ed8e5f9895aa1",
+"min_ttc": 4.2013222041651055,
+"min_pet": 999.0,
+"fragility_score": 0.13601160388557412
+},
+{
+"scenario_id": "d8ce6a6e570a7fb9",
+"min_ttc": 0.0,
+"min_pet": -5.2,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "dd01e99255a2ddb9",
+"min_ttc": 2.660893972100651,
+"min_pet": -1.0,
+"fragility_score": 43.07189345503213
+},
+{
+"scenario_id": "dd0ccb04bce9bb81",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "df89617471024d9",
+"min_ttc": 1.450183463021186,
+"min_pet": -3.6,
+"fragility_score": 43.25118167085137
+},
+{
+"scenario_id": "e05d8172f7802263",
+"min_ttc": 0.0,
+"min_pet": -5.300000000000001,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "e0a7a91acfb1221",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "e38f68eadb5ae80a",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "e4bed279d8a9b843",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "e91b118b68b4b3a3",
+"min_ttc": 0.0,
+"min_pet": -3.2,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "ecd0b9f00afd601f",
+"min_ttc": 9.017117418106556,
+"min_pet": 4.4,
+"fragility_score": 0.16077413233249988
+},
+{
+"scenario_id": "edff6b0644bd2087",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "ef85eea76b47df01",
+"min_ttc": 1.9565402713801445,
+"min_pet": -4.2,
+"fragility_score": 43.14920358279585
+},
+{
+"scenario_id": "f20c19cddd9753f9",
+"min_ttc": 0.0,
+"min_pet": 1.6,
+"fragility_score": 57.4107142857143
+},
+{
+"scenario_id": "f3824f97b8ed2897",
+"min_ttc": 0.0,
+"min_pet": -4.1000000000000005,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "f564d3bb5f963f71",
+"min_ttc": 2.2914249986161277,
+"min_pet": 999.0,
+"fragility_score": 0.24937694743387953
+},
+{
+"scenario_id": "f7ff4c7c34b9a63d",
+"min_ttc": 0.0,
+"min_pet": -7.0,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "f89b062a5b425af9",
+"min_ttc": 0.0,
+"min_pet": 999.0,
+"fragility_score": 57.14285714285715
+},
+{
+"scenario_id": "fbedbec089659222",
+"min_ttc": 0.0,
+"min_pet": -5.1000000000000005,
+"fragility_score": 100.00000000000001
+},
+{
+"scenario_id": "ffe249b60e184da1",
+"min_ttc": 0.6089266439166153,
+"min_pet": 4.2,
+"fragility_score": 1.0404602091012394
+}
+]
+}
