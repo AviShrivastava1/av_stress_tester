@@ -121,3 +121,21 @@ export function usePerturbed(scenarioId: string, options: { enabled?: boolean } 
       ),
   });
 }
+
+/**
+ * Where a stored result came from (GET /scenarios/{id}/provenance). Not started with the page: it is asked for when the reader
+ * opens the provenance panel (`enabled`), so a page that is only looked at costs no extra request.
+ */
+export function useProvenance(scenarioId: string, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId, 'provenance'],
+    enabled: options.enabled ?? true,
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}/provenance', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
+  });
+}

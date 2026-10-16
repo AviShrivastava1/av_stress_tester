@@ -56,6 +56,11 @@ h2 { margin:0 0 18px; font-size:18px; font-weight:650; line-height:1.15; letter-
 .walkthrough { max-width:760px; padding-top:44px; }
 /* the offset by frame, in the Perturbation panel */
 .offset-block { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); }
+.provenance { margin:34px 0 0; padding-top:20px; border-top:1px solid var(--border); }
+.provenance summary { cursor:pointer; font-size:14px; font-weight:620; }
+.provenance h3 { margin:22px 0 4px; font-size:13px; font-weight:620; }
+.provenance .facts { margin-top:6px; }
+.provenance-bounds { margin-top:6px; }
 .fragility-terms { margin:22px 0 0; }
 .fragility-terms h3 { margin:0 0 6px; font-size:13px; font-weight:620; }
 .fragility-table { margin-top:12px; }

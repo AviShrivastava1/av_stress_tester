@@ -204,6 +204,22 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it.each([
+    ['a stored search', { scenario_id: 'synthetic-0001', stress_run_id: 'r', scene_fingerprint: 's', sdc_idx: 1, scored_at: '2026-09-01T10:15:30Z', stress_attempted_at: null, stress_tested_at: '2026-09-02T00:00:00Z', search: { replay_model_version: 'v', collision_geometry_version: 'g', delta_parameterization: 'bicycle', challenger_selection: 'n', selected_stage: 'de', de_popsize: 15, de_maxiter: 200, de_tol: 0.001, de_seed: 1, de_n_iter: 3, de_n_eval: 99, de_candidate_source: 'de_winner', de_archive_covered_all_evaluations: true, refine_n_iters: null, bounds: [[-1, 1], [-1, 1]], max_baseline_drift: 1.5, max_speed_step: 2, speed_step_hold_s: 0.5, held_speed_excess: 0.1, a_max: 12, heading_speed_floor: 0.5, heading_transition_width: 0.05, target_min_speed: 3, frames_observed: 91, frames_below_heading_floor: 0, frames_in_heading_transition_band: 0, target_has_interior_gap: false } }],
+    ['no stored search', { scenario_id: 'synthetic-0001', stress_run_id: null, scene_fingerprint: null, sdc_idx: null, scored_at: '2026-09-01T10:15:30Z', stress_attempted_at: null, stress_tested_at: null, search: null }],
+  ])('on the provenance panel, opened, with %s', async (_name, provenance) => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/provenance')) return ok(provenance);
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed());
+      return ok(makeDetail());
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByText('Provenance: where this result came from'));
+    await screen.findByText('Scored');
+    expect(violations(pageText())).toEqual([]);
+  });
+
   it('on the walkthrough, with all three scenes shown', async () => {
     stubFetch((req: RecordedRequest): Reply => {
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));

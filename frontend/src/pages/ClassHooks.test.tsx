@@ -101,6 +101,20 @@ describe('every class a page renders has a rule', () => {
     expect(unstyled()).toEqual([]);
   });
 
+  it('on a scenario page with the provenance panel opened', async () => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/provenance')) return ok({ scenario_id: 'synthetic-0001', stress_run_id: 'r', scene_fingerprint: 's', sdc_idx: 1, scored_at: '2026-09-01T10:15:30Z', stress_attempted_at: null, stress_tested_at: '2026-09-02T00:00:00Z', search: { replay_model_version: 'v', collision_geometry_version: 'g', delta_parameterization: 'bicycle', challenger_selection: 'n', selected_stage: 'de', de_popsize: 15, de_maxiter: 200, de_tol: 0.001, de_seed: 1, de_n_iter: 3, de_n_eval: 99, de_candidate_source: 'de_winner', de_archive_covered_all_evaluations: true, refine_n_iters: null, bounds: [[-1, 1], [-1, 1]], max_baseline_drift: 1.5, max_speed_step: 2, speed_step_hold_s: 0.5, held_speed_excess: 0.1, a_max: 12, heading_speed_floor: 0.5, heading_transition_width: 0.05, target_min_speed: 3, frames_observed: 91, frames_below_heading_floor: 0, frames_in_heading_transition_band: 0, target_has_interior_gap: false } });
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged, perturbed }));
+      return ok(makeDetail({ stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.1, collision_timestep: 25 }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByText('Provenance: where this result came from'));
+    await screen.findByText('Scene fingerprint');
+    expect(document.querySelector('.provenance-bounds')).not.toBeNull();
+    expect(unstyled()).toEqual([]);
+  });
+
   it('on the Method page', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/method');
