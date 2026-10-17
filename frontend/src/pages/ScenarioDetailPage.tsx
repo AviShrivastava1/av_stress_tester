@@ -7,6 +7,7 @@ import { buildBrief } from './detail/brief';
 import { PerturbationPanel } from './detail/PerturbationPanel';
 import { OtherSearches } from './detail/OtherSearches';
 import { ProvenancePanel } from './detail/ProvenancePanel';
+import { SensitivitySliceSection } from './detail/SensitivitySlice';
 import { RequestSearchPanel } from './detail/RequestSearchPanel';
 import { ScenePanel } from './detail/ScenePanel';
 import { SummaryPanel } from './detail/SummaryPanel';
@@ -161,6 +162,7 @@ export function ScenarioDetailPage() {
       </div>
       <ProvenancePanel scenarioId={scenarioId} labels={perturbed.data?.delta_labels} />
       <OtherSearches scenarioId={scenarioId} />
+      <SensitivitySliceSection scenarioId={scenarioId} />
       <RequestSearchPanel scenarioId={scenarioId} />
     </section>
   );

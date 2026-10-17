@@ -65,6 +65,24 @@ h2 { margin:0 0 18px; font-size:18px; font-weight:650; line-height:1.15; letter-
 .other-searches-table { margin-top:10px; }
 .other-searches-components { margin-top:10px; }
 .other-searches-components h4 { margin:14px 0 2px; font-size:12px; font-weight:620; }
+.sensitivity { margin-top:20px; }
+.sens-slice { margin-top:16px; }
+.sens-slice h4 { margin:0 0 4px; font-size:12px; font-weight:620; }
+.sens-slice > summary { cursor:pointer; font-size:12px; font-weight:620; padding:4px 0; }
+.sens-figure { margin:8px 0; max-width:420px; }
+.sens-svg { display:block; width:100%; aspect-ratio:1 / 1; border:1px solid var(--border-strong); }
+.sens-cell { stroke:var(--border); stroke-width:.5; vector-effect:non-scaling-stroke; }
+.sens-miss { fill:var(--surface-strong); }
+.sens-hit { stroke:var(--danger-fg); }
+.sens-unknown { fill:var(--surface-soft); stroke:var(--text-muted); stroke-dasharray:1 2; }
+.sens-hit-ground { fill:var(--danger-bg); }
+.sens-hit-line { stroke:var(--danger-fg); stroke-width:1.4; }
+.sens-stored { fill:none; stroke:var(--accent-dark); stroke-width:2; vector-effect:non-scaling-stroke; }
+.sens-scale { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; margin-top:4px; font-size:11px; color:var(--text-muted); }
+.sens-legend { margin:6px 0; padding-left:18px; font-size:12px; color:var(--text-muted); }
+.sens-held { margin:4px 0; }
+.sens-table summary { cursor:pointer; font-size:12px; color:var(--text-muted); }
+.sens-table table { margin-top:8px; }
 .fragility-terms { margin:22px 0 0; }
 .fragility-terms h3 { margin:0 0 6px; font-size:13px; font-weight:620; }
 .fragility-table { margin-top:12px; }

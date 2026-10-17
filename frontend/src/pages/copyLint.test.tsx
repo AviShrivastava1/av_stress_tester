@@ -271,6 +271,26 @@ describe('the words the project cannot back do not appear', () => {
     expect(violations(pageText())).toEqual([]);
   });
 
+  it.each([
+    ['slices under the stored result’s model and another, cut off', true],
+    ['no slice', false],
+  ])('on the sensitivity slice, opened, with %s', async (_name, some) => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/slice')) return ok({ scenario_id: 'synthetic-0001', stress_run_id: 'r', stored_delta_parameterization: 'bicycle', truncated: some, slices: some ? [{ slice_id: 7, axis_x: 0, axis_y: 2, delta_parameterization: 'bicycle', axis_x_label: 'initial speed (m/s)', axis_y_label: 'acceleration bias (m/s^2)', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], x_values: [-1, 0, 1], y_values: [0.5, 1.5], weighted_norm: [0.9, 0.3, 0.8, 0.7, 0.2, 0.6], collides: [false, true, false, false, true, null], held_delta: [0, 0.05, 1.5, -0.02], stored_x_index: 1, stored_y_index: 1 }, { ...{ slice_id: 7, axis_x: 0, axis_y: 2, delta_parameterization: 'bicycle', axis_x_label: 'initial speed (m/s)', axis_y_label: 'acceleration bias (m/s^2)', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], x_values: [-1, 0, 1], y_values: [0.5, 1.5], weighted_norm: [0.9, 0.3, 0.8, 0.7, 0.2, 0.6], collides: [false, true, false, false, true, null], held_delta: [0, 0.05, 1.5, -0.02], stored_x_index: 1, stored_y_index: 1 }, slice_id: 8, delta_parameterization: 'linear', delta_labels: null }] : [] });
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed());
+      return ok(makeDetail());
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByText('Sensitivity slice of this scenario'));
+    if (some) await userEvent.click(await screen.findByText(/ against .*, \d+ by \d+$/, { selector: 'summary' }));   // a slice is closed until it is opened
+    await screen.findByText(some ? 'Hatched cell: the replay collides.' : 'No slice is recorded for this scenario.');
+    if (some) await userEvent.click(screen.getAllByText('Table of the slice')[0]!);
+    expect(pageText()).toContain('A slice of a four-dimensional search.');
+    expect(violations(pageText())).toEqual([]);
+    expect(pageText()).not.toMatch(/\b(region|boundary|probability)\b/i);
+  });
+
   it('on the walkthrough, with all three scenes shown', async () => {
     stubFetch((req: RecordedRequest): Reply => {
       if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));

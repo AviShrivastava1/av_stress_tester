@@ -174,3 +174,21 @@ export function useOtherSearches(scenarioId: string, options: { enabled?: boolea
       ),
   });
 }
+
+/**
+ * The sensitivity slices recorded around a scenario's stored result: GET /scenarios/{id}/slice. Asked for when the "Sensitivity slice"
+ * section is opened (`enabled`), so a page that is only looked at costs no extra request.
+ */
+export function useSensitivitySlices(scenarioId: string, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['scenario', scenarioId, 'slice'],
+    enabled: options.enabled ?? true,
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET('/scenarios/{scenario_id}/slice', {
+          params: { path: { scenario_id: scenarioId } },
+          signal,
+        }),
+      ),
+  });
+}

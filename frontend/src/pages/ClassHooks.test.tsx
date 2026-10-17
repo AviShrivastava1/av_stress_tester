@@ -134,6 +134,26 @@ describe('every class a page renders has a rule', () => {
     expect(unstyled()).toEqual([]);
   });
 
+  it('on a scenario page with the sensitivity slice opened and its table', async () => {
+    stubFetch((req: RecordedRequest): Reply => {
+      if (req.path.endsWith('/slice')) return ok({ scenario_id: 'synthetic-0001', stress_run_id: 'r', stored_delta_parameterization: 'bicycle', truncated: true, slices: [{ slice_id: 7, axis_x: 0, axis_y: 2, delta_parameterization: 'bicycle', axis_x_label: 'initial speed (m/s)', axis_y_label: 'acceleration bias (m/s^2)', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], x_values: [-1, 0, 1], y_values: [0.5, 1.5], weighted_norm: [0.9, 0.3, 0.8, 0.7, 0.2, 0.6], collides: [false, true, false, false, true, null], held_delta: [0, 0.05, 1.5, -0.02], stored_x_index: 1, stored_y_index: 1 }, { ...{ slice_id: 7, axis_x: 0, axis_y: 2, delta_parameterization: 'bicycle', axis_x_label: 'initial speed (m/s)', axis_y_label: 'acceleration bias (m/s^2)', delta_labels: ['initial speed (m/s)', 'initial heading (rad)', 'acceleration bias (m/s^2)', 'steering bias (rad)'], x_values: [-1, 0, 1], y_values: [0.5, 1.5], weighted_norm: [0.9, 0.3, 0.8, 0.7, 0.2, 0.6], collides: [false, true, false, false, true, null], held_delta: [0, 0.05, 1.5, -0.02], stored_x_index: 1, stored_y_index: 1 }, slice_id: 8, delta_parameterization: 'linear', delta_labels: null }] });
+      if (req.path.endsWith('/trajectories')) return ok(makeTrajectories([sdc, logged]));
+      if (req.path.endsWith('/perturbed')) return ok(makePerturbed({ target_idx: 1, collision_timestep: 25, baseline: logged, perturbed }));
+      return ok(makeDetail({ stress_tested: true, stress_attempted: true, stress_outcome: 'collision_found', min_perturbation: 0.1, collision_timestep: 25 }));
+    });
+    renderApp('/scenarios/synthetic-0001');
+    await userEvent.click(await screen.findByText('Sensitivity slice of this scenario'));
+    await userEvent.click(await screen.findByText(/ against .*, \d+ by \d+$/, { selector: 'summary' }));   // a slice is closed until it is opened
+    await screen.findByText('Hatched cell: the replay collides.');
+    await userEvent.click(screen.getByText('Table of the slice'));
+    await screen.findByRole('table');
+    for (const cls of ['sens-figure', 'sens-svg', 'sens-cell', 'sens-hit', 'sens-miss', 'sens-unknown', 'sens-hit-ground', 'sens-hit-line', 'sens-stored', 'sens-scale', 'sens-legend', 'sens-held', 'sens-table', 'sens-slice', 'sensitivity']) {
+      expect(document.querySelector('.' + cls), cls).not.toBeNull();
+    }
+    expect(screen.getByText(/Not every recorded slice is listed here/)).toBeInTheDocument();
+    expect(unstyled()).toEqual([]);
+  });
+
   it('on the Method page', async () => {
     stubFetch(() => ok(makePage([], null)));
     renderApp('/method');
