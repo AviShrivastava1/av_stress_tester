@@ -219,7 +219,7 @@ The offline pipeline can record each run (git revision, versions, shard name and
 The script grants the read-only role what the API reads and takes away the raw table (its command line, host label and notes are never public). If the role was created **after** the script ran, give it the grants by hand (the check in `tests/test_deploy_contract.py` pins this line to the tables and views the API reads):
 
 ```sql
-GRANT SELECT ON pipeline_runs_public, pipeline_run_results, search_runs, search_traces TO av_api_ro;
+GRANT SELECT ON pipeline_runs_public, pipeline_run_results, search_runs, search_traces, sensitivity_slices TO av_api_ro;
 ```
 
 The results stored before manifests existed have no manifest, and none is invented: the panel says "No run manifest is recorded for this result". The writer is `src/scoring/manifest.py` (`begin_run`, `link_result`, `finish_run`); it needs the tables and says so when they are missing.
@@ -227,6 +227,8 @@ The results stored before manifests existed have no manifest, and none is invent
 The same tables hold the convergence traces. `GET /scenarios/<id>/trace` serves a trace only for a result that has a recorded re-run (`record_trace_rerun` in `src/scoring/search_runs.py`, run by hand like the other offline passes) whose final perturbation is within 1e-6 of the stored one; for every other result it answers `trace: null` and the panel says "No convergence trace is recorded for this result.", so after the migration alone no trace shows, and that is correct. If the API log says "The search trace tables cannot be read by the API role", the grant above is missing for `search_runs` or `search_traces`: the API then serves no traces instead of failing.
 
 `search_runs` also holds the other searches of a scenario (other seeds and budgets, run by hand with `src/scoring/other_searches.py`), which the site lists on a scenario's page under "Other searches of this scenario" (`GET /scenarios/<id>/other-searches`). Nothing is listed until some are recorded, and the route reads no table the grant above does not already cover. If the API log says "The other-searches table cannot be read by the API role", `search_runs` is not granted: the route answers an empty list instead of failing.
+
+`sensitivity_slices` holds the sensitivity slices (two components of a stored perturbation over a grid, drawn by hand with `src/scoring/sensitivity.py`), which the site shows under "Sensitivity slice" on a scenario's page (`GET /scenarios/<id>/slice`). It is a table the API did not read before, so the grant line above now names it (the migration grants it too; the line matters for a role created after the migration). Nothing is shown until a slice is recorded, and a slice is shown only while it is drawn around the stored result. If the API log says "The sensitivity-slice table cannot be read by the API role", the table is not granted: the route answers an empty list instead of failing.
 
 ## Queued search requests (off; the site does not use them)
 

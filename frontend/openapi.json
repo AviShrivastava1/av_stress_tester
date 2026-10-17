@@ -320,6 +320,46 @@
         }
       }
     },
+    "/scenarios/{scenario_id}/slice": {
+      "get": {
+        "summary": "Get Slice",
+        "description": "The sensitivity slices recorded around this scenario's stored result: two components of the stored perturbation over a grid, the other\ntwo held at the stored values (src/scoring/sensitivity.py draws them, by hand). Public fields only, through the allow-list in\nsrc/api/sensitivity.py.\n\nShown only while the slice is drawn around the stored result: its `stress_run_id` must be the stored one (a slice of a result that has\nsince been replaced is not listed), and its scene fingerprint and SDC index must not conflict with the stored result's (where both are\nrecorded). The order is fixed (by axes). At most MAX_SLICES (12, every ordered pair of components) are listed; the query asks for one more and `truncated` is true only if\nthat one was there. 200 with an empty list and `truncated` false for every state with nothing to list; 404 only when the scenario is\nunknown.",
+        "operationId": "get_slice_scenarios__scenario_id__slice_get",
+        "parameters": [
+          {
+            "name": "scenario_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scenario Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SensitivityResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scenarios/{scenario_id}/trajectories": {
       "get": {
         "summary": "Get Trajectories",
@@ -2210,6 +2250,260 @@
         "type": "object",
         "title": "SearchRecord",
         "description": "How the stored result was searched: the keys of `search_provenance` that are public, each as recorded or null.\n\nNull means \"not recorded for this result\" (an older result, or a key the search did not write) and is never zero. The keys\nare an allow-list (src/api/provenance.py); nothing else in the stored blob is served. `bounds` has one [low, high] per\ncomponent of the perturbation, in the order of `delta` and `delta_labels`."
+      },
+      "SensitivityResponse": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "stress_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Run Id"
+          },
+          "stored_delta_parameterization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Delta Parameterization",
+            "description": "The stored result's own `delta_parameterization`, so that a client can tell which slices are under the same model."
+          },
+          "slices": {
+            "items": {
+              "$ref": "#/components/schemas/SensitivitySlice"
+            },
+            "type": "array",
+            "title": "Slices"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "description": "True only when more slices matched than are listed here (the limit is 12, every ordered pair of components, so this is a guard and not a state to expect); the listed ones are the first in the fixed order.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id"
+        ],
+        "title": "SensitivityResponse",
+        "description": "The slices recorded around the stored result of a scenario, in a fixed order (by axes). A slice is listed only while it is drawn\naround the stored result (its `stress_run_id` is the stored one) and its scene and SDC index do not conflict with the stored\nresult's. An empty list is a normal state: none recorded, the table is not in this database, or the API role cannot read it.\n\nAt most 12 slices are listed, which is every ordered pair of two different components out of four (the most the table's unique key allows\naround one stored result). `truncated` is true only when more matched (the 13th was found and not listed); the listed ones are then the\nfirst in the order. It is false for every other state, an empty list included."
+      },
+      "SensitivitySlice": {
+        "properties": {
+          "slice_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Id"
+          },
+          "axis_x": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Axis X",
+            "description": "Which component (0 to 3) runs along the horizontal axis."
+          },
+          "axis_y": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Axis Y",
+            "description": "Which component (0 to 3) runs along the vertical axis."
+          },
+          "delta_parameterization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Parameterization",
+            "description": "'bicycle' or 'linear': whose units the components carry."
+          },
+          "axis_x_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Axis X Label",
+            "description": "Name, with the unit, of the horizontal component under this slice's own model."
+          },
+          "axis_y_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Axis Y Label",
+            "description": "Name, with the unit, of the vertical component under this slice's own model."
+          },
+          "delta_labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Labels",
+            "description": "The names, with units, of all four components under this slice's own `delta_parameterization` (DELTA_LABELS_BY_PARAMETERIZATION), so that the two held components can be named too. Null when it is not recorded or not known."
+          },
+          "x_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X Values"
+          },
+          "y_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y Values"
+          },
+          "weighted_norm": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Norm",
+            "description": "One per cell, row-major (vertical axis outer); null for a cell whose value was not a number."
+          },
+          "collides": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collides",
+            "description": "One per cell, same layout: whether that perturbation collides."
+          },
+          "held_delta": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Delta",
+            "description": "All four components of the stored perturbation; the two not on an axis are held at these."
+          },
+          "stored_x_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored X Index",
+            "description": "Index in `x_values` of the stored value, or null if it is not one of them."
+          },
+          "stored_y_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Y Index",
+            "description": "Index in `y_values` of the stored value, or null if it is not one of them."
+          }
+        },
+        "type": "object",
+        "title": "SensitivitySlice",
+        "description": "One two-dimensional slice of the four-dimensional space of perturbations, through a stored result: components `axis_x` and `axis_y`\ntake the values of the grid, the other two are held at the stored values (`held_delta`), on the same scene and against the same\nchallenger. Cell (i, j), counted from zero, has `x_values[i]` and `y_values[j]`; `weighted_norm` and `collides` are flat, row-major,\nthe vertical axis outer: the cell is at `j * len(x_values) + i`.\n\nEvery field is null when it was not recorded or is not of the expected type; a grid whose arrays do not fit together is null. A cell\nthat did not collide is a perturbation that did not collide: it does not show that none exists nearby, between the cells or in the\nheld components. `weighted_norm` is a weighted norm over components of mixed units and is not comparable across kinematic models."
       },
       "StatsResponse": {
         "properties": {

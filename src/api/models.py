@@ -457,6 +457,60 @@ class OtherSearchesResponse(BaseModel):
     )
 
 
+class SensitivitySlice(BaseModel):
+    """
+    One two-dimensional slice of the four-dimensional space of perturbations, through a stored result: components `axis_x` and `axis_y`
+    take the values of the grid, the other two are held at the stored values (`held_delta`), on the same scene and against the same
+    challenger. Cell (i, j), counted from zero, has `x_values[i]` and `y_values[j]`; `weighted_norm` and `collides` are flat, row-major,
+    the vertical axis outer: the cell is at `j * len(x_values) + i`.
+
+    Every field is null when it was not recorded or is not of the expected type; a grid whose arrays do not fit together is null. A cell
+    that did not collide is a perturbation that did not collide: it does not show that none exists nearby, between the cells or in the
+    held components. `weighted_norm` is a weighted norm over components of mixed units and is not comparable across kinematic models.
+    """
+
+    slice_id: int | None = None
+    axis_x: int | None = Field(default=None, description="Which component (0 to 3) runs along the horizontal axis.")
+    axis_y: int | None = Field(default=None, description="Which component (0 to 3) runs along the vertical axis.")
+    delta_parameterization: str | None = Field(default=None, description="'bicycle' or 'linear': whose units the components carry.")
+    axis_x_label: str | None = Field(default=None, description="Name, with the unit, of the horizontal component under this slice's own model.")
+    axis_y_label: str | None = Field(default=None, description="Name, with the unit, of the vertical component under this slice's own model.")
+    delta_labels: list[str] | None = Field(
+        default=None,
+        description="The names, with units, of all four components under this slice's own `delta_parameterization` "
+                    "(DELTA_LABELS_BY_PARAMETERIZATION), so that the two held components can be named too. Null when it is not recorded or not known.",
+    )
+    x_values: list[float] | None = None
+    y_values: list[float] | None = None
+    weighted_norm: list[float | None] | None = Field(default=None, description="One per cell, row-major (vertical axis outer); null for a cell whose value was not a number.")
+    collides: list[bool | None] | None = Field(default=None, description="One per cell, same layout: whether that perturbation collides.")
+    held_delta: list[float] | None = Field(default=None, description="All four components of the stored perturbation; the two not on an axis are held at these.")
+    stored_x_index: int | None = Field(default=None, description="Index in `x_values` of the stored value, or null if it is not one of them.")
+    stored_y_index: int | None = Field(default=None, description="Index in `y_values` of the stored value, or null if it is not one of them.")
+
+
+class SensitivityResponse(BaseModel):
+    """
+    The slices recorded around the stored result of a scenario, in a fixed order (by axes). A slice is listed only while it is drawn
+    around the stored result (its `stress_run_id` is the stored one) and its scene and SDC index do not conflict with the stored
+    result's. An empty list is a normal state: none recorded, the table is not in this database, or the API role cannot read it.
+
+    At most 12 slices are listed, which is every ordered pair of two different components out of four (the most the table's unique key allows
+    around one stored result). `truncated` is true only when more matched (the 13th was found and not listed); the listed ones are then the
+    first in the order. It is false for every other state, an empty list included.
+    """
+
+    scenario_id: str
+    stress_run_id: str | None = None
+    stored_delta_parameterization: str | None = Field(
+        default=None, description="The stored result's own `delta_parameterization`, so that a client can tell which slices are under the same model.")
+    slices: list[SensitivitySlice] = Field(default_factory=list)
+    truncated: bool = Field(
+        default=False,
+        description="True only when more slices matched than are listed here (the limit is 12, every ordered pair of components, so this is a guard and not a state to expect); the listed ones are the first in the fixed order.",
+    )
+
+
 class ProvenanceResponse(BaseModel):
     """
     Where a scenario's stored result came from, for the reader who wants to check it or reproduce it.

@@ -24,13 +24,14 @@ from src.api.config import settings
 from src.api.db_pool import dict_cursor, get_db
 from src.api import manifest
 from src.api import other_searches as other_rules
+from src.api import sensitivity as slice_rules
 from src.api import trace as trace_rules
 from src.api.provenance import select_search_record
 from src.danger.fragility_terms import breakdown as fragility_breakdown
 from src.api.models import (
     DELTA_LABELS_BY_PARAMETERIZATION,
     AgentTrack, FragilityBreakdown, HealthResponse, PerturbedResponse, PipelineRun, ProvenanceResponse, ScenarioDetail,
-    OtherSearch, OtherSearchesResponse, ScenarioPage, ScenarioSummary, StatsResponse, TracePoint, TraceResponse, TrajectoryResponse,
+    OtherSearch, OtherSearchesResponse, ScenarioPage, ScenarioSummary, SensitivityResponse, SensitivitySlice, StatsResponse, TracePoint, TraceResponse, TrajectoryResponse,
 )
 
 # Ceiling on a client-supplied scenario_id. A resource guard, not a format rule —
@@ -1090,6 +1091,66 @@ def get_other_searches(scenario_id: ScenarioId, conn=Depends(get_db)):
     return OtherSearchesResponse(scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'],
                                  stored_delta_parameterization=stored_parameterization, searches=searches,
                                  truncated=truncated)
+
+
+def _slices_unreadable(cur) -> None:
+    """The same state as _other_searches_unreadable, for GET /slice: the role cannot read sensitivity_slices. Serve an empty list, say so once."""
+    cur.connection.rollback()
+    log.warning('The sensitivity-slice table cannot be read by the API role; serving no slices. Check the grant in DEPLOY.md, "Run manifests".')
+
+
+@router.get('/scenarios/{scenario_id}/slice', response_model=SensitivityResponse)
+def get_slice(scenario_id: ScenarioId, conn=Depends(get_db)):
+    """
+    The sensitivity slices recorded around this scenario's stored result: two components of the stored perturbation over a grid, the other
+    two held at the stored values (src/scoring/sensitivity.py draws them, by hand). Public fields only, through the allow-list in
+    src/api/sensitivity.py.
+
+    Shown only while the slice is drawn around the stored result: its `stress_run_id` must be the stored one (a slice of a result that has
+    since been replaced is not listed), and its scene fingerprint and SDC index must not conflict with the stored result's (where both are
+    recorded). The order is fixed (by axes). At most MAX_SLICES (12, every ordered pair of components) are listed; the query asks for one more and `truncated` is true only if
+    that one was there. 200 with an empty list and `truncated` false for every state with nothing to list; 404 only when the scenario is
+    unknown.
+    """
+    with dict_cursor(conn) as cur:
+        cur.execute("""
+            SELECT scenario_id, stress_run_id, scene_fingerprint, sdc_idx, search_provenance ->> 'delta_parameterization' AS parameterization
+            FROM scenario_scores WHERE scenario_id = %s
+        """, (scenario_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario_id}")
+        stored_parameterization = slice_rules.select_parameterization(row['parameterization'])
+        empty = SensitivityResponse(scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'],
+                                    stored_delta_parameterization=stored_parameterization)
+        if row['stress_run_id'] is None or not _table_exists(cur, 'sensitivity_slices'):
+            return empty
+        try:
+            cur.execute("""
+                SELECT slice_id, axis_x, axis_y, delta_parameterization, x_values, y_values, weighted_norm, collides, held_delta
+                FROM sensitivity_slices
+                WHERE scenario_id = %s AND stress_run_id = %s
+                  AND (scene_fingerprint IS NULL OR %s::text IS NULL OR scene_fingerprint = %s)
+                  AND (sdc_idx IS NULL OR %s::integer IS NULL OR sdc_idx = %s)
+                ORDER BY axis_x, axis_y, slice_id
+                LIMIT %s
+            """, (scenario_id, row['stress_run_id'], row['scene_fingerprint'], row['scene_fingerprint'], row['sdc_idx'], row['sdc_idx'],
+                  slice_rules.MAX_SLICES + 1))
+            rows = cur.fetchall()
+        except psycopg2.errors.InsufficientPrivilege:
+            _slices_unreadable(cur)
+            return empty
+    truncated = len(rows) > slice_rules.MAX_SLICES
+    slices = []
+    for r in rows[:slice_rules.MAX_SLICES]:
+        served = slice_rules.select_slice(r)
+        labels = DELTA_LABELS_BY_PARAMETERIZATION.get(served['delta_parameterization'])
+        x_label = labels[served['axis_x']] if labels is not None and served['axis_x'] is not None else None
+        y_label = labels[served['axis_y']] if labels is not None and served['axis_y'] is not None else None
+        slices.append(SensitivitySlice(**served, axis_x_label=x_label, axis_y_label=y_label,
+                                      delta_labels=list(labels) if labels is not None else None))
+    return SensitivityResponse(scenario_id=row['scenario_id'], stress_run_id=row['stress_run_id'],
+                               stored_delta_parameterization=stored_parameterization, slices=slices, truncated=truncated)
 
 
 @router.get('/scenarios/{scenario_id}/trajectories',
