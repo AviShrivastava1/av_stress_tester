@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 venv/
 notebooks/block[0-9]*_v[0-9]*.pdf
+# Waymo-derived geometry fixtures built by tools/build_geometry_fixtures.py: local only, never committed (waymo_derived_outputs.json)
+/tests/geometry_fixtures_local/
