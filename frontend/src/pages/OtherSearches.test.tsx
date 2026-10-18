@@ -123,11 +123,62 @@ describe('what it says', () => {
     open();
     const panel = await expand();
     expect(panel.querySelector('p.note')).toHaveTextContent(
-      'Each of these is a separate search of this scenario, run with a seed or a budget of its own. None is shown to be the smallest: ' +
-        'each figure is the smallest perturbation that one finite search found, and another seed or budget can find a smaller or a larger ' +
-        'one. The stored result and its search are in Provenance above.',
+      'Each of these is a separate search of this scenario, run with a seed, a budget or a challenger agent of its own. None is shown to be ' +
+        'the smallest: each figure is the smallest perturbation that one finite search found, and another seed or budget can find a smaller ' +
+        'or a larger one. A challenger’s rank is its place by distance from the SDC, not by its result, and a figure from another challenger ' +
+        'agent is a perturbation of a different agent, not set beside the stored result’s. The stored result and its search are in Provenance above.',
     );
     expect(panel.querySelector('p.note')!.compareDocumentPosition(await within(panel).findByRole('table'))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('does not carry the old wording, which said every search was run with a seed or a budget of its own', async () => {
+    open();
+    const panel = await expand();
+    expect(panel.textContent).not.toContain('run with a seed or a budget of its own');
+    expect(panel.textContent).toContain('a seed, a budget or a challenger agent of its own');
+  });
+
+  it('shows a rank for a challenger only, whatever the other kinds carry in that column', async () => {
+    open(() => ok(body([
+      search({ search_run_id: 'aaaaaaaaaaaaaaa1', kind: 'seed', seed: 4, challenger_rank: 2 }),
+      search({ search_run_id: 'aaaaaaaaaaaaaaa2', kind: 'budget', seed: 0, challenger_rank: 3 }),
+      search({ search_run_id: 'aaaaaaaaaaaaaaa3', kind: 'challenger', challenger_rank: 4, seed: 0 }),
+    ])));
+    const r = rows(await expand());
+    expect(r[0]).toHaveTextContent('Another seed');
+    expect(r[0]).not.toHaveTextContent('rank');
+    expect(r[1]).toHaveTextContent('Another budget');
+    expect(r[1]).not.toHaveTextContent('rank');
+    expect(r[2]).toHaveTextContent('Another challenger, rank 4');
+  });
+
+  it('names the agent a challenger’s figure is for, under the figure, and for no other kind', async () => {
+    open(() => ok(body([
+      search({ search_run_id: 'cccccccccccccccc', kind: 'challenger', challenger_rank: 2, target_idx: 5, seed: 2, min_perturbation: 0.4 }),
+      search({ search_run_id: 'dddddddddddddddd', kind: 'challenger', challenger_rank: 3, target_idx: null, seed: 2, min_perturbation: 0.3 }),
+      search({ search_run_id: 'eeeeeeeeeeeeeeee', kind: 'seed', seed: 9, target_idx: 7 }),
+    ])));
+    const r = rows(await expand());
+    expect(r[0]).toHaveTextContent('Another challenger, rank 2');
+    expect(r[0]).toHaveTextContent('0.400for agent 5');
+    expect(r[1]).toHaveTextContent('Another challenger, rank 3');
+    expect(r[1]).not.toHaveTextContent('for agent');
+    expect(r[2]).not.toHaveTextContent('for agent');
+  });
+
+  it('shows no figure, and no agent, of a challenger under another model, and does not mark, sort or promote challengers', async () => {
+    open(() => ok(body([
+      search({ search_run_id: 'cccccccccccccccc', kind: 'challenger', challenger_rank: 2, target_idx: 5, delta_parameterization: 'linear', delta_labels: LINEAR, min_perturbation: 0.1 }),
+      search({ search_run_id: 'dddddddddddddddd', kind: 'challenger', challenger_rank: 3, target_idx: 6, min_perturbation: 0.9 }),
+    ])));
+    const panel = await expand();
+    const r = rows(panel);
+    expect(r[0]).toHaveTextContent('Under a different or unrecorded model; its figures are not shown against the stored result’s.');
+    expect(r[0]).not.toHaveTextContent('0.100');
+    expect(r[0]).not.toHaveTextContent('for agent');
+    expect(r.map((x) => within(x).getByRole('rowheader').textContent!.slice(0, 26))).toEqual(['Another challenger, rank 2', 'Another challenger, rank 3']);
+    for (const x of r) expect(x.className).toBe('');
+    expect(within(within(panel).getByRole('table')).queryByText(/smallest|best|lowest|winner|closest|better/i)).toBeNull();
   });
 
   it('is its own section below the Provenance panel, and not in the panels that carry the headline figure', async () => {
@@ -249,6 +300,7 @@ describe('the components and the model', () => {
     ['another model', search({ delta_parameterization: 'linear', delta_labels: LINEAR }), 'bicycle'],
     ['an unrecorded model', search({ delta_parameterization: null, delta_labels: null }), 'bicycle'],
     ['a stored result under an unrecorded model', search(), null],
+    ['an unrecorded model under an unrecorded stored model', search({ delta_parameterization: null, delta_labels: null }), null],
   ])('shows no number of a search under %s, and says why', async (_name, s, stored) => {
     open(() => ok(body([s], { stored_delta_parameterization: stored })));
     const panel = await expand();

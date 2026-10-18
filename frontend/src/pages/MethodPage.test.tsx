@@ -68,11 +68,12 @@ const GONE = ['ENGINEERING PRINCIPLES', 'Built to expose assumptions, not hide t
 
 const LIMITS = [
   'The minimum perturbation is the best result found within a finite search budget, not a proven global minimum. ' +
-    'A scenario’s page can list other searches of it, with other seeds or budgets; each is a separate finite search, ' +
+    'A scenario’s page can list other searches of it, with other seeds, budgets or challenger agents; each is a separate finite search, ' +
     'and none of them, nor the stored result, is shown to be the smallest.',
   'Each search is of one heuristically selected challenger, not every possible agent interaction. The stored result ' +
-    'is one such search; the other searches listed under “Other searches of this scenario” search the same challenger ' +
-    'again, with another seed or budget.',
+    'is one such search; the other searches listed under “Other searches of this scenario” may use another seed, ' +
+    'another budget, or another challenger agent, and a figure from another challenger is a different perturbation ' +
+    'of a different agent.',
   'A collision is an oriented-box intersection at stored coordinate precision, not a forecast of real-world impact.',
   'The browser draws each box at the size recorded for that frame, which is the size the collision check used. ' +
     'Data exported before per-frame sizes were stored is drawn at one size per agent, and the note under the ' +
@@ -152,6 +153,22 @@ describe('the Method page', () => {
     await openMethod();
     for (const text of GONE) expect(screen.queryByText(text)).not.toBeInTheDocument();
     expect(document.querySelector('.principle-grid, .method-section')).toBeNull();
+  });
+
+  it('does not say any more that the other searches differ only by seed or budget, and names challenger agents in the first limit', async () => {
+    await openMethod();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('with other seeds or budgets');
+    expect(text).toContain('with other seeds, budgets or challenger agents; each is a separate finite search');
+  });
+
+  it('does not say any more that the other searches search the same challenger again, and says they may use another challenger agent', async () => {
+    await openMethod();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/search the same challenger/i);
+    expect(text).not.toMatch(/same challenger again/i);
+    expect(text).toContain('may use another seed, another budget, or another challenger agent');
+    expect(text).toContain('a figure from another challenger is a different perturbation of a different agent');
   });
 
   it('states what the output does not mean, in six visible bullets, the fourth describing what the browser does now', async () => {

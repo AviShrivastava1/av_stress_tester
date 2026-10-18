@@ -41,19 +41,21 @@
  *   "The minimum perturbation is the best result found within a finite search budget, not a proven global minimum."
  *       optimize_scenario runs Differential Evolution for a bounded number of generations (de_maxiter, de_popsize, de_tol in the
  *       search provenance); the stored value is the smallest exactly-verified colliding perturbation that run found
- *   "A scenario’s page can list other searches of it, with other seeds or budgets; each is a separate finite search, and none of
- *    them, nor the stored result, is shown to be the smallest."
- *       search_runs rows of kind seed or budget (src/scoring/other_searches.py, run by hand), listed by GET
+ *   "A scenario’s page can list other searches of it, with other seeds, budgets or challenger agents; each is a separate finite search,
+ *    and none of them, nor the stored result, is shown to be the smallest."
+ *       search_runs rows of kind seed, budget or challenger (src/scoring/other_searches.py, run by hand), listed by GET
  *       /scenarios/{id}/other-searches under "Other searches of this scenario" (pages/detail/OtherSearches.tsx), which orders them
- *       by seed or budget, not by norm, and marks none. The stored result is not one of the rows
+ *       by kind and then by seed, budget or challenger rank, not by norm, and marks none. The stored result is not one of the rows
  *   "Each search is of one heuristically selected challenger, not every possible agent interaction."
  *       batch_scorer._stress_one picks one challenger with pick_nearest_challenger (the agent whose centre comes nearest to the SDC's
  *       over the recording) and searches it; challengers_total and challengers_searched are stored beside the result
- *   "The stored result is one such search; the other searches listed under “Other searches of this scenario” search the same
- *    challenger again, with another seed or budget."
+ *   "The stored result is one such search; the other searches listed under “Other searches of this scenario” may use another seed,
+ *    another budget, or another challenger agent, and a figure from another challenger is a different perturbation of a different agent."
  *       the seed and budget runners (other_searches.py run_seed_searches, run_budget_searches) call _stress_one on the same scene, which
- *       picks the same challenger; they refuse a scene that is not the one the stored result was searched against, and a row that
- *       chose another challenger is not recorded (the run is refused)
+ *       picks the same challenger (a row that chose another is not recorded: the run is refused); the challenger runner
+ *       (run_challenger_searches) searches the k nearest by the ranking the pipeline picks its one from, with the stored seed and
+ *       budget, and records each with its rank and the agent it perturbed (target_idx). All refuse a scene that is not the one the
+ *       stored result was searched against. The norm of a perturbation of one agent is not that of another's
  *
  * The fifth limit, on pedestrian and cyclist replay, sentence by sentence:
  *   "less well measured than vehicle replay"
@@ -137,11 +139,12 @@ const METHOD_SIGNATURE = [
 
 export const LIMITS = [
   'The minimum perturbation is the best result found within a finite search budget, not a proven global minimum. ' +
-    'A scenario’s page can list other searches of it, with other seeds or budgets; each is a separate finite search, ' +
+    'A scenario’s page can list other searches of it, with other seeds, budgets or challenger agents; each is a separate finite search, ' +
     'and none of them, nor the stored result, is shown to be the smallest.',
   'Each search is of one heuristically selected challenger, not every possible agent interaction. The stored result ' +
-    'is one such search; the other searches listed under “Other searches of this scenario” search the same challenger ' +
-    'again, with another seed or budget.',
+    'is one such search; the other searches listed under “Other searches of this scenario” may use another seed, ' +
+    'another budget, or another challenger agent, and a figure from another challenger is a different perturbation ' +
+    'of a different agent.',
   'A collision is an oriented-box intersection at stored coordinate precision, not a forecast of real-world impact.',
   'The browser draws each box at the size recorded for that frame, which is the size the collision check used. ' +
     'Data exported before per-frame sizes were stored is drawn at one size per agent, and the note under the ' +
