@@ -1,5 +1,5 @@
 import type { UseQueryResult } from '@tanstack/react-query';
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { lazy, Suspense, useMemo, useState, type KeyboardEvent } from 'react';
 import type { PerturbedResponse, ScenarioDetail, TrajectoryResponse } from '../../api/client';
 import { describeError } from '../../api/errors';
 import { describeAgentType, type AgentKind } from '../../domain/agentTypes';
@@ -13,17 +13,24 @@ import {
   perturbedPathNote,
   perturbedTrackDrawn,
   recordingLastFrame,
+  ROLE_LEGEND,
+  sceneKicker,
   referenceFrameNote,
   othersAsLoggedNote,
   searchWindowNote,
   type DrawnTrack,
   type Focus,
-  type Role,
 } from '../../scene/sceneModel';
 import { SceneView } from '../../scene/SceneView';
 import { usePlayback } from '../../scene/usePlayback';
 import { RequestError } from '../../components/RequestError';
+import { WAYMO_DERIVED_OUTPUTS_ENABLED } from '../../waymoDerivedOutputs';
 import { CollisionAnatomy } from './CollisionAnatomy';
+
+// Loaded only when the switch for Waymo-derived outputs is on (waymoDerivedOutputs.ts): while it is off the chunk is never requested.
+const SceneExportControls = lazy(() =>
+  import('../../scene/export/SceneExportControls').then((m) => ({ default: m.SceneExportControls })),
+);
 
 /**
  * How the colliding pair's boxes are drawn, in three cases. Shown only where the page marks a
@@ -63,12 +70,6 @@ const GEOMETRY_ABSENT_REASON =
   'matches the stored score; the API does not distinguish the two.';
 const NO_GEOMETRY = `No geometry to draw. ${GEOMETRY_ABSENT_REASON}`;
 const NO_FRAMES = 'Tracks were returned, but none has an observed frame, so there is nothing to draw.';
-
-const ROLE_LEGEND: Record<Exclude<Role, 'other'>, string> = {
-  sdc: 'SDC (self-driving car)',
-  challenger_logged: 'Challenger, as logged',
-  challenger_perturbed: 'Challenger, perturbed',
-};
 
 function Legend({ drawn }: { drawn: DrawnTrack[] }) {
   const roles = (Object.keys(ROLE_LEGEND) as (keyof typeof ROLE_LEGEND)[]).filter((r) =>
@@ -114,6 +115,8 @@ export interface ScenePanelProps {
   trajectories: UseQueryResult<TrajectoryResponse>;
   perturbed: UseQueryResult<PerturbedResponse>;
   detail: ScenarioDetail | undefined;
+  /** Whether the export controls are offered: the switch for Waymo-derived outputs by default; a test passes it. */
+  exportEnabled?: boolean;
 }
 
 /**
@@ -134,7 +137,7 @@ export function ScenePanel(props: ScenePanelProps) {
     <section className="panel panel-scene">
       <div className="scene-panel-heading">
         <div>
-          <p className="panel-kicker">{comparing ? 'RECORDED VS PERTURBED, FRAME BY FRAME' : 'RECORDED SCENE'}</p>
+          <p className="panel-kicker">{sceneKicker(comparing)}</p>
           <h2>Replay</h2>
         </div>
         <span>{`${Math.round(1 / FRAME_INTERVAL_S)} Hz · ${FRAME_INTERVAL_S} s / frame`}</span>
@@ -144,7 +147,7 @@ export function ScenePanel(props: ScenePanelProps) {
   );
 }
 
-function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
+function SceneBody({ trajectories, perturbed, detail, exportEnabled = WAYMO_DERIVED_OUTPUTS_ENABLED }: ScenePanelProps) {
   const [chosenFocus, setChosenFocus] = useState<Focus | null>(null);
 
   // Memoized so the scene, its framing and its frame range keep their identity across
@@ -275,6 +278,16 @@ function SceneBody({ trajectories, perturbed, detail }: ScenePanelProps) {
         total={drawn.length}
         collisionFrame={collisionFrame}
       />
+      {exportEnabled === true && (
+        <Suspense fallback={null}>
+          <SceneExportControls
+            enabled={exportEnabled}
+            scene={{ scenarioId: trajectories.data.scenario_id, drawn, focus: focused, collisionFrame }}
+            frame={frame}
+            range={range}
+          />
+        </Suspense>
+      )}
       <p className="keyboard-hint">
         Focus the scene, then use <kbd>Space</kbd> to play, <kbd>←</kbd> <kbd>→</kbd> to step,{' '}
         {collisionKeyFrame !== null ? '' : 'and '}<kbd>Home</kbd> and <kbd>End</kbd> for the first and last frame

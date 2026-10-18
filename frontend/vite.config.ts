@@ -17,6 +17,8 @@ export default defineConfig(({ mode }) => {
       // meeting a CORS error that looks like a backend bug.
       port: 5173,
       strictPort: true,
+      // src/waymoDerivedOutputs.ts reads ../waymo_derived_outputs.json, one directory above this project (the one switch for Waymo-derived outputs).
+      fs: { allow: ['..'] },
     },
     test: {
       environment: 'jsdom',

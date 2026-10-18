@@ -168,3 +168,15 @@ export function referenceFrameNote(ref: ReferenceFrame, focusCount: number): str
       return 'No observed positions to draw.';
   }
 }
+
+/** The names the panel's legend gives the roles it draws; the exported frame's caption uses the same words. */
+export const ROLE_LEGEND: Record<Exclude<Role, 'other'>, string> = {
+  sdc: 'SDC (self-driving car)',
+  challenger_logged: 'Challenger, as logged',
+  challenger_perturbed: 'Challenger, perturbed',
+};
+
+/** The small heading above the replay: whether a perturbed track is drawn beside the recorded ones. The exported frame's caption uses it too. */
+export function sceneKicker(comparing: boolean): string {
+  return comparing ? 'RECORDED VS PERTURBED, FRAME BY FRAME' : 'RECORDED SCENE';
+}
