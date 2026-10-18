@@ -1,0 +1,258 @@
+{
+ "note": "Results only, as served by the public API: no scene geometry, no trajectory, no coordinate of any agent. Refreshed by tools/refresh_collision_results.py (see its docstring); never by a test.",
+ "source": "the real API app on a local scratch database restored from the dump, read-only connections, GET requests only",
+ "rows": [
+  {
+   "scenario_id": "1492befc8cd5b7cd",
+   "target_idx": 69,
+   "delta": [
+    -0.005721431691199541,
+    0.0008577097323723137,
+    -0.0036641627084463835,
+    0.0021800962276756763
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.02243385650217533,
+   "collision_timestep": 55,
+   "stress_run_id": "939a8b42724f462e"
+  },
+  {
+   "scenario_id": "182dfffefecdaac0",
+   "target_idx": 5,
+   "delta": [
+    0.28133469820022583,
+    0.06536605209112167,
+    0.0468568429350853,
+    0.029405642300844193
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.4506188631057739,
+   "collision_timestep": 16,
+   "stress_run_id": "01d7a42e353b9cb2"
+  },
+  {
+   "scenario_id": "19043d68220d68ac",
+   "target_idx": 18,
+   "delta": [
+    0.0037808530032634735,
+    0.0007086689001880586,
+    0.0015713850734755397,
+    0.001934380386956036
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.019733823835849762,
+   "collision_timestep": 90,
+   "stress_run_id": "cd3634b266f134e7"
+  },
+  {
+   "scenario_id": "222f4391bac05212",
+   "target_idx": 14,
+   "delta": [
+    0.002485401462763548,
+    0.02336239255964756,
+    0.0017866959096863866,
+    0.01956397108733654
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.227864071726799,
+   "collision_timestep": 17,
+   "stress_run_id": "9dda4b604877bf9a"
+  },
+  {
+   "scenario_id": "38c703d6cb4da5ce",
+   "target_idx": 2,
+   "delta": [
+    0.0009757438092492521,
+    0.000536166422534734,
+    0.0007256435928866267,
+    0.0015086856437847018
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.015334272757172585,
+   "collision_timestep": 90,
+   "stress_run_id": "72c11053c6d78450"
+  },
+  {
+   "scenario_id": "4d99ac365cde07cb",
+   "target_idx": 3,
+   "delta": [
+    0.8958578705787659,
+    0.03535555303096771,
+    0.3241376280784607,
+    0.012795920483767986
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.4283609092235565,
+   "collision_timestep": 33,
+   "stress_run_id": "f1d0ea252149f2fa"
+  },
+  {
+   "scenario_id": "6725f3566168ce34",
+   "target_idx": 6,
+   "delta": [
+    0.0080642681568861,
+    0.002204954857006669,
+    0.006306739058345556,
+    0.004387015011161566
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.045508675277233124,
+   "collision_timestep": 71,
+   "stress_run_id": "0a0071b4804d63fd"
+  },
+  {
+   "scenario_id": "78afd0d26d19ef41",
+   "target_idx": 29,
+   "delta": [
+    0.11261105537414551,
+    -0.00799995195120573,
+    0.1939377635717392,
+    -0.010672565549612045
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.17639657855033875,
+   "collision_timestep": 90,
+   "stress_run_id": "ae96aff8d5c71a3d"
+  },
+  {
+   "scenario_id": "85333d34425536d9",
+   "target_idx": 2,
+   "delta": [
+    8.668791269883513e-05,
+    0.00017316482262685895,
+    -7.233648648252711e-05,
+    0.0008378602797165513
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.008423407562077045,
+   "collision_timestep": 49,
+   "stress_run_id": "9920c11f744535af"
+  },
+  {
+   "scenario_id": "888d2ac2b622078b",
+   "target_idx": 2,
+   "delta": [
+    0.002400785917416215,
+    -0.00018942994938697666,
+    0.0015635760501027107,
+    -0.0007994233747012913
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.008156705647706985,
+   "collision_timestep": 54,
+   "stress_run_id": "4df2380c25219c76"
+  },
+  {
+   "scenario_id": "8ec2910bbae8e13a",
+   "target_idx": 70,
+   "delta": [
+    0.5236772298812866,
+    0.04286453127861023,
+    0.275987833738327,
+    0.022905077785253525
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.4033885896205902,
+   "collision_timestep": 39,
+   "stress_run_id": "490ce99800e140f6"
+  },
+  {
+   "scenario_id": "91a2a6ad0c50ce55",
+   "target_idx": 56,
+   "delta": [
+    0.012588055804371834,
+    0.08099287003278732,
+    0.00275683356449008,
+    0.014920906163752079
+   ],
+   "delta_parameterization": "linear",
+   "min_perturbation": 0.04370136931538582,
+   "collision_timestep": 15,
+   "stress_run_id": "1bfbffb1832a83cb"
+  },
+  {
+   "scenario_id": "a6bf1ade33cb6e93",
+   "target_idx": 47,
+   "delta": [
+    0.0008718803292140365,
+    -0.00043439664295874536,
+    0.0010949785355478525,
+    -0.0009875509422272444
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.010142019018530846,
+   "collision_timestep": 82,
+   "stress_run_id": "b802d26486894ef1"
+  },
+  {
+   "scenario_id": "b1e5a34520fe6043",
+   "target_idx": 8,
+   "delta": [
+    0.0026875280309468508,
+    0.001164232031442225,
+    0.0021234755404293537,
+    0.001952739548869431
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.020445333793759346,
+   "collision_timestep": 54,
+   "stress_run_id": "d5ab78d1875da6d6"
+  },
+  {
+   "scenario_id": "b262200be0d2b7f0",
+   "target_idx": 7,
+   "delta": [
+    7.326027116505429e-05,
+    -4.708850246970542e-05,
+    1.3402388958638767e-06,
+    -0.0003238702774979174
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.003247341373935342,
+   "collision_timestep": 90,
+   "stress_run_id": "20d8fdfd4e69e3a6"
+  },
+  {
+   "scenario_id": "b57b18b2eed93e31",
+   "target_idx": 10,
+   "delta": [
+    0.0017337278695777059,
+    -0.001348012243397534,
+    0.0035423622466623783,
+    -0.0028940869960933924
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.029814651235938072,
+   "collision_timestep": 90,
+   "stress_run_id": "342a596770e861ce"
+  },
+  {
+   "scenario_id": "bb1294ef8c0f1ff0",
+   "target_idx": 22,
+   "delta": [
+    0.06697826832532883,
+    0.18767863512039185,
+    0.09840190410614014,
+    0.03654291108250618
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 1.0094166994094849,
+   "collision_timestep": 90,
+   "stress_run_id": "071753d5b5c54afb"
+  },
+  {
+   "scenario_id": "c549c69c076a2718",
+   "target_idx": 0,
+   "delta": [
+    0.00010898923937929794,
+    0.00018050077778752893,
+    0.0002216473949374631,
+    0.0008841073722578585
+   ],
+   "delta_parameterization": "bicycle",
+   "min_perturbation": 0.008888321928679943,
+   "collision_timestep": 90,
+   "stress_run_id": "f2ea90f97b11d208"
+  }
+ ]
+}
