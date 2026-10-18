@@ -444,6 +444,10 @@ _RESCOPED_RETURNING = (
     "       IS DISTINCT FROM scenario_scores.sdc_idx))"
 )
 
+_SAME_SHARD_UPDATE = (
+    "(scenario_scores.shard IS NULL OR EXCLUDED.shard IS NULL OR scenario_scores.shard = EXCLUDED.shard)"
+)
+
 _UPSERT_SQL_TEMPLATE = f"""
     WITH old_rows AS (
         SELECT scenario_id, scene_fingerprint, sdc_idx
@@ -492,6 +496,10 @@ _UPSERT_SQL_TEMPLATE = f"""
         last_attempt_outcome     = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.last_attempt_outcome END,
         last_attempt_diagnostics = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.last_attempt_diagnostics END,
         stress_attempted_at      = CASE WHEN {_RESCOPED_UPDATE} THEN NULL ELSE scenario_scores.stress_attempted_at END
+    -- #18: a scenario_id stored under one shard is not rewritten by another. upsert_scores checks this first and refuses the whole
+    -- call (ShardConflictError); this is the same condition inside the statement, for a row that another writer stored between that
+    -- check and this statement: such a row is left as it is, and is missing from RETURNING. A NULL on either side is not a conflict.
+    WHERE {_SAME_SHARD_UPDATE}
     RETURNING scenario_id,
         {_RESCOPED_RETURNING} AS rescoped,
         (SELECT scene_fingerprint FROM old_rows
@@ -501,6 +509,35 @@ _UPSERT_SQL_TEMPLATE = f"""
           WHERE old_rows.scenario_id = scenario_scores.scenario_id) AS old_sdc_idx,
         scenario_scores.sdc_idx AS new_sdc_idx
 """
+
+
+class ShardConflictError(RuntimeError):
+    """
+    A scenario_id that is already stored under one shard was offered under another (#18). Nothing was written for the call. The id is
+    the table's key, so writing it would have replaced the other shard's row (its scene, its counts and, at the next rescope, its
+    result) with this one's. `conflicts` is a list of (scenario_id, stored shard, offered shard).
+    """
+
+    def __init__(self, conflicts):
+        self.conflicts = list(conflicts)
+        first = ', '.join(f'{sid!r} is stored under shard {stored!r}, offered under shard {offered!r}' for sid, stored, offered in self.conflicts[:3])
+        more = f' (and {len(self.conflicts) - 3} more)' if len(self.conflicts) > 3 else ''
+        super().__init__(f'{len(self.conflicts)} scenario id(s) are already stored under another shard: {first}{more}. Nothing was written. '
+                         'An id belongs to one shard; if the ids really are the same scenario, correct the shard of the stored row by hand.')
+
+
+def _shard_conflicts(conn, records):
+    """(scenario_id, stored shard, offered shard) for every record whose id is stored under a different non-NULL shard than its own non-NULL one."""
+    offered = {}
+    for r in records:
+        if r.get('shard') is not None:
+            offered[r['scenario_id']] = r['shard']
+    if not offered:
+        return []
+    with conn.cursor() as cur:
+        cur.execute('SELECT scenario_id, shard FROM scenario_scores WHERE scenario_id = ANY(%s) AND shard IS NOT NULL', (list(offered),))
+        stored = dict(cur.fetchall())
+    return [(sid, stored[sid], shard) for sid, shard in offered.items() if sid in stored and stored[sid] != shard]
 
 
 def upsert_scores(conn, records):
@@ -513,11 +550,23 @@ def upsert_scores(conn, records):
     re-score (same scene, same SDC, or no identity recorded on either side)
     never wipes out an earlier stress-test result, exactly as before this fix.
 
+    A scenario_id already stored under a different non-NULL shard is refused (#18): ShardConflictError, nothing written for the call,
+    the stored row untouched. The same shard again is a re-score, as before. A NULL shard on the stored row is not a conflict (the row
+    takes the offered shard), and a record that offers no shard is written as before (its shard column becomes NULL).
+
     Returns an UpsertReport — an int (rows written) carrying `.rescoped`; see
     that class.
     """
     if not records:
         return UpsertReport(0)
+    try:
+        conflicts = _shard_conflicts(conn, records)
+    except BaseException:
+        conn.rollback()                      # the check's read must not leave the connection holding a transaction (and its locks)
+        raise
+    if conflicts:
+        conn.rollback()
+        raise ShardConflictError(conflicts)
     # scene_fingerprint and sdc_idx join the SCENARIO-OWNED columns here (audit A02,
     # fix F02), not the result or attempt groups — they describe the input Pass 1
     # read, so Pass 1 writes them and update_stress_results never touches them.
@@ -538,8 +587,18 @@ def upsert_scores(conn, records):
             for row in page:
                 params.extend(row)
             cur.execute(_UPSERT_SQL_TEMPLATE.format(values=values_sql), params)
+            written = cur.fetchall()
+            if len(written) != len(page):
+                # a row another writer stored under another shard after the check above: the statement left it as it was
+                kept = {w[0] for w in written}
+                left = [(row[0], row[1]) for row in page if row[0] not in kept]
+                with conn.cursor() as cur2:
+                    cur2.execute('SELECT scenario_id, shard FROM scenario_scores WHERE scenario_id = ANY(%s)', ([sid for sid, _ in left],))
+                    stored = dict(cur2.fetchall())
+                conn.rollback()
+                raise ShardConflictError([(sid, stored.get(sid), shard) for sid, shard in left])
             for (sid, is_rescoped, old_fp, new_fp, old_sdc,
-                 new_sdc) in cur.fetchall():
+                 new_sdc) in written:
                 if is_rescoped:
                     rescoped.append(dict(
                         scenario_id=sid,

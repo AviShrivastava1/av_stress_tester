@@ -1043,15 +1043,16 @@ class PerturbationSpace:
         return np.where(magnitude < 1e-5, logged, np.arctan2(by, bx))
 
 
-def pick_nearest_challenger(states, validity, sdc_idx) -> int:
+def rank_challengers(states, validity, sdc_idx) -> list:
     """
-    Convenience helper: choose the non-SDC agent whose bounding-box center comes
-    closest to the SDC at any shared valid timestep. This is usually the most
-    interesting challenger to perturb. Returns its index (or -1 if none).
+    Every non-SDC agent that can be ranked, nearest first: by the smallest distance between its bounding-box center and the SDC's
+    at any timestep both are valid, ties to the lower index. An agent that shares no valid timestep with the SDC, or whose distance
+    is not finite, is not ranked (it is never chosen). This is the ranking `pick_nearest_challenger` chooses its one from: that
+    function returns the first of this list (held equal by tests/test_other_searches.py against the previous implementation).
     """
     N, T, _ = states.shape
-    best_idx, best_d = -1, np.inf
     sdc_xy = states[sdc_idx, :, :2]
+    found = []
     for j in range(N):
         if j == sdc_idx:
             continue
@@ -1059,6 +1060,17 @@ def pick_nearest_challenger(states, validity, sdc_idx) -> int:
         if not shared.any():
             continue
         d = np.linalg.norm(sdc_xy[shared] - states[j, shared, :2], axis=1).min()
-        if d < best_d:
-            best_d, best_idx = d, j
-    return best_idx
+        if np.isfinite(d):
+            found.append((d, j))
+    found.sort()
+    return [j for _, j in found]
+
+
+def pick_nearest_challenger(states, validity, sdc_idx) -> int:
+    """
+    Convenience helper: choose the non-SDC agent whose bounding-box center comes
+    closest to the SDC at any shared valid timestep. This is usually the most
+    interesting challenger to perturb. Returns its index (or -1 if none).
+    """
+    ranked = rank_challengers(states, validity, sdc_idx)
+    return ranked[0] if ranked else -1

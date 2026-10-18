@@ -237,16 +237,21 @@ def score_shard(
 # ── PASS 2: explicit Phase 4 stress-test over a chosen subset ────────────────
 
 def _stress_one(states, validity, types, sdc_idx,
-                use_autograd=False, de_kwargs=None):
+                use_autograd=False, de_kwargs=None, challenger_rank=None):
     """
     Run the Phase 4 pipeline on one parsed scenario:
     pick the nearest challenger, build the perturbation space, DE search,
     optional autograd refinement (vehicles only), keep the better verified result.
     Testable without the Waymo package.
+
+    `challenger_rank` is for the offline runner of other challengers (src/scoring/other_searches.py) and is left out by every other
+    caller: None (the default) searches the nearest challenger exactly as before, and so does 1; k > 1 searches the k-th nearest by
+    the same ranking (perturbation_space.rank_challengers). Nothing else changes with it except what the provenance says about the
+    choice, and only for k > 1, so every result of the default path, and its stress_run_id, is byte-identical to what it was.
     """
     from src.optimization.perturbation_space import (
         HeadingBlendSingularityError, PerturbationSpace, ReplayFidelityError,
-        pick_nearest_challenger,
+        pick_nearest_challenger, rank_challengers,
     )
     from src.optimization.scipy_optimizer import optimize_scenario
     from src.danger.collision_detector import COLLISION_GEOMETRY_VERSION
@@ -274,7 +279,11 @@ def _stress_one(states, validity, types, sdc_idx,
     # interpret it (audit B04).
     challengers_total = int(sum(1 for j in range(states.shape[0]) if j != sdc_idx))
 
-    tgt = pick_nearest_challenger(states, validity, sdc_idx)
+    if challenger_rank is None:
+        tgt = pick_nearest_challenger(states, validity, sdc_idx)
+    else:
+        ranked = rank_challengers(states, validity, sdc_idx)
+        tgt = ranked[challenger_rank - 1] if 1 <= challenger_rank <= len(ranked) else -1
     if tgt < 0:
         return {'status': 'no_challenger',
                 'outcome': OUTCOME_NO_CHALLENGER,
@@ -397,7 +406,10 @@ def _stress_one(states, validity, types, sdc_idx,
         # beside it, and Batch 2 established that fields of one concept travel together
         # rather than being split across a separate column.
         'delta_parameterization': 'bicycle' if space.is_vehicle else 'linear',
-        'challenger_selection': 'nearest_by_min_center_distance',
+        # The nearest (rank 1, and the default path) keeps its words, so the nearest challenger searched with the stored configuration
+        # is the stored result and has its stress_run_id; the k-th says which rank it is.
+        'challenger_selection': ('nearest_by_min_center_distance' if challenger_rank in (None, 1)
+                                 else f'rank_{challenger_rank}_by_min_center_distance'),
         'bounds': [[float(lo), float(hi)] for lo, hi in space.bounds],
         'de_popsize': de_kwargs.get('popsize', 15),
         'de_maxiter': de_kwargs.get('maxiter', 200),

@@ -717,7 +717,8 @@
                 "type": "null"
               }
             ],
-            "title": "Challenger Rank"
+            "title": "Challenger Rank",
+            "description": "For kind 'challenger': 1 is the challenger nearest the SDC, 2 the next, and so on, by the ranking the pipeline picks its one challenger from (the smallest distance between centers over the timesteps both are valid). Null for the other kinds."
           },
           "target_idx": {
             "anyOf": [
@@ -728,7 +729,8 @@
                 "type": "null"
               }
             ],
-            "title": "Target Idx"
+            "title": "Target Idx",
+            "description": "The index, in the scene's agent arrays, of the agent this search perturbed."
           },
           "seed": {
             "anyOf": [
@@ -877,7 +879,7 @@
           "kind"
         ],
         "title": "OtherSearch",
-        "description": "One search of a scenario that is not its stored result: another seed, another budget, or another challenger.\n\nEvery field is null when it was not recorded or is not of the expected type. `min_perturbation` is a weighted norm over components\nof mixed units, as everywhere else; it is the smallest perturbation THIS search found, not the smallest there is, and it is not\ncomparable with a figure from a search under another kinematic model (`delta_parameterization`)."
+        "description": "One search of a scenario that is not its stored result: another seed, another budget, or another challenger.\n\nEvery field is null when it was not recorded or is not of the expected type. `min_perturbation` is a weighted norm over components\nof mixed units, as everywhere else; it is the smallest perturbation THIS search found, not the smallest there is, and it is not\ncomparable with a figure from a search under another kinematic model (`delta_parameterization`). A search of kind 'challenger' perturbs\nanother agent than the stored result does (`target_idx`): its figure is a perturbation of a different agent, not a smaller or larger\nversion of the stored one, and nothing here ranks it against the stored result or promotes it."
       },
       "OtherSearchesResponse": {
         "properties": {

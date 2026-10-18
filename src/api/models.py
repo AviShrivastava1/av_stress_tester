@@ -409,13 +409,19 @@ class OtherSearch(BaseModel):
 
     Every field is null when it was not recorded or is not of the expected type. `min_perturbation` is a weighted norm over components
     of mixed units, as everywhere else; it is the smallest perturbation THIS search found, not the smallest there is, and it is not
-    comparable with a figure from a search under another kinematic model (`delta_parameterization`).
+    comparable with a figure from a search under another kinematic model (`delta_parameterization`). A search of kind 'challenger' perturbs
+    another agent than the stored result does (`target_idx`): its figure is a perturbation of a different agent, not a smaller or larger
+    version of the stored one, and nothing here ranks it against the stored result or promotes it.
     """
 
     search_run_id: str | None = None
     kind: str = Field(description="'seed', 'budget' or 'challenger'.")
-    challenger_rank: int | None = None
-    target_idx: int | None = None
+    challenger_rank: int | None = Field(
+        default=None,
+        description="For kind 'challenger': 1 is the challenger nearest the SDC, 2 the next, and so on, by the ranking the pipeline picks its one "
+                    "challenger from (the smallest distance between centers over the timesteps both are valid). Null for the other kinds.",
+    )
+    target_idx: int | None = Field(default=None, description="The index, in the scene's agent arrays, of the agent this search perturbed.")
     seed: int | None = None
     popsize: int | None = None
     maxiter: int | None = None
